@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clawcu"
+version = "0.0.1"
+description = "ClawCU: a local OpenClaw lifecycle manager"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "rich>=13.7.0,<14.0.0",
+  "typer>=0.12.3,<1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2.0,<9.0.0",
+]
+
+[project.scripts]
+clawcu = "clawcu.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
