@@ -9,6 +9,7 @@ from pathlib import Path
 class ClawCUPaths:
     home: Path
     instances_dir: Path
+    providers_dir: Path
     sources_dir: Path
     logs_dir: Path
     snapshots_dir: Path
@@ -19,6 +20,7 @@ def get_paths() -> ClawCUPaths:
     paths = ClawCUPaths(
         home=home,
         instances_dir=home / "instances",
+        providers_dir=home / "providers",
         sources_dir=home / "sources",
         logs_dir=home / "logs",
         snapshots_dir=home / "snapshots",
@@ -26,6 +28,7 @@ def get_paths() -> ClawCUPaths:
     for path in (
         paths.home,
         paths.instances_dir,
+        paths.providers_dir,
         paths.sources_dir,
         paths.logs_dir,
         paths.snapshots_dir,

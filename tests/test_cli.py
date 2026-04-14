@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+from types import SimpleNamespace
+
 from typer.testing import CliRunner
 
 from clawcu.cli import app
@@ -13,6 +16,7 @@ class FakeService:
         self.pulled_versions: list[str] = []
         self.calls: list[tuple[str, tuple, dict]] = []
         self.reporter = None
+        self.store = SimpleNamespace(paths=SimpleNamespace(home=Path("/tmp/clawcu-test-home")))
 
     def _record(self, method: str, *args, **kwargs) -> None:
         self.calls.append((method, args, kwargs))
@@ -32,11 +36,48 @@ class FakeService:
             port=3000 if name == "writer" else 3001,
             cpu="1",
             memory="2g",
+            auth_mode="token",
             status="running",
             created_at="2026-04-11T00:00:00+00:00",
             updated_at="2026-04-11T00:00:00+00:00",
             history=[],
         )
+
+    def _provider_summary(self, name: str = "openai-main", api_style: str = "openai") -> dict:
+        return {
+            "name": name,
+            "provider": "openai",
+            "api_style": api_style,
+            "api_key": "sk-test-1234567890",
+            "endpoint": "https://api.example.com/v1",
+            "models": ["gpt-5", "gpt-4.1"],
+        }
+
+    def _provider_payload(self, name: str = "openai-main") -> dict:
+        return {
+            "name": name,
+            "auth_profiles": {
+                "profiles": {
+                    "openai:default": {
+                        "type": "api_key",
+                        "provider": "openai",
+                        "key": "sk-test",
+                    }
+                }
+            },
+            "models": {
+                "providers": {
+                    "openai": {
+                        "api": "openai-responses",
+                        "baseUrl": "https://api.example.com/v1",
+                        "models": [
+                            {"id": "gpt-5", "name": "GPT-5"},
+                            {"id": "gpt-4.1", "name": "GPT-4.1"},
+                        ],
+                    }
+                }
+            },
+        }
 
     def pull_openclaw(self, version: str) -> str:
         self._record("pull_openclaw", version=version)
@@ -52,13 +93,230 @@ class FakeService:
             self.reporter("Step 5/5: Starting the Docker container")
         return self._instance(name=kwargs["name"], version=kwargs["version"])
 
+    def check_setup(self) -> list[dict[str, str | bool]]:
+        self._record("check_setup")
+        return [
+            {
+                "name": "docker_cli",
+                "status": "ok",
+                "ok": True,
+                "summary": "Docker CLI is installed at /usr/local/bin/docker.",
+                "hint": "",
+            },
+            {
+                "name": "docker_daemon",
+                "status": "ok",
+                "ok": True,
+                "summary": "Docker daemon is running (server 29.3.1).",
+                "hint": "",
+            },
+            {
+                "name": "clawcu_home",
+                "status": "ok",
+                "ok": True,
+                "summary": "ClawCU home directory is ready at /tmp/clawcu-test-home.",
+                "hint": "",
+            },
+            {
+                "name": "clawcu_runtime_dirs",
+                "status": "ok",
+                "ok": True,
+                "summary": "ClawCU runtime directories are ready: /tmp/clawcu-test-home/instances, /tmp/clawcu-test-home/sources, /tmp/clawcu-test-home/logs, /tmp/clawcu-test-home/snapshots.",
+                "hint": "",
+            },
+        ]
+
+    def collect_providers(self, **kwargs) -> dict[str, list[str]]:
+        self._record("collect_providers", **kwargs)
+        return {
+            "saved": ["openai-main (instance:writer)"],
+            "merged": ["openai-main (instance:writer)"],
+            "skipped": ["openai-main-2 (instance:writer)"],
+            "scanned": ["/tmp/writer"],
+        }
+
+    def list_providers(self) -> list[dict]:
+        self._record("list_providers")
+        return [self._provider_summary()]
+
+    def show_provider(self, name: str) -> dict:
+        self._record("show_provider", name=name)
+        return self._provider_payload(name=name)
+
+    def apply_provider(
+        self,
+        provider: str,
+        instance: str,
+        agent: str = "main",
+        *,
+        primary: str | None = None,
+        fallbacks: list[str] | None = None,
+        persist: bool = False,
+    ) -> dict:
+        self._record(
+            "apply_provider",
+            provider=provider,
+            instance=instance,
+            agent=agent,
+            persist=persist,
+            primary=primary,
+            fallbacks=fallbacks,
+        )
+        return {
+            "provider": provider,
+            "instance": instance,
+            "agent": agent,
+            "runtime_dir": f"/tmp/{instance}/agents/{agent}/agent",
+            "env_key": "CLAWCU_PROVIDER_OPENAI_API_KEY" if persist else "-",
+            "persist": "yes" if persist else "no",
+            "primary": primary or "-",
+            "fallbacks": ", ".join(fallbacks) if fallbacks else "-",
+        }
+
+    def remove_provider(self, name: str) -> None:
+        self._record("remove_provider", name=name)
+
+    def list_provider_models(self, name: str) -> list[str]:
+        self._record("list_provider_models", name=name)
+        return ["gpt-5", "gpt-4.1"]
+
     def list_instances(self, *, running_only: bool = False) -> list[InstanceRecord]:
         self._record("list_instances", running_only=running_only)
         return [self._instance()]
 
+    def list_instance_summaries(self, *, running_only: bool = False) -> list[dict]:
+        self._record("list_instance_summaries", running_only=running_only)
+        payload = self._instance().to_dict()
+        payload.update(
+            {
+                "source": "managed",
+                "home": "/Users/test/.clawcu/writer",
+                "providers": "openai, anthropic",
+                "models": "openai/gpt-5, anthropic/claude-sonnet-4.5",
+            }
+        )
+        return [payload]
+
+    def list_agent_summaries(self, *, running_only: bool = False) -> list[dict]:
+        self._record("list_agent_summaries", running_only=running_only)
+        return [
+            {
+                "source": "managed",
+                "instance": "writer",
+                "home": "/Users/test/.clawcu/writer",
+                "agent": "main",
+                "service": "openclaw",
+                "version": "2026.4.1",
+                "port": 3000,
+                "status": "running",
+                "primary": "openai/gpt-5",
+                "fallbacks": "anthropic/claude-sonnet-4.5",
+                "providers": "openai, anthropic",
+                "models": "openai/gpt-5, anthropic/claude-sonnet-4.5",
+            },
+            {
+                "source": "managed",
+                "instance": "writer",
+                "home": "/Users/test/.clawcu/writer",
+                "agent": "chat",
+                "service": "openclaw",
+                "version": "2026.4.1",
+                "port": 3000,
+                "status": "running",
+                "primary": "anthropic/claude-sonnet-4.5",
+                "fallbacks": "-",
+                "providers": "openai, anthropic",
+                "models": "openai/gpt-5, anthropic/claude-sonnet-4.5",
+            },
+        ]
+
+    def list_local_instance_summaries(self) -> list[dict]:
+        self._record("list_local_instance_summaries")
+        return [
+            {
+                "source": "local",
+                "name": "local",
+                "home": "/Users/test/.openclaw",
+                "version": "2026.4.1",
+                "port": 18789,
+                "status": "local",
+                "providers": "openai, anthropic",
+                "models": "openai/gpt-5, anthropic/claude-sonnet-4.5",
+            }
+        ]
+
+    def list_local_agent_summaries(self) -> list[dict]:
+        self._record("list_local_agent_summaries")
+        return [
+            {
+                "source": "local",
+                "instance": "local",
+                "home": "/Users/test/.openclaw",
+                "agent": "main",
+                "service": "openclaw",
+                "version": "2026.4.1",
+                "port": 18789,
+                "status": "local",
+                "primary": "openai/gpt-5",
+                "fallbacks": "anthropic/claude-sonnet-4.5",
+                "providers": "openai, anthropic",
+                "models": "openai/gpt-5, anthropic/claude-sonnet-4.5",
+            }
+        ]
+
+    def dashboard_url(self, name: str) -> str:
+        self._record("dashboard_url", name=name)
+        return f"http://127.0.0.1:3000/#token=token-{name}"
+
     def inspect_instance(self, name: str) -> dict:
         self._record("inspect_instance", name=name)
         return {"instance": self._instance(name=name).to_dict(), "container": {"Name": name}}
+
+    def token(self, name: str) -> str:
+        self._record("token", name=name)
+        return f"token-{name}"
+
+    def set_instance_env(self, name: str, assignments: list[str]) -> dict:
+        self._record("set_instance_env", name=name, assignments=assignments)
+        return {
+            "instance": name,
+            "path": f"/tmp/{name}.env",
+            "updated_keys": [item.split("=", 1)[0] for item in assignments],
+            "status": "running",
+        }
+
+    def get_instance_env(self, name: str) -> dict:
+        self._record("get_instance_env", name=name)
+        return {
+            "instance": name,
+            "path": f"/tmp/{name}.env",
+            "values": {
+                "OPENAI_API_KEY": "sk-test",
+                "OPENAI_BASE_URL": "https://api.example.com/v1",
+            },
+            "status": "running",
+        }
+
+    def unset_instance_env(self, name: str, keys: list[str]) -> dict:
+        self._record("unset_instance_env", name=name, keys=keys)
+        return {
+            "instance": name,
+            "path": f"/tmp/{name}.env",
+            "removed_keys": [key for key in keys if key == "OPENAI_API_KEY"],
+            "status": "running",
+        }
+
+    def approve_pairing(self, name: str, request_id: str | None = None) -> str:
+        self._record("approve_pairing", name=name, request_id=request_id)
+        if self.reporter:
+            self.reporter("Approving pairing request")
+        return request_id or "latest-request"
+
+    def configure_instance(self, name: str, extra_args: list[str] | None = None) -> None:
+        self._record("configure_instance", name=name, extra_args=extra_args or [])
+
+    def exec_instance(self, name: str, command: list[str]) -> None:
+        self._record("exec_instance", name=name, command=command)
 
     def start_instance(self, name: str) -> InstanceRecord:
         self._record("start_instance", name=name)
@@ -81,6 +339,13 @@ class FakeService:
         record.status = "running"
         return record
 
+    def recreate_instance(self, name: str) -> InstanceRecord:
+        self._record("recreate_instance", name=name)
+        if self.reporter:
+            self.reporter("Recreating instance")
+        record = self._instance(name=name)
+        return record
+
     def upgrade_instance(self, name: str, *, version: str) -> InstanceRecord:
         self._record("upgrade_instance", name=name, version=version)
         return self._instance(name=name, version=version)
@@ -89,7 +354,17 @@ class FakeService:
         self._record("rollback_instance", name=name)
         return self._instance(name=name, version="2026.4.0")
 
-    def clone_instance(self, source_name: str, *, name: str, datadir: str, port: int) -> InstanceRecord:
+    def clone_instance(
+        self,
+        source_name: str,
+        *,
+        name: str,
+        datadir: str | None = None,
+        port: int | None = None,
+    ) -> InstanceRecord:
+        if self.reporter:
+            self.reporter("Step 1/5: Validating the source instance")
+            self.reporter("Step 5/5: Starting the cloned Docker container")
         self._record(
             "clone_instance",
             source_name=source_name,
@@ -98,8 +373,10 @@ class FakeService:
             port=port,
         )
         record = self._instance(name=name)
-        record.datadir = datadir
-        record.port = port
+        if datadir is not None:
+            record.datadir = datadir
+        if port is not None:
+            record.port = port
         return record
 
     def stream_logs(self, name: str, *, follow: bool = False) -> None:
@@ -145,14 +422,184 @@ def test_pull_help_uses_service_language_and_lists_supported_services() -> None:
     assert "openclaw" in result.stdout
 
 
+def test_root_help_lists_descriptions_for_top_level_commands() -> None:
+    result = runner.invoke(app, ["--help"])
+
+    assert result.exit_code == 0
+    assert "--install-completion" not in result.stdout
+    assert "--show-completion" not in result.stdout
+    assert "list" in result.stdout
+    assert "List all managed instances and their current status." in result.stdout
+    assert "inspect" in result.stdout
+    assert "Show detailed state for a managed instance." in result.stdout
+    assert "token" in result.stdout
+    assert "Print the dashboard token for a managed instance." in result.stdout
+    assert "setup" in result.stdout
+    assert "Check local prerequisites, shell completion guidance" in result.stdout
+    assert "ClawCU home directory." in result.stdout
+    assert "provider" in result.stdout
+    assert "Collect and reuse provider assets from configured OpenClaw" in result.stdout
+    assert "approve" in result.stdout
+    assert "Approve a pending browser pairing request for an instance." in result.stdout
+    assert "config" in result.stdout
+    assert "Run openclaw configure inside a managed instance." in result.stdout
+    assert "exec" in result.stdout
+    assert "Run an arbitrary command inside a managed instance container." in result.stdout
+    assert "start" in result.stdout
+    assert "Start a stopped managed instance." in result.stdout
+    assert "stop" in result.stdout
+    assert "Stop a running managed instance." in result.stdout
+    assert "restart" in result.stdout
+    assert "Restart a managed instance." in result.stdout
+    assert "retry" in result.stdout
+    assert "Retry creating an instance that is in create_failed status." in result.stdout
+    assert "recreate" in result.stdout
+    assert "Recreate an existing instance with its saved configuration." in result.stdout
+    assert "upgrade" in result.stdout
+    assert "Upgrade an instance to a newer OpenClaw version." in result.stdout
+    assert "rollback" in result.stdout
+    assert "Roll an instance back to its previous version." in result.stdout
+    assert "clone" in result.stdout
+    assert "Clone an existing instance into a separate experiment instance." in result.stdout
+    assert "logs" in result.stdout
+    assert "Stream or print Docker logs for a managed instance." in result.stdout
+    assert "remove" in result.stdout
+    assert "Remove an instance and optionally delete its data directory." in result.stdout
+
+
+def test_create_help_no_longer_exposes_auth_option() -> None:
+    result = runner.invoke(app, ["create", "openclaw", "--help"])
+
+    assert result.exit_code == 0
+    assert "--auth" not in result.stdout
+
+
+def test_provider_help_lists_subcommands() -> None:
+    result = runner.invoke(app, ["provider", "--help"])
+
+    assert result.exit_code == 0
+    assert "Collect and reuse provider assets from configured OpenClaw instances." in result.stdout
+    assert "collect" in result.stdout
+    assert "Collect provider assets from managed instances or an OpenClaw data" in result.stdout
+    assert "list" in result.stdout
+    assert "List all collected provider assets." in result.stdout
+    assert "show" in result.stdout
+    assert "Show the collected auth-profiles.json and models.json" in result.stdout
+    assert "apply" in result.stdout
+    assert "Apply a collected provider to a managed instance agent." in result.stdout
+    assert "remove" in result.stdout
+    assert "Remove a collected provider directory." in result.stdout
+    assert "models" in result.stdout
+
+
+def test_provider_models_help_lists_subcommands() -> None:
+    result = runner.invoke(app, ["provider", "models", "--help"])
+
+    assert result.exit_code == 0
+    assert "Inspect the models stored in a collected provider." in result.stdout
+    assert "list" in result.stdout
+    assert "List the models stored in a collected provider." in result.stdout
+
+
+def test_setup_command_reports_success(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+    monkeypatch.setattr(
+        "clawcu.cli._completion_check",
+        lambda _service: {
+            "name": "shell_completion",
+            "status": "warn",
+            "summary": "Shell completion script is ready for zsh at /tmp/clawcu-test-home/completions/_clawcu, but your shell profile does not appear to load it yet.",
+            "hint": "Add this to ~/.zshrc: fpath=(/tmp/clawcu-test-home/completions $fpath) && autoload -Uz compinit && compinit",
+        },
+    )
+
+    result = runner.invoke(app, ["setup"])
+
+    assert result.exit_code == 0
+    assert "Checking local prerequisites for ClawCU..." in result.stdout
+    assert "Docker CLI is installed" in result.stdout
+    assert "Docker daemon is running" in result.stdout
+    assert "ClawCU home directory is ready" in result.stdout
+    assert "ClawCU runtime directories are ready" in result.stdout
+    assert "Shell completion script is ready for zsh" in result.stdout
+    assert "Hint: Add this to ~/.zshrc" in result.stdout
+    assert "ClawCU setup check passed." in result.stdout
+    assert service.calls[0] == ("check_setup", (), {})
+
+
+def test_setup_command_returns_nonzero_when_a_check_fails(monkeypatch) -> None:
+    service = FakeService()
+
+    def failing_setup() -> list[dict[str, str | bool]]:
+        return [
+            {
+                "name": "docker_cli",
+                "ok": False,
+                "summary": "Docker CLI is not installed.",
+                "hint": "Install Docker Desktop.",
+            }
+        ]
+
+    service.check_setup = failing_setup
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+    monkeypatch.setattr(
+        "clawcu.cli._completion_check",
+        lambda _service: {
+            "name": "shell_completion",
+            "status": "warn",
+            "summary": "Shell completion script is ready.",
+            "hint": "",
+        },
+    )
+
+    result = runner.invoke(app, ["setup"])
+
+    assert result.exit_code == 1
+    assert "Docker CLI is not installed." in result.stdout
+    assert "Hint: Install Docker Desktop." in result.stdout
+
+
+def test_recreate_help_no_longer_exposes_auth_option() -> None:
+    result = runner.invoke(app, ["recreate", "--help"])
+
+    assert result.exit_code == 0
+    assert "--auth" not in result.stdout
+
+
+def test_config_help_explains_passthrough_usage() -> None:
+    result = runner.invoke(app, ["config", "--help"])
+
+    assert result.exit_code == 0
+    assert "openclaw configure" in result.stdout
+    assert "clawcu config <instance>" in result.stdout
+    assert "--section model" in result.stdout
+
+
+def test_exec_help_explains_passthrough_usage() -> None:
+    result = runner.invoke(app, ["exec", "--help"])
+
+    assert result.exit_code == 0
+    assert "provided command inside the managed instance container" in result.stdout
+    assert "clawcu exec <instance> openclaw config" in result.stdout
+    assert "clawcu exec <instance> pwd" in result.stdout
+    assert "clawcu exec <instance> ls" in result.stdout
+
+
 def test_empty_service_groups_show_help_instead_of_error() -> None:
     create_result = runner.invoke(app, ["create"])
     pull_result = runner.invoke(app, ["pull"])
+    provider_result = runner.invoke(app, ["provider"])
+    provider_models_result = runner.invoke(app, ["provider", "models"])
 
     assert create_result.exit_code == 0
     assert pull_result.exit_code == 0
+    assert provider_result.exit_code == 0
+    assert provider_models_result.exit_code == 0
     assert "create [OPTIONS] SERVICE" in create_result.stdout
     assert "pull [OPTIONS] SERVICE" in pull_result.stdout
+    assert "provider [OPTIONS] COMMAND [ARGS]..." in provider_result.stdout
+    assert "provider models [OPTIONS] COMMAND [ARGS]..." in provider_models_result.stdout
     assert "Missing command" not in create_result.stdout
     assert "Missing command" not in pull_result.stdout
 
@@ -160,10 +607,18 @@ def test_empty_service_groups_show_help_instead_of_error() -> None:
 def test_empty_argument_commands_show_help_instead_of_error() -> None:
     commands = [
         ("inspect", "inspect [OPTIONS] [NAME]"),
+        ("token", "token [OPTIONS] [NAME]"),
+        ("provider collect", "provider collect [OPTIONS]"),
+        ("provider show", "provider show [OPTIONS] [NAME]"),
+        ("provider apply", "provider apply [OPTIONS] [PROVIDER] [INSTANCE]"),
+        ("provider remove", "provider remove [OPTIONS] [NAME]"),
+        ("provider models list", "provider models list [OPTIONS] [NAME]"),
+        ("exec", "exec [OPTIONS] [NAME] COMMAND [ARGS]..."),
         ("start", "start [OPTIONS] [NAME]"),
         ("stop", "stop [OPTIONS] [NAME]"),
         ("restart", "restart [OPTIONS] [NAME]"),
         ("retry", "retry [OPTIONS] [NAME]"),
+        ("recreate", "recreate [OPTIONS] [NAME]"),
         ("upgrade", "upgrade [OPTIONS] [NAME]"),
         ("rollback", "rollback [OPTIONS] [NAME]"),
         ("clone", "clone [OPTIONS] [SOURCE_NAME]"),
@@ -172,7 +627,7 @@ def test_empty_argument_commands_show_help_instead_of_error() -> None:
     ]
 
     for command, usage in commands:
-        result = runner.invoke(app, [command])
+        result = runner.invoke(app, command.split())
         assert result.exit_code == 0
         assert usage in result.stdout
         assert "Missing argument" not in result.stdout
@@ -185,8 +640,317 @@ def test_list_command_shows_instances(monkeypatch) -> None:
     result = runner.invoke(app, ["list"])
 
     assert result.exit_code == 0
-    assert "writer" in result.stdout
-    assert "2026.4.1" in result.stdout
+    assert "ClawCU Instances" in result.stdout
+    assert service.calls == [
+        ("list_local_instance_summaries", (), {}),
+        ("list_instance_summaries", (), {"running_only": False}),
+    ]
+
+
+def test_provider_collect_command_accepts_source_selection(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "provider",
+            "collect",
+            "--instance",
+            "writer",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Collected provider:" in result.stdout
+    assert "Merged duplicate:" in result.stdout
+    assert "Skipped duplicate:" in result.stdout
+    assert "Collect summary: scanned 1 source(s), collected 1, merged 1, skipped 1." in result.stdout
+    assert service.calls[0] == (
+        "collect_providers",
+        (),
+        {
+            "all_instances": False,
+            "instance": "writer",
+            "path": None,
+        },
+    )
+
+
+def test_token_command_prints_instance_token(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["token", "writer"])
+
+    assert result.exit_code == 0
+    assert "token-writer" in result.stdout
+    assert service.calls[0] == ("token", (), {"name": "writer"})
+
+
+def test_provider_apply_command_supports_persist(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "provider",
+            "apply",
+            "openai",
+            "writer",
+            "--agent",
+            "chat",
+            "--persist",
+            "--primary",
+            "openai/gpt-5",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Applied provider:" in result.stdout
+    assert "Persistence:" in result.stdout
+    assert service.calls[0] == (
+        "apply_provider",
+        (),
+        {
+            "provider": "openai",
+            "instance": "writer",
+            "agent": "chat",
+            "persist": True,
+            "primary": "openai/gpt-5",
+            "fallbacks": None,
+        },
+    )
+
+
+def test_setenv_command_updates_instance_env(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        ["setenv", "writer", "OPENAI_API_KEY=sk-test", "OPENAI_BASE_URL=https://api.example.com/v1"],
+    )
+
+    assert result.exit_code == 0
+    assert "/tmp/writer.env" in result.stdout
+    assert "OPENAI_API_KEY" in result.stdout
+    assert "Changes will apply the next time the container is recreated." in result.stdout
+    assert "recreate writer" in result.stdout
+    assert service.calls[0] == (
+        "set_instance_env",
+        (),
+        {
+            "name": "writer",
+            "assignments": [
+                "OPENAI_API_KEY=sk-test",
+                "OPENAI_BASE_URL=https://api.example.com/v1",
+            ],
+        },
+    )
+
+
+def test_setenv_command_can_recreate_instance_immediately(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        ["setenv", "writer", "OPENAI_API_KEY=sk-test", "--apply"],
+    )
+
+    assert result.exit_code == 0
+    assert "/tmp/writer.env" in result.stdout
+    assert "Recreated instance:" in result.stdout
+    assert "Open Dashboard:" in result.stdout
+    assert service.calls[0] == (
+        "set_instance_env",
+        (),
+        {
+            "name": "writer",
+            "assignments": ["OPENAI_API_KEY=sk-test"],
+        },
+    )
+    assert service.calls[1] == ("recreate_instance", (), {"name": "writer"})
+
+
+def test_getenv_command_lists_instance_environment(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["getenv", "writer"])
+
+    assert result.exit_code == 0
+    assert "OPENAI_API_KEY=sk-test" in result.stdout
+    assert "OPENAI_BASE_URL=https://api.example.com/v1" in result.stdout
+    assert service.calls[0] == ("get_instance_env", (), {"name": "writer"})
+
+
+def test_unsetenv_command_removes_instance_environment(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["unsetenv", "writer", "OPENAI_API_KEY", "MISSING_KEY"])
+
+    assert result.exit_code == 0
+    assert "/tmp/writer.env" in result.stdout
+    assert "removed: OPENAI_API_KEY" in result.stdout
+    assert service.calls[0] == (
+        "unset_instance_env",
+        (),
+        {"name": "writer", "keys": ["OPENAI_API_KEY", "MISSING_KEY"]},
+    )
+
+
+def test_unsetenv_command_can_recreate_instance_immediately(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["unsetenv", "writer", "OPENAI_API_KEY", "--apply"])
+
+    assert result.exit_code == 0
+    assert "Recreated instance:" in result.stdout
+    assert "Open Dashboard:" in result.stdout
+    assert service.calls[0] == (
+        "unset_instance_env",
+        (),
+        {"name": "writer", "keys": ["OPENAI_API_KEY"]},
+    )
+    assert service.calls[1] == ("recreate_instance", (), {"name": "writer"})
+
+
+def test_provider_list_command_shows_providers(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["provider", "list"])
+
+    assert result.exit_code == 0
+    assert "openai-main" in result.stdout
+    assert "API_KEY" in result.stdout
+    assert "sk-tes" in result.stdout
+    assert service.calls[0] == ("list_providers", (), {})
+
+
+def test_provider_show_command_returns_json(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["provider", "show", "openai-main"])
+
+    assert result.exit_code == 0
+    assert '"auth_profiles"' in result.stdout
+    assert '"models"' in result.stdout
+    assert "sk-test" not in result.stdout
+    assert "*******" in result.stdout
+    assert service.calls[0] == ("show_provider", (), {"name": "openai-main"})
+
+
+def test_provider_apply_command_defaults_agent_to_main(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["provider", "apply", "openai-main", "writer"])
+
+    assert result.exit_code == 0
+    assert "Applied provider:" in result.stdout
+    assert "openai-main -> writer/main" in result.stdout
+    assert service.calls[0] == (
+        "apply_provider",
+        (),
+        {
+            "provider": "openai-main",
+            "instance": "writer",
+            "agent": "main",
+            "persist": False,
+            "primary": None,
+            "fallbacks": None,
+        },
+    )
+
+
+def test_provider_apply_command_accepts_explicit_agent(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["provider", "apply", "openai-main", "writer", "--agent", "chat"])
+
+    assert result.exit_code == 0
+    assert "openai-main -> writer/chat" in result.stdout
+    assert service.calls[0] == (
+        "apply_provider",
+        (),
+        {
+            "provider": "openai-main",
+            "instance": "writer",
+            "agent": "chat",
+            "persist": False,
+            "primary": None,
+            "fallbacks": None,
+        },
+    )
+
+
+def test_provider_apply_command_accepts_primary_and_fallbacks(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "provider",
+            "apply",
+            "openai-main",
+            "writer",
+            "--agent",
+            "chat",
+            "--primary",
+            "openai/gpt-5",
+            "--fallbacks",
+            "anthropic/claude-sonnet-4.5,openai/gpt-4.1",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Agent models:" in result.stdout
+    assert "primary=openai/gpt-5" in result.stdout
+    assert "fallbacks=anthropic/claude-sonnet-4.5" in result.stdout
+    assert "openai/gpt-4.1" in result.stdout
+    assert service.calls[0] == (
+        "apply_provider",
+        (),
+        {
+            "provider": "openai-main",
+            "instance": "writer",
+            "agent": "chat",
+            "persist": False,
+            "primary": "openai/gpt-5",
+            "fallbacks": ["anthropic/claude-sonnet-4.5", "openai/gpt-4.1"],
+        },
+    )
+
+
+def test_provider_remove_command_forwards_name(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["provider", "remove", "openai-main"])
+
+    assert result.exit_code == 0
+    assert "Removed provider:" in result.stdout
+    assert service.calls[0] == ("remove_provider", (), {"name": "openai-main"})
+
+
+def test_provider_models_list_command_forwards_arguments(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    list_result = runner.invoke(app, ["provider", "models", "list", "openai-main"])
+
+    assert list_result.exit_code == 0
+    assert "gpt-5" in list_result.stdout
+    assert service.calls[0] == ("list_provider_models", (), {"name": "openai-main"})
 
 
 def test_create_command_uses_defaults(monkeypatch) -> None:
@@ -208,7 +972,10 @@ def test_create_command_uses_defaults(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "Step 1/5: Validating options" in result.stdout
     assert "Step 5/5: Starting the Docker container" in result.stdout
-    assert service.calls[-1] == (
+    assert "(status: running)" in result.stdout
+    assert "Open Dashboard:" in result.stdout
+    assert "http://127.0.0.1:3000/#token=token-writer" in result.stdout
+    assert service.calls[0] == (
         "create_openclaw",
         (),
         {
@@ -219,6 +986,11 @@ def test_create_command_uses_defaults(monkeypatch) -> None:
             "cpu": "1",
             "memory": "2g",
         },
+    )
+    assert service.calls[-1] == (
+        "dashboard_url",
+        (),
+        {"name": "writer"},
     )
 
 
@@ -256,7 +1028,22 @@ def test_retry_command_retries_failed_instance(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "Step 1/4: Loading the failed instance record" in result.stdout
     assert "Retried instance:" in result.stdout
-    assert service.calls[-1] == ("retry_instance", (), {"name": "writer"})
+    assert "(status: running)" in result.stdout
+    assert "Open Dashboard:" in result.stdout
+    assert service.calls[-1] == ("dashboard_url", (), {"name": "writer"})
+
+
+def test_recreate_command_recreates_instance(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["recreate", "writer"])
+
+    assert result.exit_code == 0
+    assert "Recreated instance:" in result.stdout
+    assert "(status: running)" in result.stdout
+    assert "Open Dashboard:" in result.stdout
+    assert service.calls[-1] == ("dashboard_url", (), {"name": "writer"})
 
 
 def test_create_command_accepts_explicit_resource_options(monkeypatch) -> None:
@@ -284,18 +1071,56 @@ def test_create_command_accepts_explicit_resource_options(monkeypatch) -> None:
     )
 
     assert result.exit_code == 0
-    assert service.calls[-1][2]["cpu"] == "2"
-    assert service.calls[-1][2]["memory"] == "4g"
+    assert service.calls[0][2]["cpu"] == "2"
+    assert service.calls[0][2]["memory"] == "4g"
 
 
 def test_list_running_option_is_forwarded(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
 
-    result = runner.invoke(app, ["list", "--running"])
+    result = runner.invoke(app, ["list", "--managed", "--running"])
 
     assert result.exit_code == 0
-    assert service.calls[-1] == ("list_instances", (), {"running_only": True})
+    assert "ClawCU Instances" in result.stdout
+    assert service.calls[-1] == ("list_instance_summaries", (), {"running_only": True})
+
+
+def test_list_agents_option_shows_agent_rows(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["list", "--agents"])
+
+    assert result.exit_code == 0
+    assert "ClawCU Agents" in result.stdout
+    assert "main" in result.stdout
+    assert service.calls == [
+        ("list_local_agent_summaries", (), {}),
+        ("list_agent_summaries", (), {"running_only": False}),
+    ]
+
+
+def test_list_agents_managed_option_shows_managed_agent_rows(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["list", "--managed", "--agents"])
+
+    assert result.exit_code == 0
+    assert "ClawCU Agents" in result.stdout
+    assert "chat" in result.stdout
+    assert service.calls[-1] == ("list_agent_summaries", (), {"running_only": False})
+
+
+def test_list_local_option_filters_to_local(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["list", "--local"])
+
+    assert result.exit_code == 0
+    assert service.calls == [("list_local_instance_summaries", (), {})]
 
 
 def test_inspect_command_accepts_instance_name(monkeypatch) -> None:
@@ -307,6 +1132,58 @@ def test_inspect_command_accepts_instance_name(monkeypatch) -> None:
     assert result.exit_code == 0
     assert '"Name": "writer"' in result.stdout
     assert service.calls[-1] == ("inspect_instance", (), {"name": "writer"})
+
+
+def test_approve_command_uses_latest_request_by_default(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["approve", "writer"])
+
+    assert result.exit_code == 0
+    assert "Approving pairing request" in result.stdout
+    assert "Approved pairing:" in result.stdout
+    assert "Open Dashboard:" in result.stdout
+    assert service.calls[0] == ("approve_pairing", (), {"name": "writer", "request_id": None})
+    assert service.calls[-1] == ("dashboard_url", (), {"name": "writer"})
+
+
+def test_approve_command_accepts_explicit_request_id(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["approve", "writer", "req-123"])
+
+    assert result.exit_code == 0
+    assert service.calls[0] == ("approve_pairing", (), {"name": "writer", "request_id": "req-123"})
+
+
+def test_config_command_passes_through_extra_args(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["config", "writer", "--section", "models"])
+
+    assert result.exit_code == 0
+    assert service.calls[0] == (
+        "configure_instance",
+        (),
+        {"name": "writer", "extra_args": ["--section", "models"]},
+    )
+
+
+def test_exec_command_passes_through_container_command(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["exec", "writer", "openclaw", "config"])
+
+    assert result.exit_code == 0
+    assert service.calls[0] == (
+        "exec_instance",
+        (),
+        {"name": "writer", "command": ["openclaw", "config"]},
+    )
 
 
 def test_lifecycle_commands_accept_instance_name(monkeypatch) -> None:
@@ -321,9 +1198,12 @@ def test_lifecycle_commands_accept_instance_name(monkeypatch) -> None:
     ]
 
     for argv, expected_call in cases:
+        service.calls.clear()
         result = runner.invoke(app, argv)
         assert result.exit_code == 0
-        assert service.calls[-1] == (expected_call, (), {"name": "writer"})
+        assert service.calls[0] == (expected_call, (), {"name": "writer"})
+        if expected_call in {"start_instance", "restart_instance", "rollback_instance"}:
+            assert service.calls[-1] == ("dashboard_url", (), {"name": "writer"})
 
 
 def test_upgrade_command_accepts_version_option(monkeypatch) -> None:
@@ -333,11 +1213,12 @@ def test_upgrade_command_accepts_version_option(monkeypatch) -> None:
     result = runner.invoke(app, ["upgrade", "writer", "--version", "2026.4.2"])
 
     assert result.exit_code == 0
-    assert service.calls[-1] == (
+    assert service.calls[-2] == (
         "upgrade_instance",
         (),
         {"name": "writer", "version": "2026.4.2"},
     )
+    assert service.calls[-1] == ("dashboard_url", (), {"name": "writer"})
 
 
 def test_clone_command_accepts_required_options(monkeypatch) -> None:
@@ -359,7 +1240,9 @@ def test_clone_command_accepts_required_options(monkeypatch) -> None:
     )
 
     assert result.exit_code == 0
-    assert service.calls[-1] == (
+    assert "Step 1/5: Validating the source instance" in result.stdout
+    assert "Step 5/5: Starting the cloned Docker container" in result.stdout
+    assert service.calls[-2] == (
         "clone_instance",
         (),
         {
@@ -369,6 +1252,7 @@ def test_clone_command_accepts_required_options(monkeypatch) -> None:
             "port": 3001,
         },
     )
+    assert service.calls[-1] == ("dashboard_url", (), {"name": "writer-exp"})
 
 
 def test_logs_follow_option_is_forwarded(monkeypatch) -> None:

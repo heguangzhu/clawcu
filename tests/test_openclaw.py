@@ -185,6 +185,7 @@ def test_run_container_binds_host_port_to_internal_gateway_port() -> None:
         port=18809,
         cpu="1",
         memory="2g",
+        auth_mode="token",
         status="creating",
         created_at="2026-04-11T00:00:00+00:00",
         updated_at="2026-04-11T00:00:00+00:00",
@@ -195,4 +196,32 @@ def test_run_container_binds_host_port_to_internal_gateway_port() -> None:
 
     command, _, _ = runner.calls[0]
     assert f"18809:{DockerManager.INTERNAL_GATEWAY_PORT}" in command
+    assert "HOST=0.0.0.0" in command
     assert "PORT=3000" not in command
+
+
+def test_exec_in_container_interactive_omits_tty_flags_without_terminal(monkeypatch) -> None:
+    runner = RecordingRunner()
+    manager = DockerManager(runner=runner)
+    monkeypatch.setattr("clawcu.docker.sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("clawcu.docker.sys.stdout.isatty", lambda: False)
+    monkeypatch.setattr("clawcu.docker.sys.stderr.isatty", lambda: False)
+
+    manager.exec_in_container_interactive("clawcu-openclaw-writer", ["pwd"])
+
+    command, _, options = runner.calls[0]
+    assert command == ["docker", "exec", "clawcu-openclaw-writer", "pwd"]
+    assert options["capture_output"] is False
+
+
+def test_exec_in_container_interactive_uses_tty_flags_with_terminal(monkeypatch) -> None:
+    runner = RecordingRunner()
+    manager = DockerManager(runner=runner)
+    monkeypatch.setattr("clawcu.docker.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("clawcu.docker.sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("clawcu.docker.sys.stderr.isatty", lambda: True)
+
+    manager.exec_in_container_interactive("clawcu-openclaw-writer", ["pwd"])
+
+    command, _, _ = runner.calls[0]
+    assert command == ["docker", "exec", "-i", "-t", "clawcu-openclaw-writer", "pwd"]
