@@ -2115,7 +2115,20 @@ def test_upgrade_rolls_back_when_new_container_fails(temp_clawcu_home, tmp_path)
         cpu="1",
         memory="2g",
     )
-    docker.fail_next_run = True
+    store.instance_env_path("writer").write_text("OPENAI_API_KEY=stable\n", encoding="utf-8")
+
+    original_run_container = docker.run_container
+    failed_once = False
+
+    def fail_upgrade_run(record, *, env_file=None) -> None:
+        nonlocal failed_once
+        if not failed_once:
+            failed_once = True
+            store.instance_env_path("writer").write_text("OPENAI_API_KEY=changed\n", encoding="utf-8")
+            raise RuntimeError("boom")
+        original_run_container(record, env_file=env_file)
+
+    docker.run_container = fail_upgrade_run  # type: ignore[method-assign]
 
     with pytest.raises(RuntimeError):
         service.upgrade_instance("writer", version="2026.4.2")
@@ -2124,6 +2137,37 @@ def test_upgrade_rolls_back_when_new_container_fails(temp_clawcu_home, tmp_path)
     assert record.version == "2026.4.1"
     assert record.status == "running"
     assert record.history[-1]["action"] == "upgrade_failed"
+    assert store.instance_env_path("writer").read_text(encoding="utf-8") == "OPENAI_API_KEY=stable\n"
+
+
+def test_rollback_restores_snapshot_data_and_instance_env(temp_clawcu_home, tmp_path) -> None:
+    service, _, _, store = make_service(temp_clawcu_home)
+    datadir = tmp_path / "writer"
+    datadir.mkdir()
+    (datadir / "state.txt").write_text("v1", encoding="utf-8")
+
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+    env_path = store.instance_env_path("writer")
+    env_path.write_text("OPENAI_API_KEY=v1\n", encoding="utf-8")
+
+    upgraded = service.upgrade_instance("writer", version="2026.4.2")
+    assert upgraded.version == "2026.4.2"
+
+    (datadir / "state.txt").write_text("v2", encoding="utf-8")
+    env_path.write_text("OPENAI_API_KEY=v2\n", encoding="utf-8")
+
+    rolled = service.rollback_instance("writer")
+
+    assert rolled.version == "2026.4.1"
+    assert (datadir / "state.txt").read_text(encoding="utf-8") == "v1"
+    assert env_path.read_text(encoding="utf-8") == "OPENAI_API_KEY=v1\n"
 
 
 def test_clone_instance_copies_data_and_starts_new_instance(temp_clawcu_home, tmp_path) -> None:

@@ -50,3 +50,21 @@ def test_snapshot_restore_replaces_directory(temp_clawcu_home, tmp_path) -> None
     store.restore_snapshot(snapshot, datadir)
 
     assert (datadir / "state.txt").read_text(encoding="utf-8") == "before"
+
+
+def test_snapshot_restore_replaces_directory_and_instance_env(temp_clawcu_home, tmp_path) -> None:
+    store = StateStore(get_paths())
+    datadir = tmp_path / "writer-data"
+    datadir.mkdir()
+    (datadir / "state.txt").write_text("before", encoding="utf-8")
+    env_path = store.instance_env_path("writer")
+    env_path.write_text("OPENAI_API_KEY=before\n", encoding="utf-8")
+
+    snapshot = store.create_snapshot("writer", datadir, "upgrade-test", env_path=env_path)
+    (datadir / "state.txt").write_text("after", encoding="utf-8")
+    env_path.write_text("OPENAI_API_KEY=after\n", encoding="utf-8")
+
+    store.restore_snapshot(snapshot, datadir, env_path=env_path)
+
+    assert (datadir / "state.txt").read_text(encoding="utf-8") == "before"
+    assert env_path.read_text(encoding="utf-8") == "OPENAI_API_KEY=before\n"

@@ -807,10 +807,12 @@ class ClawCUService:
         if target_version == record.version:
             raise ValueError(f"Instance '{name}' is already on version {target_version}.")
 
+        env_path = self.store.instance_env_path(record.name)
         snapshot_dir = self.store.create_snapshot(
             record.name,
             Path(record.datadir),
             f"upgrade-to-{target_version}",
+            env_path=env_path,
         )
         self.store.append_log(
             f"upgrade instance name={record.name} from={record.version} to={target_version} snapshot={snapshot_dir}"
@@ -851,7 +853,11 @@ class ClawCUService:
             try:
                 self.docker.remove_container(previous.container_name, missing_ok=True)
                 if snapshot_dir.exists():
-                    self.store.restore_snapshot(snapshot_dir, Path(previous.datadir))
+                    self.store.restore_snapshot(
+                        snapshot_dir,
+                        Path(previous.datadir),
+                        env_path=env_path,
+                    )
                 self._run_container(previous)
             except Exception as nested_exc:
                 rollback_error = nested_exc
@@ -901,15 +907,21 @@ class ClawCUService:
             f"rollback instance name={record.name} from={record.version} to={previous_version}"
         )
         self.openclaw.ensure_image(previous_version)
+        env_path = self.store.instance_env_path(record.name)
         current_snapshot = self.store.create_snapshot(
             record.name,
             Path(record.datadir),
             f"rollback-from-{record.version}",
+            env_path=env_path,
         )
 
         self.docker.remove_container(record.container_name, missing_ok=True)
         if restore_from and Path(restore_from).exists():
-            self.store.restore_snapshot(Path(restore_from), Path(record.datadir))
+            self.store.restore_snapshot(
+                Path(restore_from),
+                Path(record.datadir),
+                env_path=env_path,
+            )
 
         rolled = updated_record(
             record,

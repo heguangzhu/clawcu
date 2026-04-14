@@ -96,8 +96,15 @@ class StateStore:
         if provider_dir.exists():
             shutil.rmtree(provider_dir)
 
-    def create_snapshot(self, name: str, datadir: Path, label: str) -> Path:
-        return self.create_snapshot_bundle(name, datadir, label)
+    def create_snapshot(
+        self,
+        name: str,
+        datadir: Path,
+        label: str,
+        *,
+        env_path: Path | None = None,
+    ) -> Path:
+        return self.create_snapshot_bundle(name, datadir, label, env_path=env_path)
 
     def create_snapshot_bundle(
         self,
@@ -122,8 +129,14 @@ class StateStore:
             )
         return snapshot_dir
 
-    def restore_snapshot(self, snapshot_dir: Path, datadir: Path) -> None:
-        self.restore_snapshot_bundle(snapshot_dir, datadir)
+    def restore_snapshot(
+        self,
+        snapshot_dir: Path,
+        datadir: Path,
+        *,
+        env_path: Path | None = None,
+    ) -> None:
+        self.restore_snapshot_bundle(snapshot_dir, datadir, env_path=env_path)
 
     def restore_snapshot_bundle(
         self,
