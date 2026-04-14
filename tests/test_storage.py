@@ -19,6 +19,7 @@ def make_record(datadir: Path) -> InstanceRecord:
         port=3000,
         cpu="1",
         memory="2g",
+        auth_mode="token",
         status="running",
         created_at="2026-04-11T00:00:00+00:00",
         updated_at="2026-04-11T00:00:00+00:00",

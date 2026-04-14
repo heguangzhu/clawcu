@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Callable
 
@@ -59,9 +60,14 @@ class DockerManager:
         if not inspection:
             return "missing"
         state = inspection.get("State", {})
-        return state.get("Status", "unknown")
+        status = state.get("Status", "unknown")
+        health = state.get("Health", {})
+        health_status = health.get("Status")
+        if status == "running" and health_status in {"starting", "unhealthy"}:
+            return health_status
+        return status
 
-    def run_container(self, record: InstanceRecord) -> None:
+    def run_container(self, record: InstanceRecord, *, env_file: Path | None = None) -> None:
         command = [
             "docker",
             "run",
@@ -78,15 +84,37 @@ class DockerManager:
             f"{record.port}:{self.INTERNAL_GATEWAY_PORT}",
             "-v",
             f"{record.datadir}:/home/node/.openclaw",
+            "-e",
+            "HOST=0.0.0.0",
             "--label",
             "com.clawcu.managed=true",
             "--label",
             f"com.clawcu.service={record.service}",
             "--label",
             f"com.clawcu.instance={record.name}",
-            record.image_tag,
         ]
+        if env_file is not None:
+            command.extend(["--env-file", str(env_file)])
+        command.append(record.image_tag)
         self.runner(command)
+
+    def exec_in_container(
+        self, container_name: str, command: list[str], **kwargs
+    ) -> object:
+        return self.runner(
+            ["docker", "exec", container_name] + command, **kwargs
+        )
+
+    def exec_in_container_interactive(self, container_name: str, command: list[str]) -> object:
+        docker_command = ["docker", "exec"]
+        if sys.stdin.isatty():
+            docker_command.append("-i")
+        if sys.stdout.isatty() and sys.stderr.isatty():
+            docker_command.append("-t")
+        return self.runner(
+            docker_command + [container_name] + command,
+            capture_output=False,
+        )
 
     def start_container(self, container_name: str) -> None:
         self.runner(["docker", "start", container_name])

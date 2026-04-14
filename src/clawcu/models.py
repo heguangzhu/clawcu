@@ -16,6 +16,7 @@ class InstanceSpec:
     port: int
     cpu: str
     memory: str
+    auth_mode: str
 
 
 @dataclass
@@ -34,4 +35,27 @@ class InstanceRecord(InstanceSpec):
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "InstanceRecord":
-        return cls(**data)
+        payload = dict(data)
+        payload.setdefault("auth_mode", "token")
+        return cls(**payload)
+
+
+@dataclass
+class ProviderRecord:
+    name: str
+    api_style: str
+    api_key: str
+    endpoint: str | None
+    models: list[str]
+    created_at: str
+    updated_at: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ProviderRecord":
+        payload = dict(data)
+        payload.setdefault("endpoint", None)
+        payload.setdefault("models", [])
+        return cls(**payload)
