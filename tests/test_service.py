@@ -1003,6 +1003,71 @@ def test_list_local_summaries_read_from_home_openclaw(monkeypatch, tmp_path) -> 
     ]
 
 
+def test_list_local_summaries_read_from_home_hermes(monkeypatch, tmp_path) -> None:
+    home = tmp_path / "home"
+    hermes_home = home / ".hermes"
+    hermes_home.mkdir(parents=True)
+    (hermes_home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: openrouter\n"
+        "  default: anthropic/claude-sonnet-4.6\n"
+        "fallback_model:\n"
+        "  provider: openrouter\n"
+        "  model: openai/gpt-5\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(Path, "home", lambda: home)
+    service, _, _, _ = make_service(tmp_path / ".clawcu")
+    service._local_hermes_home = lambda: hermes_home  # type: ignore[method-assign]
+
+    def fake_runner(command, *, cwd=None, capture_output=True, check=True, stream_output=False):
+        assert command == ["hermes", "version"]
+        return type(
+            "Completed",
+            (),
+            {
+                "stdout": "Hermes Agent v0.8.0 (2026.4.8)\nProject: /tmp/hermes-agent\n",
+                "stderr": "",
+                "returncode": 0,
+            },
+        )()
+
+    service.runner = fake_runner
+
+    instance_summaries = service.list_local_instance_summaries()
+    agent_summaries = service.list_local_agent_summaries()
+
+    assert instance_summaries == [
+        {
+            "source": "local",
+            "name": "local-hermes",
+            "home": str(hermes_home),
+            "version": "v0.8.0",
+            "port": 8642,
+            "status": "local",
+            "providers": "openrouter",
+            "models": "anthropic/claude-sonnet-4.6, openrouter/openai/gpt-5",
+            "service": "hermes",
+        }
+    ]
+    assert agent_summaries == [
+        {
+            "source": "local",
+            "instance": "local-hermes",
+            "home": str(hermes_home),
+            "service": "hermes",
+            "version": "v0.8.0",
+            "port": 8642,
+            "status": "local",
+            "agent": "main",
+            "primary": "anthropic/claude-sonnet-4.6",
+            "fallbacks": "openrouter/openai/gpt-5",
+            "providers": "openrouter",
+            "models": "anthropic/claude-sonnet-4.6, openrouter/openai/gpt-5",
+        }
+    ]
+
+
 def test_list_agent_summaries_fall_back_to_managed_agent_directories(temp_clawcu_home, tmp_path, monkeypatch) -> None:
     service, _, _, store = make_service(temp_clawcu_home)
     datadir = tmp_path / "writer"

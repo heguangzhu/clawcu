@@ -264,11 +264,12 @@ class HermesAdapter(ServiceAdapter):
         root = service._local_hermes_home()
         if not (root / "config.yaml").exists():
             return []
+        version = self._local_version(service)
         record = build_instance_record(
             InstanceSpec(
                 service=self.service_name,
                 name="local-hermes",
-                version="-",
+                version=version,
                 datadir=str(root),
                 port=self.default_port,
                 cpu="1",
@@ -284,7 +285,7 @@ class HermesAdapter(ServiceAdapter):
                 "source": "local",
                 "name": "local-hermes",
                 "home": str(root),
-                "version": "-",
+                "version": version,
                 "port": self.default_port,
                 "status": "local",
                 "providers": summary["providers"],
@@ -297,11 +298,12 @@ class HermesAdapter(ServiceAdapter):
         root = service._local_hermes_home()
         if not (root / "config.yaml").exists():
             return []
+        version = self._local_version(service)
         record = build_instance_record(
             InstanceSpec(
                 service=self.service_name,
                 name="local-hermes",
-                version="-",
+                version=version,
                 datadir=str(root),
                 port=self.default_port,
                 cpu="1",
@@ -318,7 +320,7 @@ class HermesAdapter(ServiceAdapter):
                 "instance": "local-hermes",
                 "home": str(root),
                 "service": self.service_name,
-                "version": "-",
+                "version": version,
                 "port": self.default_port,
                 "status": "local",
                 **summary,
@@ -439,3 +441,17 @@ class HermesAdapter(ServiceAdapter):
             return {}
         data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
         return data if isinstance(data, dict) else {}
+
+    def _local_version(self, service) -> str:
+        try:
+            result = service.runner(["hermes", "version"])
+        except Exception:
+            return "-"
+        stdout = str(getattr(result, "stdout", "") or "").strip()
+        if not stdout:
+            return "-"
+        first_line = stdout.splitlines()[0].strip()
+        match = re.search(r"Hermes Agent\s+([^\s]+)", first_line)
+        if match:
+            return match.group(1)
+        return first_line or "-"
