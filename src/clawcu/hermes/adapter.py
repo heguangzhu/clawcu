@@ -451,7 +451,7 @@ class HermesAdapter(ServiceAdapter):
         if not stdout:
             return "-"
         first_line = stdout.splitlines()[0].strip()
-        match = re.search(r"Hermes Agent\s+([^\s]+)", first_line)
+        match = re.search(r"Hermes Agent\s+(.+)$", first_line)
         if match:
-            return match.group(1)
+            return match.group(1).strip()
         return first_line or "-"
