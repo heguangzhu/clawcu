@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from clawcu.core.models import ContainerRunSpec
 from clawcu.docker import DockerManager
 from clawcu.models import InstanceRecord
 from clawcu.openclaw import OpenClawManager
@@ -133,10 +134,17 @@ def test_run_container_binds_host_port_to_internal_gateway_port() -> None:
         history=[],
     )
 
-    manager.run_container(record)
+    manager.run_container(
+        record,
+        ContainerRunSpec(
+            internal_port=18789,
+            mount_target="/home/node/.openclaw",
+            extra_env={"HOST": "0.0.0.0"},
+        ),
+    )
 
     command, _, _ = runner.calls[0]
-    assert f"18809:{DockerManager.INTERNAL_GATEWAY_PORT}" in command
+    assert "18809:18789" in command
     assert "HOST=0.0.0.0" in command
     assert "PORT=3000" not in command
 

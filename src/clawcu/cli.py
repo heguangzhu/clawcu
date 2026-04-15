@@ -16,7 +16,7 @@ from clawcu import __version__
 from clawcu.service import ClawCUService
 
 app = typer.Typer(
-    help="ClawCU manages local OpenClaw instances with versioned Docker workflows.",
+    help="ClawCU manages local multi-agent instances with versioned Docker workflows.",
     no_args_is_help=True,
     rich_markup_mode="markdown",
     add_completion=False,
@@ -32,7 +32,7 @@ create_app = typer.Typer(
     add_completion=False,
 )
 provider_app = typer.Typer(
-    help="Collect and reuse provider assets from configured OpenClaw instances.",
+    help="Collect and reuse model configuration assets from managed instances and local homes.",
     add_completion=False,
 )
 provider_models_app = typer.Typer(
@@ -97,6 +97,21 @@ def _mask_secret(value: str) -> str:
 
 
 def _redact_provider_payload(value):
+    if isinstance(value, str):
+        if "\n" in value and any(marker in value for marker in ("_KEY=", "_TOKEN=", "_SECRET=")):
+            redacted_lines: list[str] = []
+            for raw_line in value.splitlines():
+                if "=" not in raw_line:
+                    redacted_lines.append(raw_line)
+                    continue
+                key, item = raw_line.split("=", 1)
+                upper_key = key.strip().upper()
+                if any(token in upper_key for token in ("KEY", "TOKEN", "SECRET")):
+                    redacted_lines.append(f"{key}={_mask_secret(item)}")
+                else:
+                    redacted_lines.append(raw_line)
+            return "\n".join(redacted_lines)
+        return value
     if isinstance(value, dict):
         redacted: dict = {}
         for key, item in value.items():
@@ -115,28 +130,32 @@ def _print_access_url(service: ClawCUService, name: str) -> None:
         url = service.dashboard_url(name)
     except Exception:
         return
-    console.print(f"[blue]Open Dashboard:[/blue] {url}")
+    console.print(f"[blue]Open URL:[/blue] {url}")
 
 
 def _print_instance_table(records: list[dict]) -> None:
     table = Table(title="ClawCU Instances")
     table.add_column("SOURCE", no_wrap=True)
+    table.add_column("SERVICE", no_wrap=True)
     table.add_column("NAME", no_wrap=True)
     table.add_column("HOME", overflow="fold")
     table.add_column("VERSION", no_wrap=True)
     table.add_column("PORT", no_wrap=True)
     table.add_column("STATUS", no_wrap=True)
+    table.add_column("ACCESS", overflow="fold")
     table.add_column("PROVIDERS", overflow="fold")
     table.add_column("MODELS", overflow="fold")
     table.add_column("SNAPSHOT", overflow="fold")
     for record in records:
         table.add_row(
             record.get("source", "-"),
+            record.get("service", "-"),
             record["name"],
             record.get("home", "-"),
             record["version"],
             str(record["port"]),
             record["status"],
+            record.get("access_url", "-"),
             record.get("providers", "-"),
             record.get("models", "-"),
             record.get("snapshot", "-"),
@@ -147,6 +166,7 @@ def _print_instance_table(records: list[dict]) -> None:
 def _print_agent_table(records: list[dict]) -> None:
     table = Table(title="ClawCU Agents")
     table.add_column("SOURCE", no_wrap=True)
+    table.add_column("SERVICE", no_wrap=True)
     table.add_column("INSTANCE", no_wrap=True)
     table.add_column("HOME", overflow="fold")
     table.add_column("AGENT", no_wrap=True)
@@ -155,6 +175,7 @@ def _print_agent_table(records: list[dict]) -> None:
     for record in records:
         table.add_row(
             record.get("source", "-"),
+            record.get("service", "-"),
             record["instance"],
             record.get("home", "-"),
             record["agent"],
@@ -166,10 +187,11 @@ def _print_agent_table(records: list[dict]) -> None:
 
 def _print_provider_table(records: list[dict]) -> None:
     table = Table(title="ClawCU Providers")
-    for column in ("NAME", "PROVIDER", "API_STYLE", "API_KEY", "ENDPOINT", "MODELS"):
+    for column in ("SERVICE", "NAME", "PROVIDER", "API_STYLE", "API_KEY", "ENDPOINT", "MODELS"):
         table.add_column(column)
     for record in records:
         table.add_row(
+            record.get("service", "-"),
             record["name"],
             record.get("provider") or "-",
             record["api_style"],
@@ -292,7 +314,7 @@ def root_callback(
         raise typer.Exit()
 
 
-@app.command("setup", help="Check local prerequisites and configure the default ClawCU home and OpenClaw image repo.")
+@app.command("setup", help="Check local prerequisites and configure the default ClawCU home and service sources.")
 def setup_environment(
     completion: Annotated[
         bool,
@@ -318,6 +340,12 @@ def setup_environment(
             ).strip()
             saved_repo = service.set_openclaw_image_repo(configured_repo)
             console.print(f"[green]Saved OpenClaw image repo:[/green] {saved_repo}")
+            configured_hermes_repo = typer.prompt(
+                "Hermes source repo",
+                default=service.get_hermes_source_repo(),
+            ).strip()
+            saved_hermes_repo = service.set_hermes_source_repo(configured_hermes_repo)
+            console.print(f"[green]Saved Hermes source repo:[/green] {saved_hermes_repo}")
         console.print("[green]ClawCU setup check passed.[/green] Docker and the ClawCU runtime layout are ready.")
         return
     raise typer.Exit(code=1)
@@ -364,6 +392,23 @@ def pull_openclaw(
     console.print(f"[green]Built image:[/green] {image_tag}")
 
 
+@pull_app.command("hermes")
+def pull_hermes(
+    ctx: typer.Context,
+    version: Annotated[str | None, typer.Option("--version", help="Hermes git ref to pull and build.")] = None,
+) -> None:
+    if not version:
+        _show_help_and_exit(ctx)
+    service = get_service()
+    if hasattr(service, "set_reporter"):
+        service.set_reporter(_print_progress)
+    try:
+        image_tag = service.pull_hermes(version)
+    except Exception as exc:
+        _exit_with_error(str(exc))
+    console.print(f"[green]Built image:[/green] {image_tag}")
+
+
 @create_app.command("openclaw")
 def create_openclaw(
     ctx: typer.Context,
@@ -405,12 +450,53 @@ def create_openclaw(
     _print_access_url(service, record.name)
 
 
-@provider_app.command("collect", help="Collect provider assets from managed instances or an OpenClaw data directory.")
+@create_app.command("hermes")
+def create_hermes(
+    ctx: typer.Context,
+    name: Annotated[str | None, typer.Option("--name", help="Managed instance name.")] = None,
+    version: Annotated[str | None, typer.Option("--version", help="Hermes git ref to run.")] = None,
+    datadir: Annotated[
+        str | None,
+        typer.Option("--datadir", help="Host data directory. Defaults to ~/.clawcu/{name}."),
+    ] = None,
+    port: Annotated[
+        int | None,
+        typer.Option(
+            "--port",
+            help="Host port exposed for the instance. Defaults to 8642, then probes 8652, 8662, ... until free.",
+        ),
+    ] = None,
+    cpu: Annotated[str, typer.Option("--cpu", help="Docker CPU limit.")] = "1",
+    memory: Annotated[str, typer.Option("--memory", help="Docker memory limit.")] = "2g",
+) -> None:
+    if not name or not version:
+        _show_help_and_exit(ctx)
+    service = get_service()
+    if hasattr(service, "set_reporter"):
+        service.set_reporter(_print_progress)
+    try:
+        record = service.create_hermes(
+            name=name,
+            version=version,
+            datadir=datadir,
+            port=port,
+            cpu=cpu,
+            memory=memory,
+        )
+    except Exception as exc:
+        _exit_with_error(str(exc))
+    console.print(
+        f"[green]Created instance:[/green] {record.name} ({record.version}) on port {record.port} (status: {record.status})"
+    )
+    _print_access_url(service, record.name)
+
+
+@provider_app.command("collect", help="Collect model configuration assets from managed instances or local agent homes.")
 def collect_providers(
     ctx: typer.Context,
     all_instances: Annotated[
         bool,
-        typer.Option("--all", help="Collect providers from all ClawCU-managed instances and local ~/.openclaw."),
+        typer.Option("--all", help="Collect model configs from all ClawCU-managed instances plus local ~/.openclaw and ~/.hermes when present."),
     ] = False,
     instance: Annotated[
         str | None,
@@ -418,7 +504,7 @@ def collect_providers(
     ] = None,
     path: Annotated[
         str | None,
-        typer.Option("--path", help="Collect providers from an external OpenClaw data directory."),
+        typer.Option("--path", help="Collect model configs from an external OpenClaw or Hermes home directory."),
     ] = None,
 ) -> None:
     if not all_instances and not instance and not path:
@@ -518,9 +604,14 @@ def apply_provider(
         f"[green]Applied provider:[/green] {result['provider']} -> {result['instance']}/{result['agent']}"
     )
     if persist:
-        console.print(
-            f"Persistence: root config now uses [blue]${{{result.get('env_key', '-')}}}[/blue] and the secret was stored in the instance env file."
-        )
+        if result.get("env_key") and result.get("env_key") != "-":
+            console.print(
+                f"Persistence: config now uses [blue]${{{result.get('env_key', '-')}}}[/blue] and the secret was stored in the instance env file."
+            )
+        elif result.get("env_path"):
+            console.print(
+                f"Persistence: config and env were updated in [blue]{result['env_path']}[/blue]."
+            )
     if primary or fallback_list is not None:
         console.print(
             "Agent models: "
@@ -749,7 +840,7 @@ def approve_pairing(
 
 @app.command(
     "config",
-    help="Run `openclaw configure` inside a managed instance.",
+    help="Run the native configuration flow inside a managed instance.",
     add_help_option=False,
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
 )
@@ -764,7 +855,7 @@ def configure_instance(
     if help_flag or not name:
         _show_passthrough_help(
             "config",
-            "This command runs `openclaw configure` inside the managed instance container.",
+            "This command runs the service-native configuration flow inside the managed instance container.",
             [
                 "clawcu config <instance>",
                 "clawcu config <instance> -- --section model",
@@ -818,7 +909,7 @@ def exec_instance(
 
 @app.command(
     "tui",
-    help="Launch OpenClaw TUI for a managed instance and auto-approve the latest pending pairing request when present.",
+    help="Launch the native interactive TUI or chat flow for a managed instance.",
 )
 def tui_instance(
     ctx: typer.Context,
@@ -927,12 +1018,12 @@ def recreate_instance(
 
 @app.command(
     "upgrade",
-    help="Upgrade an instance to a newer OpenClaw version with a safety snapshot of its data directory and env file.",
+    help="Upgrade an instance to a newer service version with a safety snapshot of its data directory and env file.",
 )
 def upgrade_instance(
     ctx: typer.Context,
     name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
-    version: Annotated[str | None, typer.Option("--version", help="Target OpenClaw version.")] = None,
+    version: Annotated[str | None, typer.Option("--version", help="Target service version or git ref.")] = None,
 ) -> None:
     if not name or not version:
         _show_help_and_exit(ctx)

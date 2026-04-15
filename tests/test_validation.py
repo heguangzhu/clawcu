@@ -2,12 +2,34 @@ from __future__ import annotations
 
 import pytest
 
-from clawcu.validation import normalize_version, validate_cpu, validate_memory, validate_name, validate_port
+from clawcu.validation import (
+    container_name_for_service,
+    image_tag_for_service,
+    normalize_ref,
+    normalize_service_version,
+    normalize_version,
+    validate_cpu,
+    validate_memory,
+    validate_name,
+    validate_port,
+)
 
 
 def test_normalize_version_strips_v_prefix() -> None:
     assert normalize_version("v2026.4.1") == "2026.4.1"
     assert normalize_version("2026.4.1") == "2026.4.1"
+
+
+def test_normalize_ref_preserves_non_version_git_ref() -> None:
+    assert normalize_ref("v0.9.0") == "v0.9.0"
+    assert normalize_service_version("hermes", "main") == "main"
+
+
+def test_service_aware_image_and_container_names() -> None:
+    assert image_tag_for_service("openclaw", "2026.4.1") == "clawcu/openclaw:2026.4.1"
+    assert image_tag_for_service("hermes", "v0.9.0") == "clawcu/hermes:v0.9.0"
+    assert container_name_for_service("openclaw", "writer") == "clawcu-openclaw-writer"
+    assert container_name_for_service("hermes", "writer") == "clawcu-hermes-writer"
 
 
 @pytest.mark.parametrize("name", ["writer", "agent-1", "demo.alpha"])

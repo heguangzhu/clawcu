@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "clawcu"
-version = "0.1.0"
-description = "ClawCU: a local OpenClaw lifecycle manager"
+version = "0.2.0"
+description = "ClawCU: a local multi-agent lifecycle manager"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

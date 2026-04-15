@@ -2,236 +2,14 @@ from __future__ import annotations
 
 import json
 import urllib.request
-from pathlib import Path
 
 import pytest
 
 from clawcu.models import InstanceRecord
-from clawcu.paths import bootstrap_config_path, get_paths
+from clawcu.paths import bootstrap_config_path
 from clawcu.openclaw import DEFAULT_OPENCLAW_IMAGE_REPO, DEFAULT_OPENCLAW_IMAGE_REPO_CN
-from clawcu.service import ClawCUService
-from clawcu.storage import StateStore
 from clawcu.subprocess_utils import CommandError
-
-
-class FakeDockerManager:
-    def __init__(self) -> None:
-        self.commands: list[tuple[str, str]] = []
-        self.exec_commands: list[tuple[str, list[str], dict]] = []
-        self.interactive_exec_commands: list[tuple[str, list[str], dict]] = []
-        self.status_map: dict[str, str] = {}
-        self.health_map: dict[str, str] = {}
-        self.status_sequences: dict[str, list[str]] = {}
-        self.startup_sequences: dict[str, list[str]] = {}
-        self.run_env_files: list[str | None] = []
-        self.fail_next_run = False
-        self.fail_next_start = False
-        self.run_errors: list[Exception] = []
-
-    def image_exists(self, image_tag: str) -> bool:
-        return True
-
-    def run_container(self, record: InstanceRecord, *, env_file: Path | None = None) -> None:
-        self.commands.append(("run", record.container_name))
-        self.run_env_files.append(str(env_file) if env_file is not None else None)
-        if self.run_errors:
-            raise self.run_errors.pop(0)
-        if self.fail_next_run:
-            self.fail_next_run = False
-            raise RuntimeError("boom")
-        self.status_map[record.container_name] = "running"
-        if record.container_name in self.startup_sequences:
-            self.status_sequences[record.container_name] = list(
-                self.startup_sequences[record.container_name]
-            )
-
-    def container_status(self, container_name: str) -> str:
-        sequence = self.status_sequences.get(container_name)
-        if sequence:
-            status = sequence.pop(0)
-            if not sequence:
-                self.status_sequences.pop(container_name, None)
-            if status in {"starting", "unhealthy"}:
-                self.status_map[container_name] = "running"
-                self.health_map[container_name] = status
-            else:
-                self.status_map[container_name] = status
-                if status == "running":
-                    self.health_map.pop(container_name, None)
-            return status
-        status = self.status_map.get(container_name, "missing")
-        if status == "running":
-            health = self.health_map.get(container_name)
-            if health in {"starting", "unhealthy"}:
-                return health
-        return status
-
-    def inspect_container(self, container_name: str) -> dict | None:
-        status = self.status_map.get(container_name)
-        if not status:
-            return None
-        state: dict[str, object] = {"Status": status}
-        if status == "running" and container_name in self.health_map:
-            state["Health"] = {"Status": self.health_map[container_name]}
-        return {"Name": container_name, "State": state}
-
-    def start_container(self, container_name: str) -> None:
-        self.commands.append(("start", container_name))
-        if self.fail_next_start:
-            self.fail_next_start = False
-            raise RuntimeError("port is already allocated")
-        self.status_map[container_name] = "running"
-
-    def stop_container(self, container_name: str) -> None:
-        self.commands.append(("stop", container_name))
-        self.status_map[container_name] = "exited"
-
-    def restart_container(self, container_name: str) -> None:
-        self.commands.append(("restart", container_name))
-        self.status_map[container_name] = "running"
-
-    def remove_container(self, container_name: str, *, missing_ok: bool = False) -> None:
-        self.commands.append(("rm", container_name))
-        self.status_map.pop(container_name, None)
-
-    def exec_in_container(self, container_name: str, command: list[str], **kwargs) -> object:
-        self.commands.append(("exec", container_name))
-        self.exec_commands.append((container_name, command, kwargs))
-        return type("Completed", (), {"stdout": "", "stderr": "", "returncode": 0})()
-
-    def exec_in_container_interactive(self, container_name: str, command: list[str], **kwargs) -> object:
-        self.commands.append(("exec-interactive", container_name))
-        self.interactive_exec_commands.append((container_name, command, kwargs))
-        return type("Completed", (), {"stdout": "", "stderr": "", "returncode": 0})()
-
-    def stream_logs(self, container_name: str, *, follow: bool = False) -> None:
-        self.commands.append(("logs", container_name))
-
-
-class FakeOpenClawManager:
-    def __init__(self) -> None:
-        self.versions: list[str] = []
-        self.image_repo = "ghcr.io/openclaw/openclaw"
-
-    def build_image(self, version: str) -> str:
-        self.versions.append(version)
-        return f"clawcu/openclaw:{version}"
-
-    def ensure_image(self, version: str) -> str:
-        self.versions.append(version)
-        return f"clawcu/openclaw:{version}"
-
-
-def make_service(temp_clawcu_home) -> tuple[ClawCUService, FakeDockerManager, FakeOpenClawManager, StateStore]:
-    store = StateStore(get_paths())
-    docker = FakeDockerManager()
-    openclaw = FakeOpenClawManager()
-    service = ClawCUService(store=store, docker=docker, openclaw=openclaw)
-    return service, docker, openclaw, store
-
-
-def write_provider_source(
-    root: Path,
-    *,
-    agent_name: str = "main",
-    provider_name: str = "minimax",
-    profile_name: str = "minimax:cn",
-    api_key: str = "sk-test",
-    api: str = "anthropic-messages",
-    endpoint: str = "https://api.minimaxi.com/anthropic",
-    models: list[dict] | None = None,
-) -> None:
-    runtime_dir = root / "agents" / agent_name / "agent"
-    runtime_dir.mkdir(parents=True, exist_ok=True)
-    models_payload = {
-        "providers": {
-            provider_name: {
-                "baseUrl": endpoint,
-                "api": api,
-                "authHeader": api.startswith("anthropic"),
-                "models": models
-                or [
-                    {
-                        "id": "MiniMax-M2.7",
-                        "name": "MiniMax M2.7",
-                    }
-                ],
-                "apiKey": api_key,
-            }
-        }
-    }
-    auth_payload = {
-        "version": 1,
-        "profiles": {
-            profile_name: {
-                "type": "api_key",
-                "provider": provider_name,
-                "key": api_key,
-            }
-        },
-        "lastGood": {
-            provider_name: profile_name,
-        },
-        "usageStats": {
-            profile_name: {
-                "errorCount": 0,
-                "lastUsed": 1775986644716,
-            }
-        },
-    }
-    (runtime_dir / "models.json").write_text(
-        json.dumps(models_payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    (runtime_dir / "auth-profiles.json").write_text(
-        json.dumps(auth_payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-
-
-def write_root_provider_source(
-    root: Path,
-    *,
-    provider_name: str = "minimax",
-    api_key: str = "sk-root",
-    api: str = "anthropic-messages",
-    endpoint: str = "https://api.minimaxi.com/anthropic",
-    models: list[dict] | None = None,
-    profile_name: str | None = None,
-) -> None:
-    root.mkdir(parents=True, exist_ok=True)
-    profiles: dict[str, dict] = {}
-    if profile_name is not None:
-        profiles[profile_name] = {
-            "provider": provider_name,
-            "mode": "api_key",
-        }
-    payload = {
-        "models": {
-            "providers": {
-                provider_name: {
-                    "baseUrl": endpoint,
-                    "api": api,
-                    "authHeader": api.startswith("anthropic"),
-                    "models": models
-                    or [
-                        {
-                            "id": "MiniMax-M2.7",
-                            "name": "MiniMax M2.7",
-                        }
-                    ],
-                    "apiKey": api_key,
-                }
-            }
-        },
-        "auth": {
-            "profiles": profiles,
-        },
-    }
-    (root / "openclaw.json").write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+from tests.support import make_service, write_provider_source, write_root_provider_source
 
 
 def test_check_setup_reports_missing_docker_cli(temp_clawcu_home, monkeypatch) -> None:
@@ -295,6 +73,13 @@ def test_check_setup_reports_running_docker_daemon(temp_clawcu_home, monkeypatch
             "status": "ok",
             "ok": True,
             "summary": "OpenClaw image repo is configured as ghcr.io/openclaw/openclaw.",
+            "hint": "",
+        },
+        {
+            "name": "hermes_source_repo",
+            "status": "ok",
+            "ok": True,
+            "summary": "Hermes source repo is configured as https://github.com/NousResearch/hermes-agent.git.",
             "hint": "",
         },
     ]
@@ -1181,6 +966,7 @@ def test_list_local_summaries_read_from_home_openclaw(monkeypatch, tmp_path) -> 
     )
     monkeypatch.setattr(Path, "home", lambda: home)
     service, _, _, _ = make_service(tmp_path / ".clawcu")
+    service._local_openclaw_home = lambda: openclaw_home  # type: ignore[method-assign]
 
     instance_summaries = service.list_local_instance_summaries()
     agent_summaries = service.list_local_agent_summaries()
@@ -1188,23 +974,24 @@ def test_list_local_summaries_read_from_home_openclaw(monkeypatch, tmp_path) -> 
     assert instance_summaries == [
         {
             "source": "local",
-            "name": "local",
+            "name": "local-openclaw",
             "home": str(openclaw_home),
             "version": "2026.4.9",
             "port": 18789,
             "status": "local",
             "providers": "openai",
             "models": "openai/gpt-5",
+            "service": "openclaw",
         }
     ]
     assert agent_summaries == [
-        {
-            "source": "local",
-            "instance": "local",
-            "home": str(openclaw_home),
-            "service": "openclaw",
-            "version": "2026.4.9",
-            "port": 18789,
+            {
+                "source": "local",
+                "instance": "local-openclaw",
+                "home": str(openclaw_home),
+                "service": "openclaw",
+                "version": "2026.4.9",
+                "port": 18789,
             "status": "local",
             "providers": "openai",
             "models": "openai/gpt-5",
@@ -2447,13 +2234,13 @@ def test_upgrade_rolls_back_when_new_container_fails(temp_clawcu_home, tmp_path)
     original_run_container = docker.run_container
     failed_once = False
 
-    def fail_upgrade_run(record, *, env_file=None) -> None:
+    def fail_upgrade_run(record, spec) -> None:
         nonlocal failed_once
         if not failed_once:
             failed_once = True
             store.instance_env_path("writer").write_text("OPENAI_API_KEY=changed\n", encoding="utf-8")
             raise RuntimeError("boom")
-        original_run_container(record, env_file=env_file)
+        original_run_container(record, spec)
 
     docker.run_container = fail_upgrade_run  # type: ignore[method-assign]
 

@@ -45,6 +45,7 @@ class FakeService:
 
     def _provider_summary(self, name: str = "openai-main", api_style: str = "openai") -> dict:
         return {
+            "service": "openclaw",
             "name": name,
             "provider": "openai",
             "api_style": api_style,
@@ -55,7 +56,14 @@ class FakeService:
 
     def _provider_payload(self, name: str = "openai-main") -> dict:
         return {
+            "service": "openclaw",
             "name": name,
+            "metadata": {
+                "service": "openclaw",
+                "provider": "openai",
+                "api_style": "openai",
+                "endpoint": "https://api.example.com/v1",
+            },
             "auth_profiles": {
                 "profiles": {
                     "openai:default": {
@@ -86,12 +94,32 @@ class FakeService:
             self.reporter("Starting OpenClaw image preparation")
         return f"clawcu/openclaw:{version}"
 
+    def pull_hermes(self, version: str) -> str:
+        self._record("pull_hermes", version=version)
+        self.pulled_versions.append(version)
+        if self.reporter:
+            self.reporter("Starting Hermes image preparation")
+        return f"clawcu/hermes:{version}"
+
     def create_openclaw(self, **kwargs) -> InstanceRecord:
         self._record("create_openclaw", **kwargs)
         if self.reporter:
             self.reporter("Step 1/5: Validating options")
             self.reporter("Step 5/5: Starting the Docker container")
         return self._instance(name=kwargs["name"], version=kwargs["version"])
+
+    def create_hermes(self, **kwargs) -> InstanceRecord:
+        self._record("create_hermes", **kwargs)
+        if self.reporter:
+            self.reporter("Step 1/5: Validating options")
+            self.reporter("Step 5/5: Starting the Docker container")
+        record = self._instance(name=kwargs["name"], version=kwargs["version"])
+        record.service = "hermes"
+        record.container_name = f"clawcu-hermes-{kwargs['name']}"
+        record.image_tag = f"clawcu/hermes:{kwargs['version']}"
+        record.auth_mode = "native"
+        record.port = kwargs.get("port") or 8642
+        return record
 
     def check_setup(self) -> list[dict[str, str | bool]]:
         self._record("check_setup")
@@ -131,6 +159,13 @@ class FakeService:
                 "summary": "OpenClaw image repo is configured as ghcr.io/openclaw/openclaw.",
                 "hint": "",
             },
+            {
+                "name": "hermes_source_repo",
+                "status": "ok",
+                "ok": True,
+                "summary": "Hermes source repo is configured as https://github.com/NousResearch/hermes-agent.git.",
+                "hint": "",
+            },
         ]
 
     def get_openclaw_image_repo(self) -> str:
@@ -140,6 +175,14 @@ class FakeService:
     def set_openclaw_image_repo(self, image_repo: str) -> str:
         self._record("set_openclaw_image_repo", image_repo=image_repo)
         return image_repo
+
+    def get_hermes_source_repo(self) -> str:
+        self._record("get_hermes_source_repo")
+        return "https://github.com/NousResearch/hermes-agent.git"
+
+    def set_hermes_source_repo(self, source_repo: str) -> str:
+        self._record("set_hermes_source_repo", source_repo=source_repo)
+        return source_repo
 
     def suggest_openclaw_image_repo(self) -> str:
         self._record("suggest_openclaw_image_repo")
@@ -443,6 +486,18 @@ def test_pull_openclaw_command(monkeypatch) -> None:
     assert service.pulled_versions == ["2026.4.1"]
 
 
+def test_pull_hermes_command(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["pull", "hermes", "--version", "v0.9.0"])
+
+    assert result.exit_code == 0
+    assert "Built image" in result.stdout
+    assert "Starting Hermes image preparation" in result.stdout
+    assert service.calls[0] == ("pull_hermes", (), {"version": "v0.9.0"})
+
+
 def test_root_version_flag_prints_version() -> None:
     result = runner.invoke(app, ["--version"])
 
@@ -459,6 +514,7 @@ def test_create_help_uses_service_language_and_lists_supported_services() -> Non
     assert "Usage: " in result.stdout
     assert "create [OPTIONS] SERVICE" in result.stdout
     assert "openclaw" in result.stdout
+    assert "hermes" in result.stdout
 
 
 def test_pull_help_uses_service_language_and_lists_supported_services() -> None:
@@ -467,6 +523,7 @@ def test_pull_help_uses_service_language_and_lists_supported_services() -> None:
     assert result.exit_code == 0
     assert "pull [OPTIONS] SERVICE" in result.stdout
     assert "openclaw" in result.stdout
+    assert "hermes" in result.stdout
 
 
 def test_root_help_lists_descriptions_for_top_level_commands() -> None:
@@ -483,13 +540,13 @@ def test_root_help_lists_descriptions_for_top_level_commands() -> None:
     assert "Print the dashboard token for a managed instance." in result.stdout
     assert "setup" in result.stdout
     assert "Check local prerequisites and configure the default ClawCU home" in result.stdout
-    assert "and OpenClaw image repo." in result.stdout
+    assert "and service sources." in result.stdout
     assert "provider" in result.stdout
-    assert "Collect and reuse provider assets from configured OpenClaw" in result.stdout
+    assert "Collect and reuse model configuration assets" in result.stdout
     assert "approve" in result.stdout
     assert "Approve a pending browser pairing request for an instance." in result.stdout
     assert "config" in result.stdout
-    assert "Run openclaw configure inside a managed instance." in result.stdout
+    assert "Run the native configuration flow inside a managed instance." in result.stdout
     assert "exec" in result.stdout
     assert "Run an arbitrary command inside a managed instance container." in result.stdout
     assert "start" in result.stdout
@@ -503,7 +560,7 @@ def test_root_help_lists_descriptions_for_top_level_commands() -> None:
     assert "recreate" in result.stdout
     assert "Recreate an existing instance with its saved configuration." in result.stdout
     assert "upgrade" in result.stdout
-    assert "Upgrade an instance to a newer OpenClaw version" in result.stdout
+    assert "Upgrade an instance to a newer service version" in result.stdout
     assert "rollback" in result.stdout
     assert "data-directory and env snapshot" in result.stdout
     assert "clone" in result.stdout
@@ -535,9 +592,12 @@ def test_provider_help_lists_subcommands() -> None:
     result = runner.invoke(app, ["provider", "--help"])
 
     assert result.exit_code == 0
-    assert "Collect and reuse provider assets from configured OpenClaw instances." in result.stdout
+    assert "Collect and reuse model configuration assets from managed instances" in result.stdout
+    assert "local" in result.stdout
+    assert "homes." in result.stdout
     assert "collect" in result.stdout
-    assert "Collect provider assets from managed instances or an OpenClaw data" in result.stdout
+    assert "Collect model configuration assets from managed instances or local" in result.stdout
+    assert "agent homes." in result.stdout
     assert "list" in result.stdout
     assert "List all collected provider assets." in result.stdout
     assert "show" in result.stdout
@@ -581,6 +641,8 @@ def test_setup_command_reports_success(monkeypatch) -> None:
     assert "ClawCU home directory is ready" in result.stdout
     assert "ClawCU runtime directories are ready" in result.stdout
     assert "OpenClaw image repo is configured as ghcr.io/openclaw/openclaw." in result.stdout
+    assert "Hermes source repo is configured as" in result.stdout
+    assert "https://github.com/NousResearch/hermes-agent.git" in result.stdout
     assert "Shell completion script is ready for zsh" not in result.stdout
     assert "ClawCU setup check passed." in result.stdout
     assert service.calls[0] == ("check_setup", (), {})
@@ -627,6 +689,7 @@ def test_setup_command_prompts_for_openclaw_image_repo_in_interactive_shell(monk
         [
             "/tmp/custom-clawcu-home",
             "registry.example.com/openclaw/openclaw",
+            "https://github.com/NousResearch/hermes-agent.git",
         ]
     )
     monkeypatch.setattr(
@@ -648,8 +711,10 @@ def test_setup_command_prompts_for_openclaw_image_repo_in_interactive_shell(monk
     assert result.exit_code == 0
     assert "ClawCU home" in result.stdout
     assert "OpenClaw image repo" in result.stdout
+    assert "Hermes source repo" in result.stdout
     assert "Saved ClawCU home: /tmp/custom-clawcu-home" in result.stdout
     assert "Saved OpenClaw image repo: registry.example.com/openclaw/openclaw" in result.stdout
+    assert "Saved Hermes source repo: https://github.com/NousResearch/hermes-agent.git" in result.stdout
     assert ("get_clawcu_home", (), {}) in service.calls
     assert ("suggest_openclaw_image_repo", (), {}) in service.calls
     assert (
@@ -668,6 +733,7 @@ def test_setup_command_uses_china_mirror_as_interactive_default(monkeypatch) -> 
         [
             "/tmp/custom-clawcu-home",
             "ghcr.nju.edu.cn/openclaw/openclaw",
+            "https://github.com/NousResearch/hermes-agent.git",
         ]
     )
 
@@ -683,6 +749,7 @@ def test_setup_command_uses_china_mirror_as_interactive_default(monkeypatch) -> 
     assert result.exit_code == 0
     assert prompts[1][0][0] == "OpenClaw image repo"
     assert prompts[1][1]["default"] == "ghcr.nju.edu.cn/openclaw/openclaw"
+    assert prompts[2][0][0] == "Hermes source repo"
     assert (
         "set_openclaw_image_repo",
         (),
@@ -722,7 +789,7 @@ def test_config_help_explains_passthrough_usage() -> None:
     result = runner.invoke(app, ["config", "--help"])
 
     assert result.exit_code == 0
-    assert "openclaw configure" in result.stdout
+    assert "service-native configuration flow" in result.stdout
     assert "clawcu config <instance>" in result.stdout
     assert "--section model" in result.stdout
 
@@ -914,7 +981,7 @@ def test_setenv_command_can_recreate_instance_immediately(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "/tmp/writer.env" in result.stdout
     assert "Recreated instance:" in result.stdout
-    assert "Open Dashboard:" in result.stdout
+    assert "Open URL:" in result.stdout
     assert service.calls[0] == (
         "set_instance_env",
         (),
@@ -962,7 +1029,7 @@ def test_unsetenv_command_can_recreate_instance_immediately(monkeypatch) -> None
 
     assert result.exit_code == 0
     assert "Recreated instance:" in result.stdout
-    assert "Open Dashboard:" in result.stdout
+    assert "Open URL:" in result.stdout
     assert service.calls[0] == (
         "unset_instance_env",
         (),
@@ -978,7 +1045,7 @@ def test_provider_list_command_shows_providers(monkeypatch) -> None:
     result = runner.invoke(app, ["provider", "list"])
 
     assert result.exit_code == 0
-    assert "openai-main" in result.stdout
+    assert "openai" in result.stdout
     assert "API_KEY" in result.stdout
     assert "sk-tes" in result.stdout
     assert service.calls[0] == ("list_providers", (), {})
@@ -1124,7 +1191,7 @@ def test_create_command_uses_defaults(monkeypatch) -> None:
     assert "Step 1/5: Validating options" in result.stdout
     assert "Step 5/5: Starting the Docker container" in result.stdout
     assert "(status: running)" in result.stdout
-    assert "Open Dashboard:" in result.stdout
+    assert "Open URL:" in result.stdout
     assert "http://127.0.0.1:3000/#token=token-writer" in result.stdout
     assert service.calls[0] == (
         "create_openclaw",
@@ -1142,6 +1209,39 @@ def test_create_command_uses_defaults(monkeypatch) -> None:
         "dashboard_url",
         (),
         {"name": "writer"},
+    )
+
+
+def test_create_hermes_command_uses_defaults(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "create",
+            "hermes",
+            "--name",
+            "scribe",
+            "--version",
+            "v0.9.0",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Created instance: scribe (v0.9.0)" in result.stdout
+    assert "Open URL:" in result.stdout
+    assert service.calls[0] == (
+        "create_hermes",
+        (),
+        {
+            "name": "scribe",
+            "version": "v0.9.0",
+            "datadir": None,
+            "port": None,
+            "cpu": "1",
+            "memory": "2g",
+        },
     )
 
 
@@ -1180,7 +1280,7 @@ def test_retry_command_retries_failed_instance(monkeypatch) -> None:
     assert "Step 1/4: Loading the failed instance record" in result.stdout
     assert "Retried instance:" in result.stdout
     assert "(status: running)" in result.stdout
-    assert "Open Dashboard:" in result.stdout
+    assert "Open URL:" in result.stdout
     assert service.calls[-1] == ("dashboard_url", (), {"name": "writer"})
 
 
@@ -1193,7 +1293,7 @@ def test_recreate_command_recreates_instance(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "Recreated instance:" in result.stdout
     assert "(status: running)" in result.stdout
-    assert "Open Dashboard:" in result.stdout
+    assert "Open URL:" in result.stdout
     assert service.calls[-1] == ("dashboard_url", (), {"name": "writer"})
 
 
@@ -1296,7 +1396,7 @@ def test_approve_command_uses_latest_request_by_default(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "Approving pairing request" in result.stdout
     assert "Approved pairing:" in result.stdout
-    assert "Open Dashboard:" in result.stdout
+    assert "Open URL:" in result.stdout
     assert service.calls[0] == ("approve_pairing", (), {"name": "writer", "request_id": None})
     assert service.calls[-1] == ("dashboard_url", (), {"name": "writer"})
 

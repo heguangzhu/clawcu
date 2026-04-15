@@ -3,65 +3,83 @@
 🌐 Language:
 [English](README.md) | [中文](README.zh-CN.md)
 
-`ClawCU` is a local-first lifecycle manager for `OpenClaw`.
+`ClawCU` is a local-first lifecycle manager for running multiple AI agent runtimes on one machine.
 
-It gives you a safer way to run multiple OpenClaw instances on one machine, keep versions under control, clone working instances for experiments, collect provider configs from existing setups, and recover cleanly when an upgrade goes sideways.
+`v0.2.0` turns ClawCU from an OpenClaw-only tool into a multi-agent manager with two first-class services:
 
-> If `OpenClaw` is the agent runtime, `ClawCU` is the operational safety layer around it.
+- `openclaw`
+- `hermes`
+
+If `OpenClaw` and `Hermes` are the runtimes, `ClawCU` is the operational layer around them.
 
 ## Why ClawCU
 
-Running OpenClaw manually is powerful, but it is also easy to drift into a fragile setup:
+Running agent runtimes by hand is powerful, but it gets fragile quickly:
 
-- upgrades can break a previously working instance
+- upgrades can break a previously working setup
 - experiments are risky when they share the same live instance
-- rollback is hard if you do not already have a clean snapshot
+- rollback is painful without a clean snapshot boundary
+- local configuration becomes harder to reason about as you add more instances and more than one runtime
 
-`ClawCU` is built to solve those problems with a Docker-based workflow that favors:
+ClawCU is built to solve those problems with a Docker-based workflow that favors:
 
 - explicit versioning
-- reproducible local instances
-- safe upgrade and rollback paths
+- isolated local instances
 - clone-first experimentation
-- practical observability for providers, models, agents, snapshots, and env
+- safe upgrade and rollback paths
+- practical observability for services, access URLs, models, env files, and snapshots
 
 ## Highlights
 
-- Full local lifecycle management for OpenClaw instances:
-  - `pull`, `create`, `list`, `inspect`, `token`, `start`, `stop`, `restart`, `retry`, `recreate`, `upgrade`, `rollback`, `clone`, `logs`, `remove`
-- Safe upgrades with automatic snapshots:
-  - snapshots cover both the instance data directory and `~/.clawcu/instances/<instance>.env`
+- One lifecycle tool for two services:
+  - `openclaw`
+  - `hermes`
+- Shared command surface:
+  - `pull`, `create`, `list`, `inspect`, `start`, `stop`, `restart`, `retry`, `recreate`, `upgrade`, `rollback`, `clone`, `logs`, `remove`, `exec`, `config`, `tui`
+- Safe upgrades with automatic snapshot protection:
+  - snapshots cover both the instance data directory and the matching env location for that service
 - Clone-first experimentation:
-  - clone a working instance before testing a new version
-- Model configuration collection and reuse:
-  - collect provider assets from managed instances or local `~/.openclaw`
-- Environment variable management:
-  - `setenv`, `getenv`, `unsetenv`, plus `--apply` for immediate recreation
-- Better day-to-day operability:
+  - copy a working instance before testing a new version
+- Service-aware model configuration collection and reuse:
+  - collect from managed instances or local homes such as `~/.openclaw` and `~/.hermes`
+- Better operational visibility:
   - readiness waits
   - progress output
-  - dashboard token lookup
+  - access URLs in `create`, `list`, and `inspect`
   - snapshot summaries in `list` and `inspect`
 
-## What ClawCU Manages
+## Supported Services
 
-ClawCU is intentionally focused on local operations for OpenClaw.
+### OpenClaw
 
-It manages:
+- Artifact source:
+  - official image registry
+- Access model:
+  - dashboard URL
+  - token
+  - browser pairing approval
+- Native commands exposed through ClawCU:
+  - `config`
+  - `tui`
+  - `token`
+  - `approve`
+- Env location:
+  - `~/.clawcu/instances/<instance>.env`
 
-- Docker image preparation from the official OpenClaw image registry
-- OpenClaw instance creation and lifecycle
-- gateway bootstrap defaults needed for local access
-- version transitions with rollback protection
-- provider collection from existing OpenClaw homes
-- env files and instance metadata
+### Hermes
 
-It does not try to replace OpenClaw itself.
+- Artifact source:
+  - official Hermes repository checkout plus managed Docker build
+- Access model:
+  - local Web Dashboard URL
+  - CLI/chat access through `tui`, `config`, and `exec`
+- Native commands exposed through ClawCU:
+  - `config`
+  - `tui`
+- Env location:
+  - `<datadir>/.env`
 
-For model setup, plugin setup, and agent-specific OpenClaw flows, ClawCU works with the native tools:
-
-- `clawcu config <instance>`
-- `clawcu exec <instance> <command...>`
+ClawCU intentionally does not force OpenClaw and Hermes into the same auth or env model in `v0.2.0`. Lifecycle is unified; service internals remain native.
 
 ## Install
 
@@ -77,7 +95,7 @@ pipx install .
 
 ## Quick Start
 
-Check local prerequisites:
+Check prerequisites and configure defaults:
 
 ```bash
 clawcu setup
@@ -89,38 +107,15 @@ Show shell completion guidance only when you want it:
 clawcu setup --completion
 ```
 
-In an interactive terminal, `clawcu setup` also prompts for:
+In an interactive terminal, `clawcu setup` prompts for:
 
 - the default `ClawCU home`
 - the default OpenClaw image repo
+- the default Hermes source repo
 
-The default OpenClaw image repo is:
+### OpenClaw
 
-```bash
-ghcr.io/openclaw/openclaw
-```
-
-If `clawcu setup` detects that your public IP is in China and you have not configured a repo yet, it will suggest this mirror by default:
-
-```bash
-ghcr.nju.edu.cn/openclaw/openclaw
-```
-
-The chosen image repo is saved in:
-
-```bash
-~/.clawcu/config.json
-```
-
-The chosen default `ClawCU home` is saved in:
-
-```bash
-~/.config/clawcu/bootstrap.json
-```
-
-If `CLAWCU_HOME` is explicitly exported in your shell, that environment variable still takes precedence for the current process.
-
-Pull an OpenClaw version from GHCR:
+Pull a version from the official registry:
 
 ```bash
 clawcu pull openclaw --version 2026.4.1
@@ -132,24 +127,39 @@ Create and start an instance:
 clawcu create openclaw --name writer --version 2026.4.1
 ```
 
-Verify that the instance is really usable after creation:
+Verify that the instance is really usable:
 
 ```bash
 clawcu tui writer
 ```
-
-This is a practical end-to-end check. It confirms that:
-
-- the instance is running
-- pairing can be completed
-- the gateway can be reached
-- the selected agent can enter the OpenClaw TUI successfully
 
 Get the dashboard token:
 
 ```bash
 clawcu token writer
 ```
+
+### Hermes
+
+Pull and build a managed Hermes image from the official repo:
+
+```bash
+clawcu pull hermes --version v0.9.0
+```
+
+Create and start a Hermes instance:
+
+```bash
+clawcu create hermes --name analyst --version v0.9.0
+```
+
+Enter the Hermes interactive flow:
+
+```bash
+clawcu tui analyst
+```
+
+### Shared day-to-day commands
 
 List what is running:
 
@@ -163,11 +173,17 @@ Inspect one managed instance:
 
 ```bash
 clawcu inspect writer
+clawcu inspect analyst
 ```
 
-OpenClaw runs in `token` auth mode under ClawCU. This is required for the current `lan` binding model.
+Run a native command inside the container:
 
-For the full command reference for `v0.1.0`, see [USAGE_v0.1.0.md](USAGE_v0.1.0.md).
+```bash
+clawcu exec writer pwd
+clawcu exec analyst hermes version
+```
+
+For the full command reference for `v0.2.0`, see [USAGE_v0.2.0.md](USAGE_v0.2.0.md).
 
 ## Safe Upgrade Workflow
 
@@ -187,61 +203,44 @@ clawcu upgrade writer-upgrade-test --version 2026.4.10
 clawcu rollback writer-upgrade-test
 ```
 
+The same pattern also works for Hermes:
+
+```bash
+clawcu clone analyst --name analyst-upgrade-test
+clawcu upgrade analyst-upgrade-test --version v0.9.1
+clawcu rollback analyst-upgrade-test
+```
+
 Why this works well:
 
 - your primary instance stays untouched
-- version compatibility problems are isolated
-- provider or model repairs can happen in the cloned instance
+- compatibility problems are isolated
+- repairs happen in the cloned instance
 - rollback has a real snapshot to restore from
 
-### What Upgrade Protects
+### What upgrade protects
 
 Before `upgrade`, ClawCU snapshots:
 
 - the instance data directory
-- `~/.clawcu/instances/<instance>.env`
+- the matching service env file
+
+That means:
+
+- OpenClaw snapshots:
+  - `datadir`
+  - `~/.clawcu/instances/<instance>.env`
+- Hermes snapshots:
+  - `datadir`
+  - `<datadir>/.env`
 
 If the upgrade fails, ClawCU attempts to restore the previous version and the matching env snapshot automatically.
 
-### What Rollback Restores
+## Model Configuration Collection and Reuse
 
-`rollback` restores:
+ClawCU keeps the existing `provider` command family for compatibility, but in `v0.2.0` it should be read as model-configuration collection and reuse across services.
 
-- the previous snapshot of the data directory
-- the matching env snapshot
-- the previous image version
-
-This means env-backed provider credentials come back with the same rollback boundary as the OpenClaw home itself.
-
-## Cloning for Experiments
-
-Cloning is designed for safe experimentation:
-
-```bash
-clawcu clone writer --name writer-exp
-```
-
-The cloned instance inherits:
-
-- the source data directory
-- the source env file, if present
-- version
-- CPU
-- memory
-
-ClawCU will:
-
-- choose a fresh host port
-- retry host port allocation by `+10` when needed
-- roll back partial clone state if setup fails
-
-## Provider Collection and Reuse
-
-ClawCU does not invent a separate provider-definition format from scratch. Instead, it collects provider assets from OpenClaw homes that already work.
-
-### Collect Providers
-
-Collect from all managed instances plus local `~/.openclaw`:
+Collect from all managed instances plus local homes:
 
 ```bash
 clawcu provider collect --all
@@ -251,263 +250,82 @@ Collect from one managed instance:
 
 ```bash
 clawcu provider collect --instance writer
+clawcu provider collect --instance analyst
 ```
 
-Collect from an arbitrary OpenClaw home:
+Collect from a local home:
 
 ```bash
 clawcu provider collect --path ~/.openclaw
+clawcu provider collect --path ~/.hermes
 ```
 
-List and inspect collected providers:
+Inspect what has been collected:
 
 ```bash
 clawcu provider list
-clawcu provider show openrouter
-clawcu provider models list openrouter
+clawcu provider show openclaw:minimax
+clawcu provider show hermes:openrouter
 ```
 
-### Collection Rules
-
-ClawCU treats root `openclaw.json` as the source of truth for which providers are active.
-
-Collected providers are deduplicated using:
-
-- provider name
-- API style
-- endpoint
-- API key
-
-If those match, models are merged into one collected provider.
-
-If the provider name matches but the endpoint or API key is different, ClawCU keeps a numbered variant such as `-2`.
-
-### Apply a Provider to an Instance
-
-Apply a collected provider to one agent:
+Apply a collected model configuration:
 
 ```bash
-clawcu provider apply kimi-coding writer
-clawcu provider apply kimi-coding writer --agent chat
-clawcu provider apply kimi-coding writer --agent chat --primary kimi-coding/k2p5
-clawcu provider apply kimi-coding writer --agent chat --fallbacks anthropic/claude-sonnet-4.5,openai/gpt-4.1
-clawcu provider apply kimi-coding writer --agent chat --primary kimi-coding/k2p5 --persist
+clawcu provider apply openclaw:minimax writer --agent main --primary minimax/MiniMax-M2.7
+clawcu provider apply hermes:openrouter analyst --persist
 ```
 
-Behavior:
+Service identity is stored with each collected bundle so OpenClaw and Hermes configs with the same logical name do not silently collide.
 
-- defaults `--agent` to `main`
-- adds provider runtime config to the selected agent
-- can set `primary`
-- can set `fallbacks`
-- with `--persist`, writes env-backed references into root config and saves the real key into the instance env file
+## Environment Variables
 
-## Environment Variable Management
+ClawCU manages env files per service instead of forcing a single storage model.
 
-ClawCU treats instance env files as first-class operational state.
+OpenClaw:
 
-Set one or more env vars:
+- env path:
+  - `~/.clawcu/instances/<instance>.env`
+
+Hermes:
+
+- env path:
+  - `<datadir>/.env`
+
+Shared commands:
 
 ```bash
-clawcu setenv writer OPENAI_API_KEY=sk-xxx
-clawcu setenv writer OPENAI_API_KEY=sk-xxx OPENAI_BASE_URL=https://api.example.com/v1
+clawcu setenv <instance> KEY=VALUE
+clawcu getenv <instance>
+clawcu unsetenv <instance> KEY
 ```
 
-Read env vars:
+Optional immediate apply:
 
 ```bash
-clawcu getenv writer
+clawcu setenv <instance> KEY=VALUE --apply
+clawcu unsetenv <instance> KEY --apply
 ```
 
-Delete env vars:
+`--apply` recreates the instance so Docker reloads the env file for the running container.
 
-```bash
-clawcu unsetenv writer OPENAI_API_KEY
-```
+## Access and Service-Specific Commands
 
-Apply immediately by recreating the container:
+ClawCU keeps the common command surface broad, but some access commands remain service-specific.
 
-```bash
-clawcu setenv writer OPENAI_API_KEY=sk-xxx --apply
-clawcu unsetenv writer OPENAI_API_KEY --apply
-```
+OpenClaw-only in `v0.2.0`:
 
-Important detail:
+- `clawcu token <instance>`
+- `clawcu approve <instance> [requestId]`
 
-- `restart` does not reload Docker env files
-- `recreate` does
+These work because OpenClaw currently has a matching dashboard token and pairing model.
 
-That is why env changes become fully effective after `recreate`, not plain `restart`.
+Hermes in `v0.2.0`:
 
-## Access, Pairing, and Native OpenClaw Flows
-
-Run the native OpenClaw configure flow inside a managed instance:
-
-```bash
-clawcu config writer
-clawcu config writer -- --help
-```
-
-Run arbitrary commands in the container:
-
-```bash
-clawcu exec writer openclaw config
-clawcu exec writer pwd
-clawcu exec writer ls
-```
-
-If the browser shows `pairing required`, approve the latest pending request:
-
-```bash
-clawcu approve writer
-```
-
-Start the OpenClaw TUI and auto-handle the common approve step:
-
-```bash
-clawcu tui writer
-clawcu tui writer --agent chat
-```
-
-## List and Inspect
-
-ClawCU has two useful levels of visibility:
-
-### Instance View
-
-```bash
-clawcu list
-clawcu list --managed
-clawcu list --local
-```
-
-The default `list` view includes both:
-
-- managed ClawCU instances
-- local `~/.openclaw`
-
-Managed instance summaries include:
-
-- source
-- name
-- home
-- version
-- port
-- status
-- providers
-- models
-- snapshot summary
-
-### Agent View
-
-```bash
-clawcu list --agents
-clawcu list --managed --agents
-```
-
-Agent rows show:
-
-- instance
-- agent
-- primary
-- fallbacks
-
-### Detailed Inspect
-
-```bash
-clawcu inspect writer
-```
-
-`inspect` includes:
-
-- instance metadata
-- Docker state
-- recent history
-- snapshot summary block:
-  - `latest_upgrade_snapshot`
-  - `latest_rollback_snapshot`
-  - `latest_restored_snapshot`
-
-## Logs and Recovery
-
-Tail logs:
-
-```bash
-clawcu logs writer --follow
-```
-
-Recover from a failed first-time create:
-
-```bash
-clawcu retry writer
-```
-
-Rebuild an instance container from saved config:
-
-```bash
-clawcu recreate writer
-```
-
-Stop, start, and restart:
-
-```bash
-clawcu stop writer
-clawcu start writer
-clawcu restart writer
-```
-
-Remove an instance:
-
-```bash
-clawcu remove writer --keep-data
-clawcu remove writer --delete-data
-```
-
-## Runtime Layout
-
-ClawCU stores operational state outside the repository:
-
-- `~/.clawcu/instances/`
-  - instance metadata
-  - instance env files
-- `~/.clawcu/providers/`
-  - collected provider assets
-- `~/.clawcu/logs/`
-  - lifecycle logs
-- `~/.clawcu/snapshots/`
-  - upgrade and rollback snapshots
-
-You can override the default home with:
-
-```bash
-CLAWCU_HOME=/custom/path
-```
-
-## Current Scope
-
-`v0.1.0` is intentionally focused.
-
-Included:
-
-- one-machine OpenClaw lifecycle management
-- versioned Docker operations
-- snapshots and rollback
-- clone-based experimentation
-- provider collection and reuse
-- env management
-
-Not included:
-
-- a web control plane for ClawCU itself
-- cloud orchestration
-- multi-host fleet management
-- non-OpenClaw services such as Hermes
-- business workflow orchestration inside agents
+- has a dashboard URL surfaced by `create`, `list`, and `inspect`
+- uses `tui`, `config`, and `exec` as the main operational entrypoints
+- does not yet map to the same `token` or `approve` concepts
 
 ## Release Notes
 
-- Release notes: [RELEASE_v0.1.0.md](/Users/michael/workspaces/codex/hello/openclaw-docker/RELEASE_v0.1.0.md)
-
-## License
-
-MIT. See [LICENSE](/Users/michael/workspaces/codex/hello/openclaw-docker/LICENSE).
+- Release notes for `v0.2.0`: [RELEASE_v0.2.0.md](RELEASE_v0.2.0.md)
+- Archived release notes for `v0.1.0`: [RELEASE_v0.1.0.md](RELEASE_v0.1.0.md)
