@@ -23,17 +23,24 @@ class RecordingRunner:
 class FakeBuildDocker:
     def __init__(self) -> None:
         self.existing_images: set[str] = set()
-        self.build_calls: list[tuple[Path, str, str | None]] = []
+        self.build_calls: list[tuple[Path, str, str | None, dict[str, str | Path] | None]] = []
         self.failures_remaining = 0
 
     def image_exists(self, image_tag: str) -> bool:
         return image_tag in self.existing_images
 
-    def build_image(self, source_dir: Path, image_tag: str, *, dockerfile: str | None = None) -> None:
+    def build_image(
+        self,
+        source_dir: Path,
+        image_tag: str,
+        *,
+        dockerfile: str | None = None,
+        build_contexts: dict[str, str | Path] | None = None,
+    ) -> None:
         if self.failures_remaining > 0:
             self.failures_remaining -= 1
             raise RuntimeError("transient docker build failure")
-        self.build_calls.append((source_dir, image_tag, dockerfile))
+        self.build_calls.append((source_dir, image_tag, dockerfile, build_contexts))
 
 
 def test_prepare_source_clones_and_checks_out_requested_ref(temp_clawcu_home) -> None:
@@ -68,12 +75,17 @@ def test_ensure_image_builds_from_prepared_source(temp_clawcu_home, monkeypatch)
     manager = HermesManager(store, docker, reporter=messages.append)
     source_dir = store.source_dir("hermes", "v0.9.0")
     monkeypatch.setattr(manager, "prepare_source", lambda version: source_dir)
-    monkeypatch.setattr(manager, "prepare_build_dockerfile", lambda _source_dir: source_dir / "Dockerfile.clawcu")
+    monkeypatch.setattr(
+        manager,
+        "prepare_build_dockerfile",
+        lambda _source_dir, *, camoufox_prefetch=None: source_dir / "Dockerfile.clawcu",
+    )
+    monkeypatch.setattr(manager, "prepare_camoufox_prefetch", lambda _source_dir: None)
 
     image_tag = manager.ensure_image("v0.9.0")
 
     assert image_tag == "clawcu/hermes:v0.9.0"
-    assert docker.build_calls == [(source_dir, "clawcu/hermes:v0.9.0", "Dockerfile.clawcu")]
+    assert docker.build_calls == [(source_dir, "clawcu/hermes:v0.9.0", "Dockerfile.clawcu", None)]
     assert any("Building Hermes image clawcu/hermes:v0.9.0" in message for message in messages)
 
 
@@ -85,12 +97,17 @@ def test_ensure_image_retries_transient_build_failures(temp_clawcu_home, monkeyp
     manager = HermesManager(store, docker, reporter=messages.append)
     source_dir = store.source_dir("hermes", "v0.9.0")
     monkeypatch.setattr(manager, "prepare_source", lambda version: source_dir)
-    monkeypatch.setattr(manager, "prepare_build_dockerfile", lambda _source_dir: source_dir / "Dockerfile.clawcu")
+    monkeypatch.setattr(
+        manager,
+        "prepare_build_dockerfile",
+        lambda _source_dir, *, camoufox_prefetch=None: source_dir / "Dockerfile.clawcu",
+    )
+    monkeypatch.setattr(manager, "prepare_camoufox_prefetch", lambda _source_dir: None)
 
     image_tag = manager.ensure_image("v0.9.0")
 
     assert image_tag == "clawcu/hermes:v0.9.0"
-    assert docker.build_calls == [(source_dir, "clawcu/hermes:v0.9.0", "Dockerfile.clawcu")]
+    assert docker.build_calls == [(source_dir, "clawcu/hermes:v0.9.0", "Dockerfile.clawcu", None)]
     assert any("attempt 1/3" in message for message in messages)
     assert any("attempt 2/3" in message for message in messages)
     assert any("Retrying from the same source checkout" in message for message in messages)
@@ -133,17 +150,15 @@ RUN npm install --prefer-offline --no-audit && \\
 """,
         encoding="utf-8",
     )
-    monkeypatch.setattr(
-        manager,
-        "prepare_camoufox_prefetch",
-        lambda _source_dir: CamoufoxPrefetch(
+    observable_dockerfile = manager.prepare_build_dockerfile(
+        source_dir,
+        camoufox_prefetch=CamoufoxPrefetch(
             asset_name="camoufox-135.0.1-beta.24-lin.arm64.zip",
             version="135.0.1",
             release="beta.24",
+            context_dir=Path("/tmp/clawcu-camoufox-context"),
         ),
     )
-
-    observable_dockerfile = manager.prepare_build_dockerfile(source_dir)
 
     contents = observable_dockerfile.read_text(encoding="utf-8")
     assert observable_dockerfile == source_dir / "Dockerfile.clawcu"
@@ -151,9 +166,13 @@ RUN npm install --prefer-offline --no-audit && \\
     assert "RUN npm config set progress false && npm config set fund false && npm config set update-notifier false\n" in contents
     assert "RUN npm ci --prefer-offline --no-audit --ignore-scripts\n" in contents
     assert "RUN node node_modules/agent-browser/scripts/postinstall.js\n" in contents
+    assert "COPY --from=clawcu_cache install_camoufox.py /opt/clawcu-cache/install_camoufox.py\n" in contents
     assert (
-        "RUN python3 /opt/hermes/.clawcu-cache/install_camoufox.py "
-        "/opt/hermes/.clawcu-cache/camoufox/camoufox-135.0.1-beta.24-lin.arm64.zip "
+        "COPY --from=clawcu_cache camoufox-135.0.1-beta.24-lin.arm64.zip /opt/clawcu-cache/camoufox.zip\n"
+    ) in contents
+    assert (
+        "RUN python3 /opt/clawcu-cache/install_camoufox.py "
+        "/opt/clawcu-cache/camoufox.zip "
         "/root/.cache/camoufox 135.0.1 beta.24\n"
     ) in contents
     assert "RUN npx camoufox-js fetch || true\n" in contents

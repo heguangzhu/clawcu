@@ -33,10 +33,14 @@ class DockerManager:
         *,
         preferred_variant: str | None = None,
         dockerfile: str | Path | None = None,
+        build_contexts: dict[str, str | Path] | None = None,
     ) -> None:
         command = ["docker", "build"]
         if dockerfile:
             command.extend(["-f", str(dockerfile)])
+        if build_contexts:
+            for name, path in sorted(build_contexts.items()):
+                command.extend(["--build-context", f"{name}={path}"])
         command.extend(["-t", image_tag, "."])
         self.runner(command, cwd=source_dir, capture_output=False)
 

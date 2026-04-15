@@ -26,6 +26,7 @@ class CamoufoxPrefetch:
     asset_name: str
     version: str
     release: str
+    context_dir: Path
 
 
 class HermesManager:
@@ -61,14 +62,23 @@ class HermesManager:
             self.reporter(f"Step 2/5: Docker image {image_tag} already exists locally. Skipping source sync/build.")
             return image_tag
         source_dir = self.prepare_source(normalized)
-        dockerfile = self.prepare_build_dockerfile(source_dir)
+        camoufox_prefetch = self.prepare_camoufox_prefetch(source_dir)
+        dockerfile = self.prepare_build_dockerfile(source_dir, camoufox_prefetch=camoufox_prefetch)
+        build_contexts: dict[str, str | Path] | None = None
+        if camoufox_prefetch:
+            build_contexts = {"clawcu_cache": camoufox_prefetch.context_dir}
         for attempt in range(1, self.build_attempts + 1):
             self.reporter(
                 f"Step 2/5: Building Hermes image {image_tag} from {source_dir} "
                 f"(attempt {attempt}/{self.build_attempts}). This may take a while the first time."
             )
             try:
-                self.docker.build_image(source_dir, image_tag, dockerfile=dockerfile.name)
+                self.docker.build_image(
+                    source_dir,
+                    image_tag,
+                    dockerfile=dockerfile.name,
+                    build_contexts=build_contexts,
+                )
                 break
             except Exception:
                 if attempt >= self.build_attempts:
@@ -92,11 +102,15 @@ class HermesManager:
         self.runner(["git", "submodule", "update", "--init", "--recursive"], cwd=source_dir)
         return source_dir
 
-    def prepare_build_dockerfile(self, source_dir: Path) -> Path:
+    def prepare_build_dockerfile(
+        self,
+        source_dir: Path,
+        *,
+        camoufox_prefetch: CamoufoxPrefetch | None = None,
+    ) -> Path:
         source_dockerfile = source_dir / DEFAULT_HERMES_DOCKERFILE_NAME
         observable_dockerfile = source_dir / OBSERVABLE_HERMES_DOCKERFILE_NAME
         original = source_dockerfile.read_text(encoding="utf-8")
-        camoufox_prefetch = self.prepare_camoufox_prefetch(source_dir)
         rewritten = self._rewrite_dockerfile_for_observable_builds(original, camoufox_prefetch=camoufox_prefetch)
         observable_dockerfile.write_text(rewritten, encoding="utf-8")
         if rewritten != original:
@@ -114,8 +128,10 @@ class HermesManager:
         camoufox_install_step = "RUN npx camoufox-js fetch || true\n"
         if camoufox_prefetch:
             camoufox_install_step = (
-                "RUN python3 /opt/hermes/.clawcu-cache/install_camoufox.py "
-                f"/opt/hermes/.clawcu-cache/camoufox/{camoufox_prefetch.asset_name} "
+                "COPY --from=clawcu_cache install_camoufox.py /opt/clawcu-cache/install_camoufox.py\n"
+                f"COPY --from=clawcu_cache {camoufox_prefetch.asset_name} /opt/clawcu-cache/camoufox.zip\n"
+                "RUN python3 /opt/clawcu-cache/install_camoufox.py "
+                "/opt/clawcu-cache/camoufox.zip "
                 f"/root/.cache/camoufox {camoufox_prefetch.version} {camoufox_prefetch.release}\n"
                 "RUN npx camoufox-js fetch || true\n"
             )
@@ -141,9 +157,9 @@ class HermesManager:
         return pattern.sub(replacement, contents, count=1)
 
     def prepare_camoufox_prefetch(self, source_dir: Path) -> CamoufoxPrefetch | None:
-        cache_dir = source_dir / ".clawcu-cache" / "camoufox"
+        cache_dir = self.store.paths.home / "cache" / "hermes" / "camoufox" / normalize_ref(source_dir.name)
         cache_dir.mkdir(parents=True, exist_ok=True)
-        script_path = source_dir / ".clawcu-cache" / "install_camoufox.py"
+        script_path = cache_dir / "install_camoufox.py"
         metadata_path = cache_dir / "metadata.json"
         if metadata_path.exists():
             try:
@@ -156,6 +172,7 @@ class HermesManager:
                         asset_name=asset_name,
                         version=metadata["version"],
                         release=metadata["release"],
+                        context_dir=cache_dir,
                     )
             except Exception:
                 pass
@@ -191,6 +208,7 @@ class HermesManager:
             asset_name=asset_name,
             version=asset["version"],
             release=asset["release"],
+            context_dir=cache_dir,
         )
 
     def _write_camoufox_install_script(self, script_path: Path) -> None:
