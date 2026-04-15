@@ -104,9 +104,10 @@ class HermesManager:
         replacement = (
             "# Install Node dependencies and Playwright as root (--with-deps needs apt)\n"
             "RUN npm config set registry https://registry.npmmirror.com\n"
-            "RUN npm install --prefer-offline --no-audit\n"
+            "RUN npm config set progress false && npm config set fund false && npm config set update-notifier false\n"
+            "RUN npm ci --prefer-offline --no-audit --foreground-scripts\n"
             "RUN npx playwright install --with-deps chromium --only-shell\n"
-            "RUN cd /opt/hermes/scripts/whatsapp-bridge && npm install --prefer-offline --no-audit\n"
+            "RUN cd /opt/hermes/scripts/whatsapp-bridge && npm ci --prefer-offline --no-audit --foreground-scripts\n"
             "RUN npm cache clean --force\n"
         )
         return pattern.sub(replacement, contents, count=1)
