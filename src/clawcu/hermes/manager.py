@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Callable
 
@@ -10,6 +11,8 @@ from clawcu.core.subprocess_utils import run_command
 from clawcu.core.validation import image_tag_for_service, normalize_ref
 
 DEFAULT_HERMES_SOURCE_REPO = "https://github.com/NousResearch/hermes-agent.git"
+DEFAULT_HERMES_DOCKERFILE_NAME = "Dockerfile"
+OBSERVABLE_HERMES_DOCKERFILE_NAME = "Dockerfile.clawcu"
 Reporter = Callable[[str], None]
 
 
@@ -46,13 +49,14 @@ class HermesManager:
             self.reporter(f"Step 2/5: Docker image {image_tag} already exists locally. Skipping source sync/build.")
             return image_tag
         source_dir = self.prepare_source(normalized)
+        dockerfile = self.prepare_build_dockerfile(source_dir)
         for attempt in range(1, self.build_attempts + 1):
             self.reporter(
                 f"Step 2/5: Building Hermes image {image_tag} from {source_dir} "
                 f"(attempt {attempt}/{self.build_attempts}). This may take a while the first time."
             )
             try:
-                self.docker.build_image(source_dir, image_tag)
+                self.docker.build_image(source_dir, image_tag, dockerfile=dockerfile.name)
                 break
             except Exception:
                 if attempt >= self.build_attempts:
@@ -75,3 +79,33 @@ class HermesManager:
         self.runner(["git", "checkout", normalized], cwd=source_dir)
         self.runner(["git", "submodule", "update", "--init", "--recursive"], cwd=source_dir)
         return source_dir
+
+    def prepare_build_dockerfile(self, source_dir: Path) -> Path:
+        source_dockerfile = source_dir / DEFAULT_HERMES_DOCKERFILE_NAME
+        observable_dockerfile = source_dir / OBSERVABLE_HERMES_DOCKERFILE_NAME
+        original = source_dockerfile.read_text(encoding="utf-8")
+        rewritten = self._rewrite_dockerfile_for_observable_builds(original)
+        observable_dockerfile.write_text(rewritten, encoding="utf-8")
+        if rewritten != original:
+            self.reporter(
+                "Step 2/5: Preparing a ClawCU build Dockerfile with split Hermes dependency steps for clearer progress."
+            )
+        return observable_dockerfile
+
+    def _rewrite_dockerfile_for_observable_builds(self, contents: str) -> str:
+        pattern = re.compile(
+            r"(?ms)^# Install Node dependencies and Playwright as root \(\-\-with-deps needs apt\)\n"
+            r"RUN npm install --prefer-offline --no-audit && \\\n"
+            r"\s*npx playwright install --with-deps chromium --only-shell && \\\n"
+            r"\s*cd /opt/hermes/scripts/whatsapp-bridge && \\\n"
+            r"\s*npm install --prefer-offline --no-audit && \\\n"
+            r"\s*npm cache clean --force\n"
+        )
+        replacement = (
+            "# Install Node dependencies and Playwright as root (--with-deps needs apt)\n"
+            "RUN npm install --prefer-offline --no-audit\n"
+            "RUN npx playwright install --with-deps chromium --only-shell\n"
+            "RUN cd /opt/hermes/scripts/whatsapp-bridge && npm install --prefer-offline --no-audit\n"
+            "RUN npm cache clean --force\n"
+        )
+        return pattern.sub(replacement, contents, count=1)

@@ -26,8 +26,18 @@ class DockerManager:
     def tag_image(self, source_image: str, target_image: str) -> None:
         self.runner(["docker", "tag", source_image, target_image], capture_output=False)
 
-    def build_image(self, source_dir: Path, image_tag: str, *, preferred_variant: str | None = None) -> None:
-        command = ["docker", "build", "-t", image_tag, "."]
+    def build_image(
+        self,
+        source_dir: Path,
+        image_tag: str,
+        *,
+        preferred_variant: str | None = None,
+        dockerfile: str | Path | None = None,
+    ) -> None:
+        command = ["docker", "build"]
+        if dockerfile:
+            command.extend(["-f", str(dockerfile)])
+        command.extend(["-t", image_tag, "."])
         self.runner(command, cwd=source_dir, capture_output=False)
 
     def inspect_container(self, container_name: str) -> dict | None:

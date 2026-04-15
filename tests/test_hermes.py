@@ -22,17 +22,17 @@ class RecordingRunner:
 class FakeBuildDocker:
     def __init__(self) -> None:
         self.existing_images: set[str] = set()
-        self.build_calls: list[tuple[Path, str]] = []
+        self.build_calls: list[tuple[Path, str, str | None]] = []
         self.failures_remaining = 0
 
     def image_exists(self, image_tag: str) -> bool:
         return image_tag in self.existing_images
 
-    def build_image(self, source_dir: Path, image_tag: str) -> None:
+    def build_image(self, source_dir: Path, image_tag: str, *, dockerfile: str | None = None) -> None:
         if self.failures_remaining > 0:
             self.failures_remaining -= 1
             raise RuntimeError("transient docker build failure")
-        self.build_calls.append((source_dir, image_tag))
+        self.build_calls.append((source_dir, image_tag, dockerfile))
 
 
 def test_prepare_source_clones_and_checks_out_requested_ref(temp_clawcu_home) -> None:
@@ -67,11 +67,12 @@ def test_ensure_image_builds_from_prepared_source(temp_clawcu_home, monkeypatch)
     manager = HermesManager(store, docker, reporter=messages.append)
     source_dir = store.source_dir("hermes", "v0.9.0")
     monkeypatch.setattr(manager, "prepare_source", lambda version: source_dir)
+    monkeypatch.setattr(manager, "prepare_build_dockerfile", lambda _source_dir: source_dir / "Dockerfile.clawcu")
 
     image_tag = manager.ensure_image("v0.9.0")
 
     assert image_tag == "clawcu/hermes:v0.9.0"
-    assert docker.build_calls == [(source_dir, "clawcu/hermes:v0.9.0")]
+    assert docker.build_calls == [(source_dir, "clawcu/hermes:v0.9.0", "Dockerfile.clawcu")]
     assert any("Building Hermes image clawcu/hermes:v0.9.0" in message for message in messages)
 
 
@@ -83,11 +84,12 @@ def test_ensure_image_retries_transient_build_failures(temp_clawcu_home, monkeyp
     manager = HermesManager(store, docker, reporter=messages.append)
     source_dir = store.source_dir("hermes", "v0.9.0")
     monkeypatch.setattr(manager, "prepare_source", lambda version: source_dir)
+    monkeypatch.setattr(manager, "prepare_build_dockerfile", lambda _source_dir: source_dir / "Dockerfile.clawcu")
 
     image_tag = manager.ensure_image("v0.9.0")
 
     assert image_tag == "clawcu/hermes:v0.9.0"
-    assert docker.build_calls == [(source_dir, "clawcu/hermes:v0.9.0")]
+    assert docker.build_calls == [(source_dir, "clawcu/hermes:v0.9.0", "Dockerfile.clawcu")]
     assert any("attempt 1/3" in message for message in messages)
     assert any("attempt 2/3" in message for message in messages)
     assert any("Retrying from the same source checkout" in message for message in messages)
@@ -107,6 +109,38 @@ def test_ensure_image_skips_build_when_local_image_exists(temp_clawcu_home) -> N
     assert messages == [
         "Step 2/5: Docker image clawcu/hermes:v0.9.0 already exists locally. Skipping source sync/build."
     ]
+
+
+def test_prepare_build_dockerfile_splits_heavy_dependency_layer(temp_clawcu_home) -> None:
+    store = StateStore(get_paths())
+    docker = FakeBuildDocker()
+    manager = HermesManager(store, docker)
+    source_dir = store.source_dir("hermes", "v0.9.0")
+    source_dir.mkdir(parents=True, exist_ok=True)
+    source_dockerfile = source_dir / "Dockerfile"
+    source_dockerfile.write_text(
+        """FROM debian:13.4
+
+WORKDIR /opt/hermes
+
+# Install Node dependencies and Playwright as root (--with-deps needs apt)
+RUN npm install --prefer-offline --no-audit && \\
+    npx playwright install --with-deps chromium --only-shell && \\
+    cd /opt/hermes/scripts/whatsapp-bridge && \\
+    npm install --prefer-offline --no-audit && \\
+    npm cache clean --force
+""",
+        encoding="utf-8",
+    )
+
+    observable_dockerfile = manager.prepare_build_dockerfile(source_dir)
+
+    contents = observable_dockerfile.read_text(encoding="utf-8")
+    assert observable_dockerfile == source_dir / "Dockerfile.clawcu"
+    assert "RUN npm install --prefer-offline --no-audit\n" in contents
+    assert "RUN npx playwright install --with-deps chromium --only-shell\n" in contents
+    assert "RUN cd /opt/hermes/scripts/whatsapp-bridge && npm install --prefer-offline --no-audit\n" in contents
+    assert "RUN npm cache clean --force\n" in contents
 
 
 def test_collect_providers_supports_hermes_home(temp_clawcu_home, tmp_path) -> None:
