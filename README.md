@@ -144,13 +144,13 @@ clawcu token writer
 Pull and build a managed Hermes image from the official repo:
 
 ```bash
-clawcu pull hermes --version v0.9.0
+clawcu pull hermes --version v2026.4.13
 ```
 
 Create and start a Hermes instance:
 
 ```bash
-clawcu create hermes --name analyst --version v0.9.0
+clawcu create hermes --name analyst --version v2026.4.13
 ```
 
 Enter the Hermes interactive flow:

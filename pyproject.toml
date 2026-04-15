@@ -9,6 +9,7 @@ description = "ClawCU: a local multi-agent lifecycle manager"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "PyYAML>=6.0,<7.0",
   "rich>=13.7.0,<14.0.0",
   "typer>=0.12.3,<1.0.0",
 ]

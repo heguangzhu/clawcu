@@ -23,11 +23,15 @@ class FakeBuildDocker:
     def __init__(self) -> None:
         self.existing_images: set[str] = set()
         self.build_calls: list[tuple[Path, str]] = []
+        self.failures_remaining = 0
 
     def image_exists(self, image_tag: str) -> bool:
         return image_tag in self.existing_images
 
     def build_image(self, source_dir: Path, image_tag: str) -> None:
+        if self.failures_remaining > 0:
+            self.failures_remaining -= 1
+            raise RuntimeError("transient docker build failure")
         self.build_calls.append((source_dir, image_tag))
 
 
@@ -69,6 +73,24 @@ def test_ensure_image_builds_from_prepared_source(temp_clawcu_home, monkeypatch)
     assert image_tag == "clawcu/hermes:v0.9.0"
     assert docker.build_calls == [(source_dir, "clawcu/hermes:v0.9.0")]
     assert any("Building Hermes image clawcu/hermes:v0.9.0" in message for message in messages)
+
+
+def test_ensure_image_retries_transient_build_failures(temp_clawcu_home, monkeypatch) -> None:
+    store = StateStore(get_paths())
+    docker = FakeBuildDocker()
+    docker.failures_remaining = 1
+    messages: list[str] = []
+    manager = HermesManager(store, docker, reporter=messages.append)
+    source_dir = store.source_dir("hermes", "v0.9.0")
+    monkeypatch.setattr(manager, "prepare_source", lambda version: source_dir)
+
+    image_tag = manager.ensure_image("v0.9.0")
+
+    assert image_tag == "clawcu/hermes:v0.9.0"
+    assert docker.build_calls == [(source_dir, "clawcu/hermes:v0.9.0")]
+    assert any("attempt 1/3" in message for message in messages)
+    assert any("attempt 2/3" in message for message in messages)
+    assert any("Retrying from the same source checkout" in message for message in messages)
 
 
 def test_ensure_image_skips_build_when_local_image_exists(temp_clawcu_home) -> None:

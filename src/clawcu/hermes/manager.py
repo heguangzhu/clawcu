@@ -34,6 +34,7 @@ class HermesManager:
             configured_source_repo or DEFAULT_HERMES_SOURCE_REPO,
         )
         self.reporter = reporter or (lambda _message: None)
+        self.build_attempts = 3
 
     def set_reporter(self, reporter: Reporter | None) -> None:
         self.reporter = reporter or (lambda _message: None)
@@ -45,10 +46,20 @@ class HermesManager:
             self.reporter(f"Step 2/5: Docker image {image_tag} already exists locally. Skipping source sync/build.")
             return image_tag
         source_dir = self.prepare_source(normalized)
-        self.reporter(
-            f"Step 2/5: Building Hermes image {image_tag} from {source_dir}. This may take a while the first time."
-        )
-        self.docker.build_image(source_dir, image_tag)
+        for attempt in range(1, self.build_attempts + 1):
+            self.reporter(
+                f"Step 2/5: Building Hermes image {image_tag} from {source_dir} "
+                f"(attempt {attempt}/{self.build_attempts}). This may take a while the first time."
+            )
+            try:
+                self.docker.build_image(source_dir, image_tag)
+                break
+            except Exception:
+                if attempt >= self.build_attempts:
+                    raise
+                self.reporter(
+                    "Hermes image build failed. Retrying from the same source checkout in case the failure was transient."
+                )
         return image_tag
 
     def prepare_source(self, version: str) -> Path:

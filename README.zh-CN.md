@@ -144,13 +144,13 @@ clawcu token writer
 从官方仓库拉取并构建受管镜像：
 
 ```bash
-clawcu pull hermes --version v0.9.0
+clawcu pull hermes --version v2026.4.13
 ```
 
 创建并启动 Hermes 实例：
 
 ```bash
-clawcu create hermes --name analyst --version v0.9.0
+clawcu create hermes --name analyst --version v2026.4.13
 ```
 
 进入 Hermes 交互式入口：
