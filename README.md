@@ -113,6 +113,7 @@ In an interactive terminal, `clawcu setup` prompts for:
 - the default OpenClaw image repo
 - the default Hermes source repo
 - an optional Hermes build proxy for slow GitHub-dependent installs
+- the Hermes apt mirror used during Docker builds
 
 ### OpenClaw
 

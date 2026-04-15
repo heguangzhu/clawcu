@@ -173,6 +173,13 @@ class FakeService:
                 "summary": "Hermes build proxy is not configured.",
                 "hint": "",
             },
+            {
+                "name": "hermes_apt_mirror",
+                "status": "ok",
+                "ok": True,
+                "summary": "Hermes apt mirror is not configured.",
+                "hint": "",
+            },
         ]
 
     def get_openclaw_image_repo(self) -> str:
@@ -198,6 +205,18 @@ class FakeService:
     def set_hermes_proxy(self, proxy: str) -> str:
         self._record("set_hermes_proxy", proxy=proxy)
         return proxy
+
+    def get_hermes_apt_mirror(self) -> str:
+        self._record("get_hermes_apt_mirror")
+        return "https://deb.debian.org/debian"
+
+    def suggest_hermes_apt_mirror(self) -> str:
+        self._record("suggest_hermes_apt_mirror")
+        return "https://deb.debian.org/debian"
+
+    def set_hermes_apt_mirror(self, apt_mirror: str) -> str:
+        self._record("set_hermes_apt_mirror", apt_mirror=apt_mirror)
+        return apt_mirror
 
     def suggest_openclaw_image_repo(self) -> str:
         self._record("suggest_openclaw_image_repo")
@@ -706,6 +725,7 @@ def test_setup_command_prompts_for_openclaw_image_repo_in_interactive_shell(monk
             "registry.example.com/openclaw/openclaw",
             "https://github.com/NousResearch/hermes-agent.git",
             "http://127.0.0.1:7890",
+            "https://mirrors.nju.edu.cn/debian",
         ]
     )
     monkeypatch.setattr(
@@ -732,9 +752,11 @@ def test_setup_command_prompts_for_openclaw_image_repo_in_interactive_shell(monk
     assert "Saved OpenClaw image repo: registry.example.com/openclaw/openclaw" in result.stdout
     assert "Saved Hermes source repo: https://github.com/NousResearch/hermes-agent.git" in result.stdout
     assert "Saved Hermes build proxy: http://127.0.0.1:7890" in result.stdout
+    assert "Saved Hermes apt mirror: https://mirrors.nju.edu.cn/debian" in result.stdout
     assert ("get_clawcu_home", (), {}) in service.calls
     assert ("suggest_openclaw_image_repo", (), {}) in service.calls
     assert ("get_hermes_proxy", (), {}) in service.calls
+    assert ("suggest_hermes_apt_mirror", (), {}) in service.calls
     assert (
         "set_clawcu_home",
         (),
@@ -744,6 +766,11 @@ def test_setup_command_prompts_for_openclaw_image_repo_in_interactive_shell(monk
         "set_hermes_proxy",
         (),
         {"proxy": "http://127.0.0.1:7890"},
+    ) in service.calls
+    assert (
+        "set_hermes_apt_mirror",
+        (),
+        {"apt_mirror": "https://mirrors.nju.edu.cn/debian"},
     ) in service.calls
 
 
@@ -758,6 +785,7 @@ def test_setup_command_uses_china_mirror_as_interactive_default(monkeypatch) -> 
             "ghcr.nju.edu.cn/openclaw/openclaw",
             "https://github.com/NousResearch/hermes-agent.git",
             "",
+            "https://mirrors.nju.edu.cn/debian",
         ]
     )
 
@@ -767,6 +795,7 @@ def test_setup_command_uses_china_mirror_as_interactive_default(monkeypatch) -> 
 
     monkeypatch.setattr("clawcu.cli.typer.prompt", fake_prompt)
     monkeypatch.setattr(service, "suggest_openclaw_image_repo", lambda: "ghcr.nju.edu.cn/openclaw/openclaw")
+    monkeypatch.setattr(service, "suggest_hermes_apt_mirror", lambda: "https://mirrors.nju.edu.cn/debian")
 
     result = runner.invoke(app, ["setup"])
 
@@ -775,6 +804,8 @@ def test_setup_command_uses_china_mirror_as_interactive_default(monkeypatch) -> 
     assert prompts[1][1]["default"] == "ghcr.nju.edu.cn/openclaw/openclaw"
     assert prompts[2][0][0] == "Hermes source repo"
     assert prompts[3][0][0] == "Hermes build proxy (optional)"
+    assert prompts[4][0][0] == "Hermes apt mirror"
+    assert prompts[4][1]["default"] == "https://mirrors.nju.edu.cn/debian"
     assert (
         "set_openclaw_image_repo",
         (),

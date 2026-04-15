@@ -113,6 +113,7 @@ clawcu setup --completion
 - 默认 OpenClaw 镜像源
 - 默认 Hermes 源码仓库
 - 可选的 Hermes 构建代理，用来加速依赖 GitHub 的安装步骤
+- Hermes Docker 构建时使用的 apt 镜像源
 
 ### OpenClaw
 

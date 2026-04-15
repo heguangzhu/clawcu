@@ -14,7 +14,7 @@
 | 命令 | 说明 |
 |------|------|
 | `clawcu --version` | 显示当前安装的 ClawCU 版本。 |
-| `clawcu setup [--completion]` | 检查 Docker、ClawCU home、运行目录，并交互式配置默认的 ClawCU home、OpenClaw 镜像源、Hermes 源码仓库，以及可选的 Hermes 构建代理。 |
+| `clawcu setup [--completion]` | 检查 Docker、ClawCU home、运行目录，并交互式配置默认的 ClawCU home、OpenClaw 镜像源、Hermes 源码仓库、可选的 Hermes 构建代理，以及 Hermes Docker 构建时使用的 apt 镜像源。 |
 | `clawcu pull openclaw --version <version>` | 拉取指定版本的 OpenClaw 官方镜像。如果镜像不存在或拉取失败，ClawCU 会直接报错。 |
 | `clawcu pull hermes --version <ref>` | 拉取指定 git ref 的 Hermes 官方仓库源码，并用其 Dockerfile 构建受管镜像。 |
 

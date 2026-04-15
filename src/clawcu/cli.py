@@ -355,6 +355,15 @@ def setup_environment(
                 console.print(f"[green]Saved Hermes build proxy:[/green] {saved_hermes_proxy}")
             else:
                 console.print("[green]Hermes build proxy:[/green] not configured")
+            configured_hermes_apt_mirror = typer.prompt(
+                "Hermes apt mirror",
+                default=service.suggest_hermes_apt_mirror(),
+            ).strip()
+            saved_hermes_apt_mirror = service.set_hermes_apt_mirror(configured_hermes_apt_mirror)
+            if saved_hermes_apt_mirror:
+                console.print(f"[green]Saved Hermes apt mirror:[/green] {saved_hermes_apt_mirror}")
+            else:
+                console.print("[green]Hermes apt mirror:[/green] not configured")
         console.print("[green]ClawCU setup check passed.[/green] Docker and the ClawCU runtime layout are ready.")
         return
     raise typer.Exit(code=1)

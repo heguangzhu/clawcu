@@ -16,6 +16,8 @@ from clawcu.core.subprocess_utils import run_command
 from clawcu.core.validation import image_tag_for_service, normalize_ref
 
 DEFAULT_HERMES_SOURCE_REPO = "https://github.com/NousResearch/hermes-agent.git"
+DEFAULT_HERMES_APT_MIRROR = "https://deb.debian.org/debian"
+DEFAULT_HERMES_APT_MIRROR_CN = "https://mirrors.nju.edu.cn/debian"
 DEFAULT_HERMES_DOCKERFILE_NAME = "Dockerfile"
 OBSERVABLE_HERMES_DOCKERFILE_NAME = "Dockerfile.clawcu"
 Reporter = Callable[[str], None]
@@ -44,10 +46,13 @@ class HermesManager:
         self.runner = runner
         configured_source_repo = None
         configured_github_proxy = None
+        configured_apt_mirror = None
         if hasattr(store, "get_hermes_source_repo"):
             configured_source_repo = store.get_hermes_source_repo()
         if hasattr(store, "get_hermes_proxy"):
             configured_github_proxy = store.get_hermes_proxy()
+        if hasattr(store, "get_hermes_apt_mirror"):
+            configured_apt_mirror = store.get_hermes_apt_mirror()
         self.source_repo = source_repo or os.environ.get(
             "CLAWCU_HERMES_SOURCE_REPO",
             configured_source_repo or DEFAULT_HERMES_SOURCE_REPO,
@@ -55,6 +60,10 @@ class HermesManager:
         self.github_proxy = os.environ.get(
             "CLAWCU_HERMES_PROXY",
             configured_github_proxy or "",
+        ).strip() or None
+        self.apt_mirror = os.environ.get(
+            "CLAWCU_HERMES_APT_MIRROR",
+            configured_apt_mirror or "",
         ).strip() or None
         self.reporter = reporter or (lambda _message: None)
         self.build_attempts = 3
@@ -136,6 +145,7 @@ class HermesManager:
             "build-essential nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps",
             "build-essential git nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps",
         )
+        contents = self._rewrite_apt_install_step(contents)
         camoufox_install_step = "RUN npx camoufox-js fetch || true\n"
         if camoufox_prefetch:
             camoufox_install_step = (
@@ -169,6 +179,44 @@ class HermesManager:
             "RUN npm cache clean --force\n"
         )
         return pattern.sub(replacement, contents, count=1)
+
+    def _rewrite_apt_install_step(self, contents: str) -> str:
+        apt_block = (
+            "RUN apt-get update && \\\n"
+            "    apt-get install -y --no-install-recommends \\\n"
+            "        build-essential git nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps && \\\n"
+            "    rm -rf /var/lib/apt/lists/*"
+        )
+        if self.apt_mirror:
+            security_mirror = self._derive_security_mirror(self.apt_mirror)
+            replacement = (
+                "RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \\\n"
+                f"      sed -i -e 's|http://deb.debian.org/debian|{self.apt_mirror}|g' "
+                f"-e 's|https://deb.debian.org/debian|{self.apt_mirror}|g' "
+                f"-e 's|http://security.debian.org/debian-security|{security_mirror}|g' "
+                f"-e 's|https://security.debian.org/debian-security|{security_mirror}|g' "
+                f"/etc/apt/sources.list.d/debian.sources; \\\n"
+                "    fi && \\\n"
+                "    if [ -f /etc/apt/sources.list ]; then \\\n"
+                f"      sed -i -e 's|http://deb.debian.org/debian|{self.apt_mirror}|g' "
+                f"-e 's|https://deb.debian.org/debian|{self.apt_mirror}|g' "
+                f"-e 's|http://security.debian.org/debian-security|{security_mirror}|g' "
+                f"-e 's|https://security.debian.org/debian-security|{security_mirror}|g' "
+                f"/etc/apt/sources.list; \\\n"
+                "    fi && \\\n"
+                "    apt-get -o Acquire::Retries=5 update && \\\n"
+                "    apt-get install -y --no-install-recommends \\\n"
+                "        build-essential git nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps && \\\n"
+                "    rm -rf /var/lib/apt/lists/*"
+            )
+            return contents.replace(apt_block, replacement)
+        return contents.replace("RUN apt-get update && \\\n", "RUN apt-get -o Acquire::Retries=5 update && \\\n")
+
+    def _derive_security_mirror(self, apt_mirror: str) -> str:
+        cleaned = apt_mirror.rstrip("/")
+        if cleaned.endswith("/debian"):
+            return f"{cleaned[:-7]}/debian-security"
+        return f"{cleaned}-security"
 
     def prepare_camoufox_prefetch(self, source_dir: Path) -> CamoufoxPrefetch | None:
         cache_dir = self.store.paths.home / "cache" / "hermes" / "camoufox" / normalize_ref(source_dir.name)

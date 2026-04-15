@@ -136,6 +136,7 @@ def test_prepare_build_dockerfile_splits_heavy_dependency_layer(temp_clawcu_home
     docker = FakeBuildDocker()
     manager = HermesManager(store, docker)
     manager.github_proxy = "http://127.0.0.1:7890"
+    manager.apt_mirror = "https://mirrors.nju.edu.cn/debian"
     source_dir = store.source_dir("hermes", "v0.9.0")
     source_dir.mkdir(parents=True, exist_ok=True)
     source_dockerfile = source_dir / "Dockerfile"
@@ -171,6 +172,9 @@ RUN npm install --prefer-offline --no-audit && \\
     contents = observable_dockerfile.read_text(encoding="utf-8")
     assert observable_dockerfile == source_dir / "Dockerfile.clawcu"
     assert "build-essential git nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps" in contents
+    assert "apt-get -o Acquire::Retries=5 update" in contents
+    assert "https://mirrors.nju.edu.cn/debian" in contents
+    assert "https://mirrors.nju.edu.cn/debian-security" in contents
     assert (
         'ENV HTTP_PROXY="http://127.0.0.1:7890" HTTPS_PROXY="http://127.0.0.1:7890" ALL_PROXY="http://127.0.0.1:7890" '
         'http_proxy="http://127.0.0.1:7890" https_proxy="http://127.0.0.1:7890" all_proxy="http://127.0.0.1:7890"\n'
@@ -196,6 +200,32 @@ RUN npm install --prefer-offline --no-audit && \\
     assert "RUN npx playwright install --with-deps chromium --only-shell\n" in contents
     assert "RUN cd /opt/hermes/scripts/whatsapp-bridge && npm ci --prefer-offline --no-audit --foreground-scripts\n" in contents
     assert "RUN npm cache clean --force\n" in contents
+
+
+def test_prepare_build_dockerfile_adds_apt_retries_without_custom_mirror(temp_clawcu_home) -> None:
+    store = StateStore(get_paths())
+    docker = FakeBuildDocker()
+    manager = HermesManager(store, docker)
+    source_dir = store.source_dir("hermes", "v0.9.0")
+    source_dir.mkdir(parents=True, exist_ok=True)
+    source_dockerfile = source_dir / "Dockerfile"
+    source_dockerfile.write_text(
+        """FROM debian:13.4
+
+RUN apt-get update && \\
+    apt-get install -y --no-install-recommends \\
+        build-essential nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps && \\
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/hermes
+""",
+        encoding="utf-8",
+    )
+
+    observable_dockerfile = manager.prepare_build_dockerfile(source_dir)
+
+    contents = observable_dockerfile.read_text(encoding="utf-8")
+    assert "RUN apt-get -o Acquire::Retries=5 update && \\" in contents
 
 
 def test_download_file_uses_configured_proxy(temp_clawcu_home, monkeypatch, tmp_path) -> None:

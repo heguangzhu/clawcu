@@ -32,7 +32,12 @@ from clawcu.core.validation import (
     utc_now_iso,
 )
 from clawcu.hermes.adapter import HermesAdapter
-from clawcu.hermes.manager import DEFAULT_HERMES_SOURCE_REPO, HermesManager
+from clawcu.hermes.manager import (
+    DEFAULT_HERMES_APT_MIRROR,
+    DEFAULT_HERMES_APT_MIRROR_CN,
+    DEFAULT_HERMES_SOURCE_REPO,
+    HermesManager,
+)
 from clawcu.openclaw.adapter import OpenClawAdapter
 from clawcu.openclaw.manager import (
     DEFAULT_OPENCLAW_IMAGE_REPO,
@@ -391,6 +396,20 @@ class ClawCUService:
                 "hint": "",
             }
         )
+        hermes_apt_mirror = self.get_hermes_apt_mirror()
+        checks.append(
+            {
+                "name": "hermes_apt_mirror",
+                "status": "ok",
+                "ok": True,
+                "summary": (
+                    f"Hermes apt mirror is configured as {hermes_apt_mirror}."
+                    if hermes_apt_mirror
+                    else "Hermes apt mirror is not configured."
+                ),
+                "hint": "",
+            }
+        )
         return checks
 
     def get_clawcu_home(self) -> str:
@@ -414,6 +433,10 @@ class ClawCUService:
         self.hermes.github_proxy = self.store.get_hermes_proxy() or os.environ.get(
             "CLAWCU_HERMES_PROXY",
             getattr(self.hermes, "github_proxy", None) or "",
+        ) or None
+        self.hermes.apt_mirror = self.store.get_hermes_apt_mirror() or os.environ.get(
+            "CLAWCU_HERMES_APT_MIRROR",
+            getattr(self.hermes, "apt_mirror", None) or "",
         ) or None
         self.store.append_log(f"setup clawcu_home={resolved}")
         return resolved
@@ -441,6 +464,15 @@ class ClawCUService:
             return env_proxy.strip()
         return getattr(self.hermes, "github_proxy", None) or ""
 
+    def get_hermes_apt_mirror(self) -> str:
+        configured = self.store.get_hermes_apt_mirror()
+        if configured:
+            return configured
+        env_apt_mirror = os.environ.get("CLAWCU_HERMES_APT_MIRROR")
+        if isinstance(env_apt_mirror, str) and env_apt_mirror.strip():
+            return env_apt_mirror.strip()
+        return getattr(self.hermes, "apt_mirror", None) or ""
+
     def suggest_openclaw_image_repo(self) -> str:
         configured = self.store.get_openclaw_image_repo()
         if configured:
@@ -452,6 +484,18 @@ class ClawCUService:
         if country_code == "CN":
             return DEFAULT_OPENCLAW_IMAGE_REPO_CN
         return DEFAULT_OPENCLAW_IMAGE_REPO
+
+    def suggest_hermes_apt_mirror(self) -> str:
+        configured = self.store.get_hermes_apt_mirror()
+        if configured:
+            return configured
+        env_apt_mirror = os.environ.get("CLAWCU_HERMES_APT_MIRROR")
+        if isinstance(env_apt_mirror, str) and env_apt_mirror.strip():
+            return env_apt_mirror.strip()
+        country_code = self._detect_public_country_code()
+        if country_code == "CN":
+            return DEFAULT_HERMES_APT_MIRROR_CN
+        return DEFAULT_HERMES_APT_MIRROR
 
     def set_openclaw_image_repo(self, image_repo: str) -> str:
         cleaned = image_repo.strip()
@@ -476,6 +520,13 @@ class ClawCUService:
         self.store.set_hermes_proxy(cleaned)
         self.hermes.github_proxy = cleaned or None
         self.store.append_log(f"setup hermes_proxy={cleaned or '-'}")
+        return cleaned
+
+    def set_hermes_apt_mirror(self, apt_mirror: str) -> str:
+        cleaned = apt_mirror.strip()
+        self.store.set_hermes_apt_mirror(cleaned)
+        self.hermes.apt_mirror = cleaned or None
+        self.store.append_log(f"setup hermes_apt_mirror={cleaned or '-'}")
         return cleaned
 
     def _detect_public_country_code(self) -> str | None:

@@ -90,6 +90,18 @@ class StateStore:
             payload.pop("hermes_proxy", None)
         self.save_config(payload)
 
+    def get_hermes_apt_mirror(self) -> str | None:
+        return self._get_string_config("hermes_apt_mirror")
+
+    def set_hermes_apt_mirror(self, apt_mirror: str) -> None:
+        cleaned = apt_mirror.strip()
+        payload = self.load_config()
+        if cleaned:
+            payload["hermes_apt_mirror"] = cleaned
+        else:
+            payload.pop("hermes_apt_mirror", None)
+        self.save_config(payload)
+
     def instance_path(self, name: str) -> Path:
         return self.paths.instances_dir / f"{name}.json"
 

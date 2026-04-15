@@ -8,6 +8,7 @@ import pytest
 
 from clawcu.models import InstanceRecord
 from clawcu.paths import bootstrap_config_path
+from clawcu.hermes import DEFAULT_HERMES_APT_MIRROR, DEFAULT_HERMES_APT_MIRROR_CN
 from clawcu.openclaw import DEFAULT_OPENCLAW_IMAGE_REPO, DEFAULT_OPENCLAW_IMAGE_REPO_CN
 from clawcu.subprocess_utils import CommandError
 from tests.support import make_service, write_provider_source, write_root_provider_source
@@ -90,6 +91,13 @@ def test_check_setup_reports_running_docker_daemon(temp_clawcu_home, monkeypatch
             "summary": "Hermes build proxy is not configured.",
             "hint": "",
         },
+        {
+            "name": "hermes_apt_mirror",
+            "status": "ok",
+            "ok": True,
+            "summary": "Hermes apt mirror is not configured.",
+            "hint": "",
+        },
     ]
 
 
@@ -146,6 +154,35 @@ def test_set_hermes_proxy_clears_empty_value(temp_clawcu_home) -> None:
     assert store.get_hermes_proxy() is None
     assert service.hermes.github_proxy is None
     assert json.loads(store.paths.config_path.read_text(encoding="utf-8")) == {}
+
+
+def test_set_hermes_apt_mirror_persists_global_config(temp_clawcu_home) -> None:
+    service, _, _, store = make_service(temp_clawcu_home)
+
+    saved = service.set_hermes_apt_mirror("https://mirrors.nju.edu.cn/debian")
+
+    assert saved == "https://mirrors.nju.edu.cn/debian"
+    assert store.get_hermes_apt_mirror() == "https://mirrors.nju.edu.cn/debian"
+    assert service.hermes.apt_mirror == "https://mirrors.nju.edu.cn/debian"
+    assert json.loads(store.paths.config_path.read_text(encoding="utf-8")) == {
+        "hermes_apt_mirror": "https://mirrors.nju.edu.cn/debian"
+    }
+
+
+def test_suggest_hermes_apt_mirror_uses_china_mirror_when_ip_is_in_china(temp_clawcu_home, monkeypatch) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+
+    monkeypatch.setattr(service, "_detect_public_country_code", lambda: "CN")
+
+    assert service.suggest_hermes_apt_mirror() == DEFAULT_HERMES_APT_MIRROR_CN
+
+
+def test_suggest_hermes_apt_mirror_falls_back_to_global_default(temp_clawcu_home, monkeypatch) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+
+    monkeypatch.setattr(service, "_detect_public_country_code", lambda: None)
+
+    assert service.suggest_hermes_apt_mirror() == DEFAULT_HERMES_APT_MIRROR
 
 
 def test_suggest_openclaw_image_repo_uses_china_mirror_when_ip_is_in_china(temp_clawcu_home, monkeypatch) -> None:
