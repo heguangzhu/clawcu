@@ -320,6 +320,26 @@ def setup_environment(
         bool,
         typer.Option("--completion", help="Also show shell completion guidance."),
     ] = False,
+    clawcu_home: Annotated[
+        str | None,
+        typer.Option("--clawcu-home", help="Save the default ClawCU home without prompting."),
+    ] = None,
+    openclaw_image_repo: Annotated[
+        str | None,
+        typer.Option("--openclaw-image-repo", help="Save the default OpenClaw image repo without prompting."),
+    ] = None,
+    hermes_source_repo: Annotated[
+        str | None,
+        typer.Option("--hermes-source-repo", help="Save the default Hermes source repo without prompting."),
+    ] = None,
+    hermes_build_proxy: Annotated[
+        str | None,
+        typer.Option("--hermes-build-proxy", help="Save the Hermes build proxy without prompting."),
+    ] = None,
+    hermes_apt_mirror: Annotated[
+        str | None,
+        typer.Option("--hermes-apt-mirror", help="Save the Hermes apt mirror without prompting."),
+    ] = None,
 ) -> None:
     console.print("Checking local prerequisites for ClawCU...")
     service = get_service()
@@ -327,43 +347,81 @@ def setup_environment(
     if completion:
         checks.append(_completion_check(service))
     if _print_setup_checks(checks):
-        if _is_interactive_stdin():
-            configured_home = typer.prompt(
-                "ClawCU home",
-                default=service.get_clawcu_home(),
-            ).strip()
+        is_interactive = _is_interactive_stdin()
+        has_explicit_config = any(
+            value is not None
+            for value in (
+                clawcu_home,
+                openclaw_image_repo,
+                hermes_source_repo,
+                hermes_build_proxy,
+                hermes_apt_mirror,
+            )
+        )
+        if is_interactive or has_explicit_config:
+            configured_home = clawcu_home
+            if configured_home is None and is_interactive:
+                configured_home = typer.prompt(
+                    "ClawCU home",
+                    default=service.get_clawcu_home(),
+                ).strip()
+            elif configured_home is None:
+                configured_home = service.get_clawcu_home()
             saved_home = service.set_clawcu_home(configured_home)
             console.print(f"[green]Saved ClawCU home:[/green] {saved_home}")
-            configured_repo = typer.prompt(
-                "OpenClaw image repo",
-                default=service.suggest_openclaw_image_repo(),
-            ).strip()
+            configured_repo = openclaw_image_repo
+            if configured_repo is None and is_interactive:
+                configured_repo = typer.prompt(
+                    "OpenClaw image repo",
+                    default=service.suggest_openclaw_image_repo(),
+                ).strip()
+            elif configured_repo is None:
+                configured_repo = service.get_openclaw_image_repo()
             saved_repo = service.set_openclaw_image_repo(configured_repo)
             console.print(f"[green]Saved OpenClaw image repo:[/green] {saved_repo}")
-            configured_hermes_repo = typer.prompt(
-                "Hermes source repo",
-                default=service.get_hermes_source_repo(),
-            ).strip()
+            configured_hermes_repo = hermes_source_repo
+            if configured_hermes_repo is None and is_interactive:
+                configured_hermes_repo = typer.prompt(
+                    "Hermes source repo",
+                    default=service.get_hermes_source_repo(),
+                ).strip()
+            elif configured_hermes_repo is None:
+                configured_hermes_repo = service.get_hermes_source_repo()
             saved_hermes_repo = service.set_hermes_source_repo(configured_hermes_repo)
             console.print(f"[green]Saved Hermes source repo:[/green] {saved_hermes_repo}")
-            configured_hermes_proxy = typer.prompt(
-                "Hermes build proxy (optional)",
-                default=service.get_hermes_proxy(),
-            ).strip()
+            configured_hermes_proxy = hermes_build_proxy
+            if configured_hermes_proxy is None and is_interactive:
+                configured_hermes_proxy = typer.prompt(
+                    "Hermes build proxy (optional)",
+                    default=service.get_hermes_proxy(),
+                ).strip()
+            elif configured_hermes_proxy is None:
+                configured_hermes_proxy = service.get_hermes_proxy()
             saved_hermes_proxy = service.set_hermes_proxy(configured_hermes_proxy)
             if saved_hermes_proxy:
                 console.print(f"[green]Saved Hermes build proxy:[/green] {saved_hermes_proxy}")
             else:
                 console.print("[green]Hermes build proxy:[/green] not configured")
-            configured_hermes_apt_mirror = typer.prompt(
-                "Hermes apt mirror",
-                default=service.suggest_hermes_apt_mirror(),
-            ).strip()
+            configured_hermes_apt_mirror = hermes_apt_mirror
+            if configured_hermes_apt_mirror is None and is_interactive:
+                configured_hermes_apt_mirror = typer.prompt(
+                    "Hermes apt mirror",
+                    default=service.suggest_hermes_apt_mirror(),
+                ).strip()
+            elif configured_hermes_apt_mirror is None:
+                configured_hermes_apt_mirror = service.get_hermes_apt_mirror()
             saved_hermes_apt_mirror = service.set_hermes_apt_mirror(configured_hermes_apt_mirror)
             if saved_hermes_apt_mirror:
                 console.print(f"[green]Saved Hermes apt mirror:[/green] {saved_hermes_apt_mirror}")
             else:
                 console.print("[green]Hermes apt mirror:[/green] not configured")
+        elif not is_interactive:
+            console.print(
+                "[yellow]Non-interactive shell detected.[/yellow] "
+                "Pass setup options such as "
+                "`--clawcu-home`, `--openclaw-image-repo`, `--hermes-source-repo`, "
+                "`--hermes-build-proxy`, or `--hermes-apt-mirror` to save config without prompts."
+            )
         console.print("[green]ClawCU setup check passed.[/green] Docker and the ClawCU runtime layout are ready.")
         return
     raise typer.Exit(code=1)

@@ -834,6 +834,73 @@ def test_setup_command_shows_completion_only_when_requested(monkeypatch) -> None
     assert "Hint: Add this to ~/.zshrc" in result.stdout
 
 
+def test_setup_command_noninteractive_shows_config_hint(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+    monkeypatch.setattr("clawcu.cli._is_interactive_stdin", lambda: False)
+
+    result = runner.invoke(app, ["setup"])
+
+    assert result.exit_code == 0
+    assert "Non-interactive shell detected." in result.stdout
+    assert "--hermes-apt-mirror" in result.stdout
+
+
+def test_setup_command_noninteractive_applies_explicit_options(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+    monkeypatch.setattr("clawcu.cli._is_interactive_stdin", lambda: False)
+
+    result = runner.invoke(
+        app,
+        [
+            "setup",
+            "--clawcu-home",
+            "/tmp/noninteractive-home",
+            "--openclaw-image-repo",
+            "registry.example.com/openclaw/openclaw",
+            "--hermes-source-repo",
+            "https://github.com/NousResearch/hermes-agent.git",
+            "--hermes-build-proxy",
+            "http://127.0.0.1:7890",
+            "--hermes-apt-mirror",
+            "https://mirrors.nju.edu.cn/debian",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Saved ClawCU home: /tmp/noninteractive-home" in result.stdout
+    assert "Saved OpenClaw image repo: registry.example.com/openclaw/openclaw" in result.stdout
+    assert "Saved Hermes source repo: https://github.com/NousResearch/hermes-agent.git" in result.stdout
+    assert "Saved Hermes build proxy: http://127.0.0.1:7890" in result.stdout
+    assert "Saved Hermes apt mirror: https://mirrors.nju.edu.cn/debian" in result.stdout
+    assert (
+        "set_clawcu_home",
+        (),
+        {"home": "/tmp/noninteractive-home"},
+    ) in service.calls
+    assert (
+        "set_openclaw_image_repo",
+        (),
+        {"image_repo": "registry.example.com/openclaw/openclaw"},
+    ) in service.calls
+    assert (
+        "set_hermes_source_repo",
+        (),
+        {"source_repo": "https://github.com/NousResearch/hermes-agent.git"},
+    ) in service.calls
+    assert (
+        "set_hermes_proxy",
+        (),
+        {"proxy": "http://127.0.0.1:7890"},
+    ) in service.calls
+    assert (
+        "set_hermes_apt_mirror",
+        (),
+        {"apt_mirror": "https://mirrors.nju.edu.cn/debian"},
+    ) in service.calls
+
+
 def test_recreate_help_no_longer_exposes_auth_option() -> None:
     result = runner.invoke(app, ["recreate", "--help"])
 
