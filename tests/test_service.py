@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from clawcu.models import InstanceRecord
-from clawcu.paths import get_paths
+from clawcu.paths import bootstrap_config_path, get_paths
+from clawcu.openclaw import DEFAULT_OPENCLAW_IMAGE_REPO, DEFAULT_OPENCLAW_IMAGE_REPO_CN
 from clawcu.service import ClawCUService
 from clawcu.storage import StateStore
 from clawcu.subprocess_utils import CommandError
@@ -16,8 +17,8 @@ from clawcu.subprocess_utils import CommandError
 class FakeDockerManager:
     def __init__(self) -> None:
         self.commands: list[tuple[str, str]] = []
-        self.exec_commands: list[tuple[str, list[str]]] = []
-        self.interactive_exec_commands: list[tuple[str, list[str]]] = []
+        self.exec_commands: list[tuple[str, list[str], dict]] = []
+        self.interactive_exec_commands: list[tuple[str, list[str], dict]] = []
         self.status_map: dict[str, str] = {}
         self.health_map: dict[str, str] = {}
         self.status_sequences: dict[str, list[str]] = {}
@@ -95,12 +96,12 @@ class FakeDockerManager:
 
     def exec_in_container(self, container_name: str, command: list[str], **kwargs) -> object:
         self.commands.append(("exec", container_name))
-        self.exec_commands.append((container_name, command))
+        self.exec_commands.append((container_name, command, kwargs))
         return type("Completed", (), {"stdout": "", "stderr": "", "returncode": 0})()
 
-    def exec_in_container_interactive(self, container_name: str, command: list[str]) -> object:
+    def exec_in_container_interactive(self, container_name: str, command: list[str], **kwargs) -> object:
         self.commands.append(("exec-interactive", container_name))
-        self.interactive_exec_commands.append((container_name, command))
+        self.interactive_exec_commands.append((container_name, command, kwargs))
         return type("Completed", (), {"stdout": "", "stderr": "", "returncode": 0})()
 
     def stream_logs(self, container_name: str, *, follow: bool = False) -> None:
@@ -110,6 +111,7 @@ class FakeDockerManager:
 class FakeOpenClawManager:
     def __init__(self) -> None:
         self.versions: list[str] = []
+        self.image_repo = "ghcr.io/openclaw/openclaw"
 
     def build_image(self, version: str) -> str:
         self.versions.append(version)
@@ -288,6 +290,13 @@ def test_check_setup_reports_running_docker_daemon(temp_clawcu_home, monkeypatch
             ),
             "hint": "",
         },
+        {
+            "name": "openclaw_image_repo",
+            "status": "ok",
+            "ok": True,
+            "summary": "OpenClaw image repo is configured as ghcr.io/openclaw/openclaw.",
+            "hint": "",
+        },
     ]
 
 
@@ -307,6 +316,51 @@ def test_check_setup_reports_unreachable_docker_daemon(temp_clawcu_home, monkeyp
     assert checks[1]["status"] == "fail"
     assert checks[1]["summary"] == "Docker daemon is not reachable."
     assert "docker version" in str(checks[1]["hint"])
+
+
+def test_set_openclaw_image_repo_persists_global_config(temp_clawcu_home) -> None:
+    service, _, _, store = make_service(temp_clawcu_home)
+
+    saved = service.set_openclaw_image_repo("registry.example.com/openclaw/openclaw")
+
+    assert saved == "registry.example.com/openclaw/openclaw"
+    assert store.get_openclaw_image_repo() == "registry.example.com/openclaw/openclaw"
+    assert json.loads(store.paths.config_path.read_text(encoding="utf-8")) == {
+        "openclaw_image_repo": "registry.example.com/openclaw/openclaw"
+    }
+
+
+def test_suggest_openclaw_image_repo_uses_china_mirror_when_ip_is_in_china(temp_clawcu_home, monkeypatch) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+
+    monkeypatch.setattr(service, "_detect_public_country_code", lambda: "CN")
+
+    assert service.suggest_openclaw_image_repo() == DEFAULT_OPENCLAW_IMAGE_REPO_CN
+
+
+def test_suggest_openclaw_image_repo_falls_back_to_global_default(temp_clawcu_home, monkeypatch) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+
+    monkeypatch.setattr(service, "_detect_public_country_code", lambda: None)
+
+    assert service.suggest_openclaw_image_repo() == DEFAULT_OPENCLAW_IMAGE_REPO
+
+
+def test_set_clawcu_home_persists_bootstrap_home_and_switches_store(temp_clawcu_home, tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "user-home"))
+    service, _, openclaw, store = make_service(temp_clawcu_home)
+    new_home = tmp_path / "custom-home"
+
+    saved = service.set_clawcu_home(str(new_home))
+
+    assert saved == str(new_home.resolve())
+    assert store.get_bootstrap_home() == str(new_home.resolve())
+    assert store.paths.home == new_home.resolve()
+    assert openclaw.store is store
+    assert store.paths.instances_dir.exists()
+    assert json.loads(bootstrap_config_path().read_text(encoding="utf-8")) == {
+        "clawcu_home": str(new_home.resolve())
+    }
 
 
 def test_create_openclaw_saves_record(temp_clawcu_home, tmp_path) -> None:
@@ -430,6 +484,45 @@ def test_collect_providers_scans_all_instances(temp_clawcu_home, tmp_path) -> No
     assert store.provider_exists("minimax")
     assert store.provider_exists("openai")
     assert store.provider_exists("anthropic")
+
+
+def test_collect_providers_scans_all_instances_and_skips_sources_without_root_providers(
+    temp_clawcu_home, tmp_path
+) -> None:
+    service, _, _, store = make_service(temp_clawcu_home)
+    original_local = service._local_openclaw_home
+    service._local_openclaw_home = lambda: tmp_path / ".missing-openclaw"  # type: ignore[method-assign]
+    valid_root = tmp_path / "writer-valid"
+    invalid_root = tmp_path / "writer-invalid"
+    write_root_provider_source(valid_root, provider_name="minimax", profile_name="minimax:cn")
+    invalid_root.mkdir(parents=True)
+    (invalid_root / "openclaw.json").write_text("{}", encoding="utf-8")
+    for name, datadir in (("writer-valid", valid_root), ("writer-invalid", invalid_root)):
+        store.save_record(
+            InstanceRecord(
+                service="openclaw",
+                name=name,
+                version="2026.4.1",
+                upstream_ref="v2026.4.1",
+                image_tag="clawcu/openclaw:2026.4.1",
+                container_name=f"clawcu-openclaw-{name}",
+                datadir=str(datadir),
+                port=3000,
+                cpu="1",
+                memory="2g",
+                auth_mode="token",
+                status="running",
+                created_at="2026-04-11T00:00:00+00:00",
+                updated_at="2026-04-11T00:00:00+00:00",
+                history=[],
+            )
+        )
+
+    result = service.collect_providers(all_instances=True)
+    service._local_openclaw_home = original_local  # type: ignore[method-assign]
+
+    assert result["saved"] == ["minimax (instance:writer-valid)"]
+    assert sorted(result["scanned"]) == sorted([str(valid_root), str(invalid_root)])
 
 
 def test_collect_providers_supports_external_path(temp_clawcu_home, tmp_path) -> None:
@@ -1519,6 +1612,7 @@ def test_approve_pairing_uses_latest_pending_request(temp_clawcu_home, tmp_path)
     assert docker.exec_commands[-1] == (
         "clawcu-openclaw-writer",
         ["node", "openclaw.mjs", "devices", "approve", "new"],
+        {"env": {}},
     )
 
 
@@ -1541,6 +1635,34 @@ def test_approve_pairing_accepts_explicit_request_id(temp_clawcu_home, tmp_path)
     assert docker.exec_commands[-1] == (
         "clawcu-openclaw-writer",
         ["node", "openclaw.mjs", "devices", "approve", "manual-id"],
+        {"env": {}},
+    )
+
+
+def test_approve_pairing_passes_instance_env_to_docker_exec(temp_clawcu_home, tmp_path) -> None:
+    service, docker, _, store = make_service(temp_clawcu_home)
+    datadir = tmp_path / "writer"
+
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+    store.instance_env_path("writer").write_text(
+        "CLAWCU_PROVIDER_KIMI_CODING_API_KEY=sk-kimi\n",
+        encoding="utf-8",
+    )
+
+    approved = service.approve_pairing("writer", request_id="manual-id")
+
+    assert approved == "manual-id"
+    assert docker.exec_commands[-1] == (
+        "clawcu-openclaw-writer",
+        ["node", "openclaw.mjs", "devices", "approve", "manual-id"],
+        {"env": {"CLAWCU_PROVIDER_KIMI_CODING_API_KEY": "sk-kimi"}},
     )
 
 
@@ -1579,6 +1701,7 @@ def test_configure_instance_runs_official_configure_command(temp_clawcu_home, tm
     assert docker.interactive_exec_commands[-1] == (
         "clawcu-openclaw-writer",
         ["node", "openclaw.mjs", "configure", "--section", "models"],
+        {"env": {}},
     )
 
 
@@ -1600,6 +1723,64 @@ def test_exec_instance_runs_arbitrary_command_in_container(temp_clawcu_home, tmp
     assert docker.interactive_exec_commands[-1] == (
         "clawcu-openclaw-writer",
         ["pwd"],
+        {"env": {}},
+    )
+
+
+def test_configure_instance_passes_instance_env_to_docker_exec(temp_clawcu_home, tmp_path) -> None:
+    service, docker, _, store = make_service(temp_clawcu_home)
+    datadir = tmp_path / "writer"
+
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+    store.instance_env_path("writer").write_text(
+        "OPENAI_API_KEY=sk-test\nOPENAI_BASE_URL=https://api.example.com/v1\n",
+        encoding="utf-8",
+    )
+
+    service.configure_instance("writer")
+
+    assert docker.interactive_exec_commands[-1] == (
+        "clawcu-openclaw-writer",
+        ["node", "openclaw.mjs", "configure"],
+        {
+            "env": {
+                "OPENAI_API_KEY": "sk-test",
+                "OPENAI_BASE_URL": "https://api.example.com/v1",
+            }
+        },
+    )
+
+
+def test_exec_instance_passes_instance_env_to_docker_exec(temp_clawcu_home, tmp_path) -> None:
+    service, docker, _, store = make_service(temp_clawcu_home)
+    datadir = tmp_path / "writer"
+
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+    store.instance_env_path("writer").write_text(
+        "CLAWCU_PROVIDER_KIMI_CODING_API_KEY=sk-kimi\n",
+        encoding="utf-8",
+    )
+
+    service.exec_instance("writer", ["node", "openclaw.mjs", "tui"])
+
+    assert docker.interactive_exec_commands[-1] == (
+        "clawcu-openclaw-writer",
+        ["node", "openclaw.mjs", "tui"],
+        {"env": {"CLAWCU_PROVIDER_KIMI_CODING_API_KEY": "sk-kimi"}},
     )
 
 
@@ -1608,6 +1789,67 @@ def test_exec_instance_requires_a_command(temp_clawcu_home) -> None:
 
     with pytest.raises(ValueError, match="Please provide a command"):
         service.exec_instance("writer", [])
+
+
+def test_tui_instance_auto_approves_latest_pending_request(temp_clawcu_home, tmp_path) -> None:
+    import json
+
+    service, docker, _, store = make_service(temp_clawcu_home)
+    datadir = tmp_path / "writer"
+
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+    store.instance_env_path("writer").write_text(
+        "CLAWCU_PROVIDER_KIMI_CODING_API_KEY=sk-kimi\n",
+        encoding="utf-8",
+    )
+    devices_dir = datadir / "devices"
+    devices_dir.mkdir(exist_ok=True)
+    (devices_dir / "pending.json").write_text(
+        json.dumps({"new": {"requestId": "new", "ts": 2}}),
+        encoding="utf-8",
+    )
+
+    service.tui_instance("writer")
+
+    assert docker.exec_commands[-1] == (
+        "clawcu-openclaw-writer",
+        ["node", "openclaw.mjs", "devices", "approve", "new"],
+        {"env": {"CLAWCU_PROVIDER_KIMI_CODING_API_KEY": "sk-kimi"}},
+    )
+    assert docker.interactive_exec_commands[-1] == (
+        "clawcu-openclaw-writer",
+        ["openclaw", "tui"],
+        {"env": {"CLAWCU_PROVIDER_KIMI_CODING_API_KEY": "sk-kimi"}},
+    )
+
+
+def test_tui_instance_launches_requested_agent_without_pending_request(temp_clawcu_home, tmp_path) -> None:
+    service, docker, _, _ = make_service(temp_clawcu_home)
+    datadir = tmp_path / "writer"
+
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+
+    service.tui_instance("writer", agent="chat")
+
+    assert docker.interactive_exec_commands[-1] == (
+        "clawcu-openclaw-writer",
+        ["openclaw", "tui", "--agent", "chat"],
+        {"env": {}},
+    )
 
 
 def test_create_openclaw_recovers_from_empty_gateway_config_file(temp_clawcu_home, tmp_path) -> None:
@@ -1998,6 +2240,89 @@ def test_create_openclaw_prefers_host_health_endpoint_over_docker_starting(temp_
     assert any("health endpoint is responding" in message for message in messages)
 
 
+def test_inspect_instance_includes_snapshot_summary(temp_clawcu_home, tmp_path) -> None:
+    service, docker, _, store = make_service(temp_clawcu_home)
+    datadir = tmp_path / "writer"
+    datadir.mkdir()
+
+    record = service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+    record.history.extend(
+        [
+            {
+                "action": "upgrade",
+                "timestamp": "2026-04-15T00:00:00+00:00",
+                "from_version": "2026.4.1",
+                "to_version": "2026.4.10",
+                "snapshot_dir": "/tmp/upgrade-snapshot",
+            },
+            {
+                "action": "rollback",
+                "timestamp": "2026-04-15T01:00:00+00:00",
+                "from_version": "2026.4.10",
+                "to_version": "2026.4.1",
+                "snapshot_dir": "/tmp/rollback-snapshot",
+                "restored_snapshot": "/tmp/upgrade-snapshot",
+            },
+        ]
+    )
+    store.save_record(record)
+
+    payload = service.inspect_instance("writer")
+
+    assert payload["snapshots"] == {
+        "latest_upgrade_snapshot": "/tmp/upgrade-snapshot",
+        "latest_rollback_snapshot": "/tmp/rollback-snapshot",
+        "latest_restored_snapshot": "/tmp/upgrade-snapshot",
+    }
+    assert payload["container"]["Name"] == "clawcu-openclaw-writer"
+
+
+def test_list_instance_summaries_includes_latest_snapshot_label(temp_clawcu_home, tmp_path) -> None:
+    service, _, _, store = make_service(temp_clawcu_home)
+    datadir = tmp_path / "writer"
+    datadir.mkdir()
+
+    record = service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+    record.history.extend(
+        [
+            {
+                "action": "upgrade",
+                "timestamp": "2026-04-15T00:00:00+00:00",
+                "from_version": "2026.4.1",
+                "to_version": "2026.4.10",
+                "snapshot_dir": "/tmp/upgrade-snapshot",
+            },
+            {
+                "action": "rollback",
+                "timestamp": "2026-04-15T01:00:00+00:00",
+                "from_version": "2026.4.10",
+                "to_version": "2026.4.1",
+                "snapshot_dir": "/tmp/rollback-snapshot",
+                "restored_snapshot": "/tmp/upgrade-snapshot",
+            },
+        ]
+    )
+    store.save_record(record)
+
+    summaries = service.list_instance_summaries()
+
+    assert summaries[0]["snapshot"] == "rollback -> 2026.4.1"
+
+
 def test_host_healthcheck_treats_connection_reset_as_not_ready(temp_clawcu_home) -> None:
     service, _, _, _ = make_service(temp_clawcu_home)
     record = InstanceRecord(
@@ -2103,6 +2428,8 @@ def test_loading_legacy_record_defaults_auth_mode_to_token(temp_clawcu_home, tmp
 
 def test_upgrade_rolls_back_when_new_container_fails(temp_clawcu_home, tmp_path) -> None:
     service, docker, _, store = make_service(temp_clawcu_home)
+    messages: list[str] = []
+    service.set_reporter(messages.append)
     datadir = tmp_path / "writer"
     datadir.mkdir()
     (datadir / "state.txt").write_text("stable", encoding="utf-8")
@@ -2138,10 +2465,13 @@ def test_upgrade_rolls_back_when_new_container_fails(temp_clawcu_home, tmp_path)
     assert record.status == "running"
     assert record.history[-1]["action"] == "upgrade_failed"
     assert store.instance_env_path("writer").read_text(encoding="utf-8") == "OPENAI_API_KEY=stable\n"
+    assert any("Trying to restore 2026.4.1 from the snapshot." in message for message in messages)
 
 
 def test_rollback_restores_snapshot_data_and_instance_env(temp_clawcu_home, tmp_path) -> None:
     service, _, _, store = make_service(temp_clawcu_home)
+    messages: list[str] = []
+    service.set_reporter(messages.append)
     datadir = tmp_path / "writer"
     datadir.mkdir()
     (datadir / "state.txt").write_text("v1", encoding="utf-8")
@@ -2168,6 +2498,9 @@ def test_rollback_restores_snapshot_data_and_instance_env(temp_clawcu_home, tmp_
     assert rolled.version == "2026.4.1"
     assert (datadir / "state.txt").read_text(encoding="utf-8") == "v1"
     assert env_path.read_text(encoding="utf-8") == "OPENAI_API_KEY=v1\n"
+    assert any("Upgrade snapshot retained at" in message for message in messages)
+    assert any("Restored snapshot" in message for message in messages)
+    assert any("Rollback safety snapshot retained at" in message for message in messages)
 
 
 def test_clone_instance_copies_data_and_starts_new_instance(temp_clawcu_home, tmp_path) -> None:

@@ -99,18 +99,36 @@ class DockerManager:
         self.runner(command)
 
     def exec_in_container(
-        self, container_name: str, command: list[str], **kwargs
+        self,
+        container_name: str,
+        command: list[str],
+        *,
+        env: dict[str, str] | None = None,
+        **kwargs,
     ) -> object:
+        docker_command = ["docker", "exec"]
+        if env:
+            for key, value in sorted(env.items()):
+                docker_command.extend(["-e", f"{key}={value}"])
         return self.runner(
-            ["docker", "exec", container_name] + command, **kwargs
+            docker_command + [container_name] + command, **kwargs
         )
 
-    def exec_in_container_interactive(self, container_name: str, command: list[str]) -> object:
+    def exec_in_container_interactive(
+        self,
+        container_name: str,
+        command: list[str],
+        *,
+        env: dict[str, str] | None = None,
+    ) -> object:
         docker_command = ["docker", "exec"]
         if sys.stdin.isatty():
             docker_command.append("-i")
         if sys.stdout.isatty() and sys.stderr.isatty():
             docker_command.append("-t")
+        if env:
+            for key, value in sorted(env.items()):
+                docker_command.extend(["-e", f"{key}={value}"])
         return self.runner(
             docker_command + [container_name] + command,
             capture_output=False,

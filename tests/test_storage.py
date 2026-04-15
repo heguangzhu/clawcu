@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from clawcu.models import InstanceRecord
-from clawcu.paths import get_paths
+from clawcu.paths import bootstrap_config_path, get_paths
 from clawcu.storage import StateStore
 
 
@@ -68,3 +69,16 @@ def test_snapshot_restore_replaces_directory_and_instance_env(temp_clawcu_home, 
 
     assert (datadir / "state.txt").read_text(encoding="utf-8") == "before"
     assert env_path.read_text(encoding="utf-8") == "OPENAI_API_KEY=before\n"
+
+
+def test_bootstrap_home_can_be_saved_and_read(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("CLAWCU_HOME", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path / "user-home"))
+    store = StateStore(get_paths())
+
+    store.set_bootstrap_home("/tmp/clawcu-custom-home")
+
+    assert store.get_bootstrap_home() == "/tmp/clawcu-custom-home"
+    assert json.loads(bootstrap_config_path().read_text(encoding="utf-8")) == {
+        "clawcu_home": "/tmp/clawcu-custom-home"
+    }
