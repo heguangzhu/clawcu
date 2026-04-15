@@ -447,7 +447,9 @@ def test_root_version_flag_prints_version() -> None:
     result = runner.invoke(app, ["--version"])
 
     assert result.exit_code == 0
-    assert "clawcu 0.0.1" in result.stdout
+    from clawcu import __version__
+
+    assert f"clawcu {__version__}" in result.stdout
 
 
 def test_create_help_uses_service_language_and_lists_supported_services() -> None:
