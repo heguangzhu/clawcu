@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from clawcu.docker import DockerManager
+from clawcu.models import InstanceRecord
 from clawcu.openclaw import OpenClawManager
 from clawcu.subprocess_utils import CommandError
-from clawcu.models import InstanceRecord
 
 
 class RecordingRunner:
@@ -27,43 +27,6 @@ class RecordingRunner:
         return type("Completed", (), {"stdout": "", "stderr": "", "returncode": 0})()
 
 
-def test_build_image_prefers_variant_arg_for_current_openclaw_layout(tmp_path) -> None:
-    dockerfile = tmp_path / "Dockerfile"
-    dockerfile.write_text(
-        "\n".join(
-            [
-                "ARG OPENCLAW_VARIANT=default",
-                "FROM base-slim",
-                "FROM base-${OPENCLAW_VARIANT}",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    runner = RecordingRunner()
-    manager = DockerManager(runner=runner)
-
-    manager.build_image(tmp_path, "clawcu/openclaw:2026.4.1")
-
-    command, cwd, _ = runner.calls[0]
-    assert "--build-arg" in command
-    assert "OPENCLAW_VARIANT=slim" in command
-    assert "--target" not in command
-    assert cwd == tmp_path
-
-
-def test_build_image_falls_back_to_target_when_legacy_stage_exists(tmp_path) -> None:
-    dockerfile = tmp_path / "Dockerfile"
-    dockerfile.write_text("FROM build AS slim\n", encoding="utf-8")
-    runner = RecordingRunner()
-    manager = DockerManager(runner=runner)
-
-    manager.build_image(tmp_path, "clawcu/openclaw:legacy")
-
-    command, _, _ = runner.calls[0]
-    assert "--target" in command
-    assert "slim" in command
-
-
 def test_pull_image_streams_progress_output() -> None:
     runner = RecordingRunner()
     manager = DockerManager(runner=runner)
@@ -73,16 +36,6 @@ def test_pull_image_streams_progress_output() -> None:
     command, _, options = runner.calls[0]
     assert command == ["docker", "pull", "ghcr.io/openclaw/openclaw:2026.4.10"]
     assert options["stream_output"] is True
-
-
-class FakeStore:
-    def __init__(self, root: Path) -> None:
-        self.root = root
-
-    def source_dir(self, service: str, version: str) -> Path:
-        path = self.root / service / version
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return path
 
 
 class FakeDocker:
@@ -102,13 +55,9 @@ class FakeDocker:
     def tag_image(self, source_image: str, target_image: str) -> None:
         self.calls.append(("tag_image", (source_image, target_image)))
 
-    def build_image(self, source_dir: Path, image_tag: str, *, preferred_variant: str = "slim") -> None:
-        self.calls.append(("build_image", (str(source_dir), image_tag, preferred_variant)))
-
-
 def test_ensure_image_prefers_official_registry_pull(tmp_path) -> None:
     docker = FakeDocker()
-    manager = OpenClawManager(FakeStore(tmp_path), docker)
+    manager = OpenClawManager(object(), docker)
 
     image_tag = manager.ensure_image("2026.4.1")
 
@@ -119,56 +68,48 @@ def test_ensure_image_prefers_official_registry_pull(tmp_path) -> None:
     ]
 
 
-def test_ensure_image_falls_back_to_local_build_when_official_pull_fails(tmp_path) -> None:
-    docker = FakeDocker()
-    docker.pull_error = CommandError(["docker", "pull", "ghcr.io/openclaw/openclaw:2026.4.1"], 1, "", "nope")
-    manager = OpenClawManager(FakeStore(tmp_path), docker)
-
-    source_dir = tmp_path / "openclaw" / "2026.4.1"
-    source_dir.mkdir(parents=True)
-    (source_dir / ".git").mkdir()
-    (source_dir / "Dockerfile").write_text("FROM build AS slim\n", encoding="utf-8")
-
-    image_tag = manager.ensure_image("2026.4.1")
-
-    assert image_tag == "clawcu/openclaw:2026.4.1"
-    assert docker.calls[0] == ("pull_image", ("ghcr.io/openclaw/openclaw:2026.4.1",))
-    assert docker.calls[1][0] == "build_image"
-
-
-def test_ensure_image_reports_missing_version_across_registry_and_git(tmp_path) -> None:
+def test_ensure_image_reports_missing_version_in_official_registry(tmp_path) -> None:
     docker = FakeDocker()
     docker.pull_error = CommandError(
-        ["docker", "pull", "ghcr.io/openclaw/openclaw:2026.7.1"],
+        ["docker", "pull", "ghcr.io/openclaw/openclaw:2026.4.1"],
         1,
         "",
-        'failed to resolve reference "ghcr.io/openclaw/openclaw:2026.7.1": not found',
+        'failed to resolve reference "ghcr.io/openclaw/openclaw:2026.4.1": not found',
     )
     messages: list[str] = []
-
-    def failing_runner(command: list[str], *, cwd=None, capture_output=True, check=True, stream_output=False):
-        raise CommandError(command, 128, "", "fatal: Remote branch v2026.7.1 not found in upstream origin")
-
     manager = OpenClawManager(
-        FakeStore(tmp_path),
+        object(),
         docker,
-        runner=failing_runner,
         reporter=messages.append,
     )
 
     try:
-        manager.ensure_image("2026.7.1")
+        manager.ensure_image("2026.4.1")
         assert False, "ensure_image should have failed"
     except RuntimeError as exc:
         assert (
             str(exc)
-            == "OpenClaw version 2026.7.1 was not found in the official image registry or upstream git tag v2026.7.1."
+            == "OpenClaw version 2026.4.1 was not found in the official image registry ghcr.io/openclaw/openclaw."
         )
 
-    assert (
-        "Step 2/5: Official image for OpenClaw 2026.7.1 was not found. Trying the upstream git tag v2026.7.1 instead."
-        in messages
-    )
+    assert messages == [
+        "Step 2/5: Pulling official image ghcr.io/openclaw/openclaw:2026.4.1. This usually takes 10-60 seconds depending on your network."
+    ]
+
+
+def test_ensure_image_reports_pull_failure_without_build_fallback(tmp_path) -> None:
+    docker = FakeDocker()
+    docker.pull_error = CommandError(["docker", "pull", "ghcr.io/openclaw/openclaw:2026.4.1"], 1, "", "network nope")
+    manager = OpenClawManager(object(), docker)
+
+    try:
+        manager.ensure_image("2026.4.1")
+        assert False, "ensure_image should have failed"
+    except RuntimeError as exc:
+        assert (
+            str(exc)
+            == "Failed to prepare OpenClaw 2026.4.1 from the official image registry ghcr.io/openclaw/openclaw: Command failed (1): docker pull ghcr.io/openclaw/openclaw:2026.4.1\nnetwork nope"
+        )
 
 
 def test_run_container_binds_host_port_to_internal_gateway_port() -> None:
@@ -212,6 +153,32 @@ def test_exec_in_container_interactive_omits_tty_flags_without_terminal(monkeypa
     command, _, options = runner.calls[0]
     assert command == ["docker", "exec", "clawcu-openclaw-writer", "pwd"]
     assert options["capture_output"] is False
+
+
+def test_exec_in_container_interactive_passes_env_values(monkeypatch) -> None:
+    runner = RecordingRunner()
+    manager = DockerManager(runner=runner)
+    monkeypatch.setattr("clawcu.docker.sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("clawcu.docker.sys.stdout.isatty", lambda: False)
+    monkeypatch.setattr("clawcu.docker.sys.stderr.isatty", lambda: False)
+
+    manager.exec_in_container_interactive(
+        "clawcu-openclaw-writer",
+        ["node", "openclaw.mjs", "tui"],
+        env={"CLAWCU_PROVIDER_KIMI_CODING_API_KEY": "sk-kimi"},
+    )
+
+    command, _, _ = runner.calls[0]
+    assert command == [
+        "docker",
+        "exec",
+        "-e",
+        "CLAWCU_PROVIDER_KIMI_CODING_API_KEY=sk-kimi",
+        "clawcu-openclaw-writer",
+        "node",
+        "openclaw.mjs",
+        "tui",
+    ]
 
 
 def test_exec_in_container_interactive_uses_tty_flags_with_terminal(monkeypatch) -> None:

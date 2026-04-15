@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -83,6 +84,10 @@ def _print_progress(message: str) -> None:
     console.print(f"[cyan]{message}[/cyan]")
 
 
+def _is_interactive_stdin() -> bool:
+    return sys.stdin.isatty()
+
+
 def _mask_secret(value: str) -> str:
     if not value:
         return value
@@ -123,6 +128,7 @@ def _print_instance_table(records: list[dict]) -> None:
     table.add_column("STATUS", no_wrap=True)
     table.add_column("PROVIDERS", overflow="fold")
     table.add_column("MODELS", overflow="fold")
+    table.add_column("SNAPSHOT", overflow="fold")
     for record in records:
         table.add_row(
             record.get("source", "-"),
@@ -133,6 +139,7 @@ def _print_instance_table(records: list[dict]) -> None:
             record["status"],
             record.get("providers", "-"),
             record.get("models", "-"),
+            record.get("snapshot", "-"),
         )
     console.print(table)
 
@@ -285,13 +292,32 @@ def root_callback(
         raise typer.Exit()
 
 
-@app.command("setup", help="Check local prerequisites, shell completion guidance, and the ClawCU home directory.")
-def setup_environment() -> None:
+@app.command("setup", help="Check local prerequisites and configure the default ClawCU home and OpenClaw image repo.")
+def setup_environment(
+    completion: Annotated[
+        bool,
+        typer.Option("--completion", help="Also show shell completion guidance."),
+    ] = False,
+) -> None:
     console.print("Checking local prerequisites for ClawCU...")
     service = get_service()
     checks = service.check_setup()
-    checks.append(_completion_check(service))
+    if completion:
+        checks.append(_completion_check(service))
     if _print_setup_checks(checks):
+        if _is_interactive_stdin():
+            configured_home = typer.prompt(
+                "ClawCU home",
+                default=service.get_clawcu_home(),
+            ).strip()
+            saved_home = service.set_clawcu_home(configured_home)
+            console.print(f"[green]Saved ClawCU home:[/green] {saved_home}")
+            configured_repo = typer.prompt(
+                "OpenClaw image repo",
+                default=service.suggest_openclaw_image_repo(),
+            ).strip()
+            saved_repo = service.set_openclaw_image_repo(configured_repo)
+            console.print(f"[green]Saved OpenClaw image repo:[/green] {saved_repo}")
         console.print("[green]ClawCU setup check passed.[/green] Docker and the ClawCU runtime layout are ready.")
         return
     raise typer.Exit(code=1)
@@ -790,6 +816,29 @@ def exec_instance(
         _exit_with_error(str(exc))
 
 
+@app.command(
+    "tui",
+    help="Launch OpenClaw TUI for a managed instance and auto-approve the latest pending pairing request when present.",
+)
+def tui_instance(
+    ctx: typer.Context,
+    name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
+    agent: Annotated[
+        str,
+        typer.Option("--agent", help="Target agent name. Defaults to main."),
+    ] = "main",
+) -> None:
+    if not name:
+        _show_help_and_exit(ctx)
+    service = get_service()
+    if hasattr(service, "set_reporter"):
+        service.set_reporter(_print_progress)
+    try:
+        service.tui_instance(name, agent=agent)
+    except Exception as exc:
+        _exit_with_error(str(exc))
+
+
 @app.command("start", help="Start a stopped managed instance.")
 def start_instance(
     ctx: typer.Context,
@@ -876,7 +925,10 @@ def recreate_instance(
     _print_access_url(service, record.name)
 
 
-@app.command("upgrade", help="Upgrade an instance to a newer OpenClaw version.")
+@app.command(
+    "upgrade",
+    help="Upgrade an instance to a newer OpenClaw version with a safety snapshot of its data directory and env file.",
+)
 def upgrade_instance(
     ctx: typer.Context,
     name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
@@ -885,6 +937,8 @@ def upgrade_instance(
     if not name or not version:
         _show_help_and_exit(ctx)
     service = get_service()
+    if hasattr(service, "set_reporter"):
+        service.set_reporter(_print_progress)
     try:
         record = service.upgrade_instance(name, version=version)
     except Exception as exc:
@@ -893,7 +947,10 @@ def upgrade_instance(
     _print_access_url(service, record.name)
 
 
-@app.command("rollback", help="Roll an instance back to its previous version.")
+@app.command(
+    "rollback",
+    help="Roll an instance back to its previous version and restore the matching data-directory and env snapshot.",
+)
 def rollback_instance(
     ctx: typer.Context,
     name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
@@ -901,6 +958,8 @@ def rollback_instance(
     if not name:
         _show_help_and_exit(ctx)
     service = get_service()
+    if hasattr(service, "set_reporter"):
+        service.set_reporter(_print_progress)
     try:
         record = service.rollback_instance(name)
     except Exception as exc:

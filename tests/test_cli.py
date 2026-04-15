@@ -124,7 +124,34 @@ class FakeService:
                 "summary": "ClawCU runtime directories are ready: /tmp/clawcu-test-home/instances, /tmp/clawcu-test-home/sources, /tmp/clawcu-test-home/logs, /tmp/clawcu-test-home/snapshots.",
                 "hint": "",
             },
+            {
+                "name": "openclaw_image_repo",
+                "status": "ok",
+                "ok": True,
+                "summary": "OpenClaw image repo is configured as ghcr.io/openclaw/openclaw.",
+                "hint": "",
+            },
         ]
+
+    def get_openclaw_image_repo(self) -> str:
+        self._record("get_openclaw_image_repo")
+        return "ghcr.io/openclaw/openclaw"
+
+    def set_openclaw_image_repo(self, image_repo: str) -> str:
+        self._record("set_openclaw_image_repo", image_repo=image_repo)
+        return image_repo
+
+    def suggest_openclaw_image_repo(self) -> str:
+        self._record("suggest_openclaw_image_repo")
+        return "ghcr.io/openclaw/openclaw"
+
+    def get_clawcu_home(self) -> str:
+        self._record("get_clawcu_home")
+        return "/tmp/clawcu-test-home"
+
+    def set_clawcu_home(self, home: str) -> str:
+        self._record("set_clawcu_home", home=home)
+        return home
 
     def collect_providers(self, **kwargs) -> dict[str, list[str]]:
         self._record("collect_providers", **kwargs)
@@ -193,6 +220,7 @@ class FakeService:
                 "home": "/Users/test/.clawcu/writer",
                 "providers": "openai, anthropic",
                 "models": "openai/gpt-5, anthropic/claude-sonnet-4.5",
+                "snapshot": "upgrade -> 2026.4.2",
             }
         )
         return [payload]
@@ -270,7 +298,15 @@ class FakeService:
 
     def inspect_instance(self, name: str) -> dict:
         self._record("inspect_instance", name=name)
-        return {"instance": self._instance(name=name).to_dict(), "container": {"Name": name}}
+        return {
+            "instance": self._instance(name=name).to_dict(),
+            "snapshots": {
+                "latest_upgrade_snapshot": f"/tmp/{name}-upgrade-snapshot",
+                "latest_rollback_snapshot": f"/tmp/{name}-rollback-snapshot",
+                "latest_restored_snapshot": f"/tmp/{name}-upgrade-snapshot",
+            },
+            "container": {"Name": name},
+        }
 
     def token(self, name: str) -> str:
         self._record("token", name=name)
@@ -318,6 +354,9 @@ class FakeService:
     def exec_instance(self, name: str, command: list[str]) -> None:
         self._record("exec_instance", name=name, command=command)
 
+    def tui_instance(self, name: str, agent: str = "main") -> None:
+        self._record("tui_instance", name=name, agent=agent)
+
     def start_instance(self, name: str) -> InstanceRecord:
         self._record("start_instance", name=name)
         return self._instance(name=name)
@@ -348,10 +387,16 @@ class FakeService:
 
     def upgrade_instance(self, name: str, *, version: str) -> InstanceRecord:
         self._record("upgrade_instance", name=name, version=version)
+        if self.reporter:
+            self.reporter("Step 1/4: Preparing an upgrade plan")
+            self.reporter("Step 4/4: Recreating the container")
         return self._instance(name=name, version=version)
 
     def rollback_instance(self, name: str) -> InstanceRecord:
         self._record("rollback_instance", name=name)
+        if self.reporter:
+            self.reporter("Step 1/4: Preparing to roll back")
+            self.reporter("Step 4/4: Starting OpenClaw")
         return self._instance(name=name, version="2026.4.0")
 
     def clone_instance(
@@ -435,8 +480,8 @@ def test_root_help_lists_descriptions_for_top_level_commands() -> None:
     assert "token" in result.stdout
     assert "Print the dashboard token for a managed instance." in result.stdout
     assert "setup" in result.stdout
-    assert "Check local prerequisites, shell completion guidance" in result.stdout
-    assert "ClawCU home directory." in result.stdout
+    assert "Check local prerequisites and configure the default ClawCU home" in result.stdout
+    assert "and OpenClaw image repo." in result.stdout
     assert "provider" in result.stdout
     assert "Collect and reuse provider assets from configured OpenClaw" in result.stdout
     assert "approve" in result.stdout
@@ -456,9 +501,9 @@ def test_root_help_lists_descriptions_for_top_level_commands() -> None:
     assert "recreate" in result.stdout
     assert "Recreate an existing instance with its saved configuration." in result.stdout
     assert "upgrade" in result.stdout
-    assert "Upgrade an instance to a newer OpenClaw version." in result.stdout
+    assert "Upgrade an instance to a newer OpenClaw version" in result.stdout
     assert "rollback" in result.stdout
-    assert "Roll an instance back to its previous version." in result.stdout
+    assert "data-directory and env snapshot" in result.stdout
     assert "clone" in result.stdout
     assert "Clone an existing instance into a separate experiment instance." in result.stdout
     assert "logs" in result.stdout
@@ -472,6 +517,16 @@ def test_create_help_no_longer_exposes_auth_option() -> None:
 
     assert result.exit_code == 0
     assert "--auth" not in result.stdout
+
+
+def test_upgrade_and_rollback_help_mentions_env_snapshots() -> None:
+    upgrade_result = runner.invoke(app, ["upgrade", "--help"])
+    rollback_result = runner.invoke(app, ["rollback", "--help"])
+
+    assert upgrade_result.exit_code == 0
+    assert "data directory and env file" in upgrade_result.stdout
+    assert rollback_result.exit_code == 0
+    assert "data-directory and env snapshot" in rollback_result.stdout
 
 
 def test_provider_help_lists_subcommands() -> None:
@@ -504,6 +559,7 @@ def test_provider_models_help_lists_subcommands() -> None:
 def test_setup_command_reports_success(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+    monkeypatch.setattr("clawcu.cli._is_interactive_stdin", lambda: False)
     monkeypatch.setattr(
         "clawcu.cli._completion_check",
         lambda _service: {
@@ -522,8 +578,8 @@ def test_setup_command_reports_success(monkeypatch) -> None:
     assert "Docker daemon is running" in result.stdout
     assert "ClawCU home directory is ready" in result.stdout
     assert "ClawCU runtime directories are ready" in result.stdout
-    assert "Shell completion script is ready for zsh" in result.stdout
-    assert "Hint: Add this to ~/.zshrc" in result.stdout
+    assert "OpenClaw image repo is configured as ghcr.io/openclaw/openclaw." in result.stdout
+    assert "Shell completion script is ready for zsh" not in result.stdout
     assert "ClawCU setup check passed." in result.stdout
     assert service.calls[0] == ("check_setup", (), {})
 
@@ -543,6 +599,7 @@ def test_setup_command_returns_nonzero_when_a_check_fails(monkeypatch) -> None:
 
     service.check_setup = failing_setup
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+    monkeypatch.setattr("clawcu.cli._is_interactive_stdin", lambda: False)
     monkeypatch.setattr(
         "clawcu.cli._completion_check",
         lambda _service: {
@@ -558,6 +615,98 @@ def test_setup_command_returns_nonzero_when_a_check_fails(monkeypatch) -> None:
     assert result.exit_code == 1
     assert "Docker CLI is not installed." in result.stdout
     assert "Hint: Install Docker Desktop." in result.stdout
+
+
+def test_setup_command_prompts_for_openclaw_image_repo_in_interactive_shell(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+    monkeypatch.setattr("clawcu.cli._is_interactive_stdin", lambda: True)
+    answers = iter(
+        [
+            "/tmp/custom-clawcu-home",
+            "registry.example.com/openclaw/openclaw",
+        ]
+    )
+    monkeypatch.setattr(
+        "clawcu.cli.typer.prompt",
+        lambda *_args, **_kwargs: next(answers),
+    )
+    monkeypatch.setattr(
+        "clawcu.cli._completion_check",
+        lambda _service: {
+            "name": "shell_completion",
+            "status": "ok",
+            "summary": "Shell completion script is ready.",
+            "hint": "",
+        },
+    )
+
+    result = runner.invoke(app, ["setup"])
+
+    assert result.exit_code == 0
+    assert "ClawCU home" in result.stdout
+    assert "OpenClaw image repo" in result.stdout
+    assert "Saved ClawCU home: /tmp/custom-clawcu-home" in result.stdout
+    assert "Saved OpenClaw image repo: registry.example.com/openclaw/openclaw" in result.stdout
+    assert ("get_clawcu_home", (), {}) in service.calls
+    assert ("suggest_openclaw_image_repo", (), {}) in service.calls
+    assert (
+        "set_clawcu_home",
+        (),
+        {"home": "/tmp/custom-clawcu-home"},
+    ) in service.calls
+
+
+def test_setup_command_uses_china_mirror_as_interactive_default(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+    monkeypatch.setattr("clawcu.cli._is_interactive_stdin", lambda: True)
+    prompts: list[tuple[tuple, dict]] = []
+    answers = iter(
+        [
+            "/tmp/custom-clawcu-home",
+            "ghcr.nju.edu.cn/openclaw/openclaw",
+        ]
+    )
+
+    def fake_prompt(*args, **kwargs):
+        prompts.append((args, kwargs))
+        return next(answers)
+
+    monkeypatch.setattr("clawcu.cli.typer.prompt", fake_prompt)
+    monkeypatch.setattr(service, "suggest_openclaw_image_repo", lambda: "ghcr.nju.edu.cn/openclaw/openclaw")
+
+    result = runner.invoke(app, ["setup"])
+
+    assert result.exit_code == 0
+    assert prompts[1][0][0] == "OpenClaw image repo"
+    assert prompts[1][1]["default"] == "ghcr.nju.edu.cn/openclaw/openclaw"
+    assert (
+        "set_openclaw_image_repo",
+        (),
+        {"image_repo": "ghcr.nju.edu.cn/openclaw/openclaw"},
+    ) in service.calls
+
+
+def test_setup_command_shows_completion_only_when_requested(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+    monkeypatch.setattr("clawcu.cli._is_interactive_stdin", lambda: False)
+    monkeypatch.setattr(
+        "clawcu.cli._completion_check",
+        lambda _service: {
+            "name": "shell_completion",
+            "status": "warn",
+            "summary": "Shell completion script is ready for zsh at /tmp/clawcu-test-home/completions/_clawcu, but your shell profile does not appear to load it yet.",
+            "hint": "Add this to ~/.zshrc: fpath=(/tmp/clawcu-test-home/completions $fpath) && autoload -Uz compinit && compinit",
+        },
+    )
+
+    result = runner.invoke(app, ["setup", "--completion"])
+
+    assert result.exit_code == 0
+    assert "Shell completion script is ready for zsh" in result.stdout
+    assert "Hint: Add this to ~/.zshrc" in result.stdout
 
 
 def test_recreate_help_no_longer_exposes_auth_option() -> None:
@@ -1131,6 +1280,8 @@ def test_inspect_command_accepts_instance_name(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert '"Name": "writer"' in result.stdout
+    assert '"snapshots"' in result.stdout
+    assert '"latest_upgrade_snapshot"' in result.stdout
     assert service.calls[-1] == ("inspect_instance", (), {"name": "writer"})
 
 
@@ -1186,6 +1337,34 @@ def test_exec_command_passes_through_container_command(monkeypatch) -> None:
     )
 
 
+def test_tui_command_uses_main_agent_by_default(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["tui", "writer"])
+
+    assert result.exit_code == 0
+    assert service.calls[0] == (
+        "tui_instance",
+        (),
+        {"name": "writer", "agent": "main"},
+    )
+
+
+def test_tui_command_accepts_explicit_agent(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["tui", "writer", "--agent", "chat"])
+
+    assert result.exit_code == 0
+    assert service.calls[0] == (
+        "tui_instance",
+        (),
+        {"name": "writer", "agent": "chat"},
+    )
+
+
 def test_lifecycle_commands_accept_instance_name(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
@@ -1213,11 +1392,26 @@ def test_upgrade_command_accepts_version_option(monkeypatch) -> None:
     result = runner.invoke(app, ["upgrade", "writer", "--version", "2026.4.2"])
 
     assert result.exit_code == 0
+    assert "Step 1/4: Preparing an upgrade plan" in result.stdout
+    assert "Step 4/4: Recreating the container" in result.stdout
     assert service.calls[-2] == (
         "upgrade_instance",
         (),
         {"name": "writer", "version": "2026.4.2"},
     )
+    assert service.calls[-1] == ("dashboard_url", (), {"name": "writer"})
+
+
+def test_rollback_command_prints_progress(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["rollback", "writer"])
+
+    assert result.exit_code == 0
+    assert "Step 1/4: Preparing to roll back" in result.stdout
+    assert "Step 4/4: Starting OpenClaw" in result.stdout
+    assert service.calls[-2] == ("rollback_instance", (), {"name": "writer"})
     assert service.calls[-1] == ("dashboard_url", (), {"name": "writer"})
 
 

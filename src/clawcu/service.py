@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 import socket
 import shutil
@@ -16,7 +17,11 @@ from typing import Callable
 from clawcu import __version__ as clawcu_version
 from clawcu.docker import DockerManager
 from clawcu.models import InstanceRecord, InstanceSpec
-from clawcu.openclaw import OpenClawManager
+from clawcu.openclaw import (
+    DEFAULT_OPENCLAW_IMAGE_REPO,
+    DEFAULT_OPENCLAW_IMAGE_REPO_CN,
+    OpenClawManager,
+)
 from clawcu.storage import StateStore
 from clawcu.subprocess_utils import CommandError, run_command
 from clawcu.validation import (
@@ -66,12 +71,12 @@ class ClawCUService:
     def pull_openclaw(self, version: str) -> str:
         normalized = normalize_version(version)
         self.reporter(
-            f"Starting OpenClaw image preparation for version {normalized}. ClawCU will try the official image first, then fall back to a local build if needed."
+            f"Starting OpenClaw image preparation for version {normalized}. ClawCU will pull the official image from GHCR."
         )
         self.store.append_log(f"pull openclaw version={normalized}")
         image_tag = self.openclaw.ensure_image(normalized)
-        self.store.append_log(f"built image {image_tag}")
-        self.reporter(f"Finished building Docker image {image_tag}.")
+        self.store.append_log(f"prepared image {image_tag}")
+        self.reporter(f"Finished preparing Docker image {image_tag}.")
         return image_tag
 
     def collect_providers(
@@ -119,7 +124,13 @@ class ClawCUService:
 
         for source_label, root, env_values in roots:
             scanned.append(str(root))
-            for auth_payload, models_payload in self._scan_provider_bundles(root, env_values):
+            try:
+                bundles = self._scan_provider_bundles(root, env_values)
+            except FileNotFoundError:
+                if all_instances:
+                    continue
+                raise
+            for auth_payload, models_payload in bundles:
                 base_name = self._bundle_base_name(models_payload)
                 target_name, status = self._store_collected_provider_bundle(
                     base_name=base_name,
@@ -321,7 +332,84 @@ class ClawCUService:
                 "hint": "",
             }
         )
+        checks.append(
+            {
+                "name": "openclaw_image_repo",
+                "status": "ok",
+                "ok": True,
+                "summary": (
+                    "OpenClaw image repo is configured as "
+                    f"{self.get_openclaw_image_repo()}."
+                ),
+                "hint": "",
+            }
+        )
         return checks
+
+    def get_clawcu_home(self) -> str:
+        return str(self.store.paths.home)
+
+    def set_clawcu_home(self, home: str) -> str:
+        resolved = str(Path(home).expanduser().resolve())
+        if not resolved.strip():
+            raise ValueError("ClawCU home cannot be empty.")
+        self.store.switch_home(resolved)
+        self.store.set_bootstrap_home(resolved)
+        self.openclaw.store = self.store
+        self.openclaw.image_repo = self.store.get_openclaw_image_repo() or os.environ.get(
+            "CLAWCU_OPENCLAW_IMAGE_REPO",
+            getattr(self.openclaw, "image_repo", "ghcr.io/openclaw/openclaw"),
+        )
+        self.store.append_log(f"setup clawcu_home={resolved}")
+        return resolved
+
+    def get_openclaw_image_repo(self) -> str:
+        return self.store.get_openclaw_image_repo() or getattr(
+            self.openclaw,
+            "image_repo",
+            DEFAULT_OPENCLAW_IMAGE_REPO,
+        )
+
+    def suggest_openclaw_image_repo(self) -> str:
+        configured = self.store.get_openclaw_image_repo()
+        if configured:
+            return configured
+        env_repo = os.environ.get("CLAWCU_OPENCLAW_IMAGE_REPO")
+        if isinstance(env_repo, str) and env_repo.strip():
+            return env_repo.strip()
+        country_code = self._detect_public_country_code()
+        if country_code == "CN":
+            return DEFAULT_OPENCLAW_IMAGE_REPO_CN
+        return DEFAULT_OPENCLAW_IMAGE_REPO
+
+    def set_openclaw_image_repo(self, image_repo: str) -> str:
+        cleaned = image_repo.strip()
+        if not cleaned:
+            raise ValueError("OpenClaw image repo cannot be empty.")
+        self.store.set_openclaw_image_repo(cleaned)
+        self.openclaw.image_repo = cleaned
+        self.store.append_log(f"setup openclaw_image_repo={cleaned}")
+        return cleaned
+
+    def _detect_public_country_code(self) -> str | None:
+        endpoints = (
+            ("https://ipapi.co/json/", "country_code"),
+            ("https://ipinfo.io/json", "country"),
+        )
+        headers = {"User-Agent": f"clawcu/{clawcu_version}"}
+        for url, field in endpoints:
+            request = urllib.request.Request(url, headers=headers)
+            try:
+                with urllib.request.urlopen(request, timeout=2) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError, OSError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            raw = payload.get(field)
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip().upper()
+        return None
 
     def create_openclaw(
         self,
@@ -392,6 +480,7 @@ class ClawCUService:
             payload.update(self._instance_provider_summary(record))
             payload["source"] = "managed"
             payload["home"] = record.datadir
+            payload["snapshot"] = self._latest_snapshot_label(record)
             summaries.append(payload)
         return summaries
 
@@ -461,7 +550,11 @@ class ClawCUService:
     def inspect_instance(self, name: str) -> dict:
         record = self._persist_live_status(self.store.load_record(name))
         inspection = self.docker.inspect_container(record.container_name)
-        return {"instance": record.to_dict(), "container": inspection}
+        return {
+            "instance": record.to_dict(),
+            "snapshots": self._snapshot_summary(record),
+            "container": inspection,
+        }
 
     def dashboard_url(self, name: str) -> str:
         record = self._persist_live_status(self.store.load_record(name))
@@ -662,12 +755,14 @@ class ClawCUService:
             raise ValueError(
                 f"Instance '{record.name}' has no pending pairing requests."
             )
+        env_values = self._load_env_file(self.store.instance_env_path(record.name))
         self.reporter(
             f"Approving pairing request {selected_request_id} for instance '{record.name}'."
         )
         self.docker.exec_in_container(
             record.container_name,
             ["node", "openclaw.mjs", "devices", "approve", selected_request_id],
+            env=env_values,
         )
         self.store.append_log(
             f"approve pairing instance={record.name} request_id={selected_request_id}"
@@ -677,19 +772,37 @@ class ClawCUService:
     def configure_instance(self, name: str, extra_args: list[str] | None = None) -> None:
         record = self._persist_live_status(self.store.load_record(name))
         command = ["node", "openclaw.mjs", "configure", *(extra_args or [])]
+        env_values = self._load_env_file(self.store.instance_env_path(record.name))
         self.store.append_log(
             f"configure instance name={record.name} args={' '.join(extra_args or [])}".strip()
         )
-        self.docker.exec_in_container_interactive(record.container_name, command)
+        self.docker.exec_in_container_interactive(record.container_name, command, env=env_values)
 
     def exec_instance(self, name: str, command: list[str]) -> None:
         if not command:
             raise ValueError("Please provide a command to run inside the instance.")
         record = self._persist_live_status(self.store.load_record(name))
+        env_values = self._load_env_file(self.store.instance_env_path(record.name))
         self.store.append_log(
             f"exec instance name={record.name} command={' '.join(command)}"
         )
-        self.docker.exec_in_container_interactive(record.container_name, command)
+        self.docker.exec_in_container_interactive(record.container_name, command, env=env_values)
+
+    def tui_instance(self, name: str, *, agent: str = "main") -> None:
+        agent_name = (agent or "main").strip() or "main"
+        record = self._persist_live_status(self.store.load_record(name))
+        pending_request_id = self._latest_pending_request_id(record)
+        if pending_request_id:
+            self.approve_pairing(name, request_id=pending_request_id)
+        else:
+            self.reporter(
+                f"No pending pairing request was found for instance '{record.name}'. Launching TUI directly."
+            )
+
+        command = ["openclaw", "tui"]
+        if agent_name != "main":
+            command.extend(["--agent", agent_name])
+        self.exec_instance(name, command)
 
     def start_instance(self, name: str) -> InstanceRecord:
         record = self.store.load_record(name)
@@ -807,18 +920,31 @@ class ClawCUService:
         if target_version == record.version:
             raise ValueError(f"Instance '{name}' is already on version {target_version}.")
 
+        self.reporter(
+            f"Step 1/4: Preparing an upgrade plan for '{record.name}'. "
+            "This should take a second or two."
+        )
         env_path = self.store.instance_env_path(record.name)
+        self.reporter(
+            "Step 2/4: Creating a safety snapshot for the data directory and instance env. "
+            "This usually takes a few seconds."
+        )
         snapshot_dir = self.store.create_snapshot(
             record.name,
             Path(record.datadir),
             f"upgrade-to-{target_version}",
             env_path=env_path,
         )
+        self.reporter(f"Created snapshot: {snapshot_dir}")
         self.store.append_log(
             f"upgrade instance name={record.name} from={record.version} to={target_version} snapshot={snapshot_dir}"
         )
 
         try:
+            self.reporter(
+                f"Step 3/4: Preparing OpenClaw {target_version}. "
+                "This may take a while if the image needs to be pulled or built."
+            )
             self.openclaw.ensure_image(target_version)
         except Exception as exc:
             record.history.append(
@@ -846,10 +972,19 @@ class ClawCUService:
             status="upgrading",
         )
         try:
+            self.reporter(
+                f"Step 4/4: Recreating the container on OpenClaw {target_version} "
+                "with the existing data directory."
+            )
             self.docker.remove_container(previous.container_name, missing_ok=True)
             self._run_container(upgraded)
+            upgraded = self._wait_for_service_readiness(self._persist_live_status(upgraded))
         except Exception as exc:
             rollback_error = None
+            self.reporter(
+                f"Upgrade failed while starting {target_version}. "
+                f"Trying to restore {previous.version} from the snapshot."
+            )
             try:
                 self.docker.remove_container(previous.container_name, missing_ok=True)
                 if snapshot_dir.exists():
@@ -895,7 +1030,12 @@ class ClawCUService:
             }
         )
         self.store.save_record(upgraded)
-        return self._persist_live_status(upgraded)
+        self.reporter(
+            f"Upgrade snapshot retained at {snapshot_dir}. "
+            f"Run 'clawcu rollback {upgraded.name}' if you want to restore {previous.version}."
+        )
+        self.reporter(self._lifecycle_summary("upgraded", upgraded))
+        return upgraded
 
     def rollback_instance(self, name: str) -> InstanceRecord:
         record = self.store.load_record(name)
@@ -903,20 +1043,34 @@ class ClawCUService:
         previous_version = normalize_version(transition["from_version"])
         restore_from = transition.get("snapshot_dir")
 
+        self.reporter(
+            f"Step 1/4: Preparing to roll back '{record.name}' from {record.version} to {previous_version}. "
+            "This should take a second or two."
+        )
         self.store.append_log(
             f"rollback instance name={record.name} from={record.version} to={previous_version}"
         )
+        self.reporter(
+            f"Step 2/4: Preparing OpenClaw {previous_version}. "
+            "This may take a while if the image is not available locally."
+        )
         self.openclaw.ensure_image(previous_version)
         env_path = self.store.instance_env_path(record.name)
+        self.reporter(
+            "Step 3/4: Saving the current state and restoring the previous snapshot. "
+            "This usually takes a few seconds."
+        )
         current_snapshot = self.store.create_snapshot(
             record.name,
             Path(record.datadir),
             f"rollback-from-{record.version}",
             env_path=env_path,
         )
+        self.reporter(f"Created rollback safety snapshot: {current_snapshot}")
 
         self.docker.remove_container(record.container_name, missing_ok=True)
         if restore_from and Path(restore_from).exists():
+            self.reporter(f"Restoring snapshot: {restore_from}")
             self.store.restore_snapshot(
                 Path(restore_from),
                 Path(record.datadir),
@@ -940,9 +1094,21 @@ class ClawCUService:
                 "restored_snapshot": restore_from,
             }
         )
+        self.reporter(
+            f"Step 4/4: Starting OpenClaw {previous_version} "
+            "with the restored data directory and env file."
+        )
         self._run_container(rolled)
+        rolled = self._wait_for_service_readiness(self._persist_live_status(rolled))
         self.store.save_record(rolled)
-        return self._persist_live_status(rolled)
+        if restore_from:
+            self.reporter(
+                f"Restored snapshot {restore_from}. "
+                f"The data directory and instance env were rolled back together."
+            )
+        self.reporter(f"Rollback safety snapshot retained at {current_snapshot}.")
+        self.reporter(self._lifecycle_summary("rolled_back", rolled))
+        return rolled
 
     def clone_instance(
         self,
@@ -1859,11 +2025,41 @@ class ClawCUService:
                 return event
         raise ValueError(f"Instance '{record.name}' has no rollback history.")
 
+    def _snapshot_summary(self, record: InstanceRecord) -> dict[str, str | None]:
+        latest_upgrade: dict | None = None
+        latest_rollback: dict | None = None
+        for event in reversed(record.history):
+            action = event.get("action")
+            if latest_upgrade is None and action == "upgrade":
+                latest_upgrade = event
+            if latest_rollback is None and action == "rollback":
+                latest_rollback = event
+            if latest_upgrade is not None and latest_rollback is not None:
+                break
+        return {
+            "latest_upgrade_snapshot": latest_upgrade.get("snapshot_dir") if latest_upgrade else None,
+            "latest_rollback_snapshot": latest_rollback.get("snapshot_dir") if latest_rollback else None,
+            "latest_restored_snapshot": latest_rollback.get("restored_snapshot") if latest_rollback else None,
+        }
+
+    def _latest_snapshot_label(self, record: InstanceRecord) -> str:
+        for event in reversed(record.history):
+            action = event.get("action")
+            if action == "rollback":
+                target = event.get("to_version") or "-"
+                return f"rollback -> {target}"
+            if action == "upgrade":
+                target = event.get("to_version") or "-"
+                return f"upgrade -> {target}"
+        return "-"
+
     def _lifecycle_summary(self, action: str, record: InstanceRecord) -> str:
         verb = {
             "created": "created",
             "retried": "retried",
             "recreated": "recreated",
+            "upgraded": "upgraded",
+            "rolled_back": "rolled back",
         }.get(action, action)
         if record.status == "running":
             return (
