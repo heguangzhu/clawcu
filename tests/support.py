@@ -137,6 +137,7 @@ def make_service(
     service = ClawCUService(store=store, docker=docker, openclaw=openclaw, hermes=hermes)
     service._local_openclaw_home = lambda: temp_clawcu_home / ".missing-openclaw"  # type: ignore[method-assign]
     service._local_hermes_home = lambda: temp_clawcu_home / ".missing-hermes"  # type: ignore[method-assign]
+    service._host_healthcheck_ready = lambda record: False  # type: ignore[method-assign]
     return service, docker, openclaw, store
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -2112,6 +2113,7 @@ def test_list_instance_summaries_includes_latest_snapshot_label(temp_clawcu_home
 
 def test_host_healthcheck_treats_connection_reset_as_not_ready(temp_clawcu_home) -> None:
     service, _, _, _ = make_service(temp_clawcu_home)
+    adapter = service.adapters["openclaw"]
     record = InstanceRecord(
         service="openclaw",
         name="writer",
@@ -2137,7 +2139,7 @@ def test_host_healthcheck_treats_connection_reset_as_not_ready(temp_clawcu_home)
 
     urllib.request.urlopen = fake_urlopen
     try:
-        assert service._host_healthcheck_ready(record) is False
+        assert adapter._host_healthcheck_ready(record) is False
     finally:
         urllib.request.urlopen = original_urlopen
 

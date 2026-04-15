@@ -125,7 +125,7 @@ class OpenClawAdapter(ServiceAdapter):
                 return ready
             if current.status == "running":
                 return current
-            if current.status not in pending_statuses:
+            if current.status not in pending_statuses and current.status != "running":
                 message = (
                     f"Instance '{current.name}' did not become ready. Current status is '{current.status}'. "
                     f"Use 'clawcu inspect {current.name}' or 'clawcu logs {current.name}' for details."
