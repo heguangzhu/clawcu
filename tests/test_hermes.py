@@ -142,6 +142,11 @@ def test_prepare_build_dockerfile_splits_heavy_dependency_layer(temp_clawcu_home
     source_dockerfile.write_text(
         """FROM debian:13.4
 
+RUN apt-get update && \\
+    apt-get install -y --no-install-recommends \\
+        build-essential nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps && \\
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /opt/hermes
 
 # Install Node dependencies and Playwright as root (--with-deps needs apt)
@@ -165,6 +170,7 @@ RUN npm install --prefer-offline --no-audit && \\
 
     contents = observable_dockerfile.read_text(encoding="utf-8")
     assert observable_dockerfile == source_dir / "Dockerfile.clawcu"
+    assert "build-essential git nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps" in contents
     assert (
         'ENV HTTP_PROXY="http://127.0.0.1:7890" HTTPS_PROXY="http://127.0.0.1:7890" ALL_PROXY="http://127.0.0.1:7890" '
         'http_proxy="http://127.0.0.1:7890" https_proxy="http://127.0.0.1:7890" all_proxy="http://127.0.0.1:7890"\n'

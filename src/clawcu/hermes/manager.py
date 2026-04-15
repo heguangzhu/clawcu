@@ -132,6 +132,10 @@ class HermesManager:
         *,
         camoufox_prefetch: CamoufoxPrefetch | None = None,
     ) -> str:
+        contents = contents.replace(
+            "build-essential nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps",
+            "build-essential git nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps",
+        )
         camoufox_install_step = "RUN npx camoufox-js fetch || true\n"
         if camoufox_prefetch:
             camoufox_install_step = (
