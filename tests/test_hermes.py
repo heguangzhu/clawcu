@@ -139,7 +139,9 @@ RUN npm install --prefer-offline --no-audit && \\
     assert observable_dockerfile == source_dir / "Dockerfile.clawcu"
     assert "RUN npm config set registry https://registry.npmmirror.com\n" in contents
     assert "RUN npm config set progress false && npm config set fund false && npm config set update-notifier false\n" in contents
-    assert "RUN npm ci --prefer-offline --no-audit --foreground-scripts\n" in contents
+    assert "RUN npm ci --prefer-offline --no-audit --ignore-scripts\n" in contents
+    assert "RUN node node_modules/agent-browser/scripts/postinstall.js\n" in contents
+    assert "RUN npx camoufox-js fetch || true\n" in contents
     assert "RUN npx playwright install --with-deps chromium --only-shell\n" in contents
     assert "RUN cd /opt/hermes/scripts/whatsapp-bridge && npm ci --prefer-offline --no-audit --foreground-scripts\n" in contents
     assert "RUN npm cache clean --force\n" in contents
