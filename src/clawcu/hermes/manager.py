@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import io
+import json
 import os
 import re
+import tarfile
+import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -14,6 +19,13 @@ DEFAULT_HERMES_SOURCE_REPO = "https://github.com/NousResearch/hermes-agent.git"
 DEFAULT_HERMES_DOCKERFILE_NAME = "Dockerfile"
 OBSERVABLE_HERMES_DOCKERFILE_NAME = "Dockerfile.clawcu"
 Reporter = Callable[[str], None]
+
+
+@dataclass(frozen=True)
+class CamoufoxPrefetch:
+    asset_name: str
+    version: str
+    release: str
 
 
 class HermesManager:
@@ -84,7 +96,8 @@ class HermesManager:
         source_dockerfile = source_dir / DEFAULT_HERMES_DOCKERFILE_NAME
         observable_dockerfile = source_dir / OBSERVABLE_HERMES_DOCKERFILE_NAME
         original = source_dockerfile.read_text(encoding="utf-8")
-        rewritten = self._rewrite_dockerfile_for_observable_builds(original)
+        camoufox_prefetch = self.prepare_camoufox_prefetch(source_dir)
+        rewritten = self._rewrite_dockerfile_for_observable_builds(original, camoufox_prefetch=camoufox_prefetch)
         observable_dockerfile.write_text(rewritten, encoding="utf-8")
         if rewritten != original:
             self.reporter(
@@ -92,7 +105,20 @@ class HermesManager:
             )
         return observable_dockerfile
 
-    def _rewrite_dockerfile_for_observable_builds(self, contents: str) -> str:
+    def _rewrite_dockerfile_for_observable_builds(
+        self,
+        contents: str,
+        *,
+        camoufox_prefetch: CamoufoxPrefetch | None = None,
+    ) -> str:
+        camoufox_install_step = "RUN npx camoufox-js fetch || true\n"
+        if camoufox_prefetch:
+            camoufox_install_step = (
+                "RUN python3 /opt/hermes/.clawcu-cache/install_camoufox.py "
+                f"/opt/hermes/.clawcu-cache/camoufox/{camoufox_prefetch.asset_name} "
+                f"/root/.cache/camoufox {camoufox_prefetch.version} {camoufox_prefetch.release}\n"
+                "RUN npx camoufox-js fetch || true\n"
+            )
         pattern = re.compile(
             r"(?ms)^# Install Node dependencies and Playwright as root \(\-\-with-deps needs apt\)\n"
             r"RUN npm install --prefer-offline --no-audit && \\\n"
@@ -107,9 +133,178 @@ class HermesManager:
             "RUN npm config set progress false && npm config set fund false && npm config set update-notifier false\n"
             "RUN npm ci --prefer-offline --no-audit --ignore-scripts\n"
             "RUN node node_modules/agent-browser/scripts/postinstall.js\n"
-            "RUN npx camoufox-js fetch || true\n"
+            f"{camoufox_install_step}"
             "RUN npx playwright install --with-deps chromium --only-shell\n"
             "RUN cd /opt/hermes/scripts/whatsapp-bridge && npm ci --prefer-offline --no-audit --foreground-scripts\n"
             "RUN npm cache clean --force\n"
         )
         return pattern.sub(replacement, contents, count=1)
+
+    def prepare_camoufox_prefetch(self, source_dir: Path) -> CamoufoxPrefetch | None:
+        cache_dir = source_dir / ".clawcu-cache" / "camoufox"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        script_path = source_dir / ".clawcu-cache" / "install_camoufox.py"
+        metadata_path = cache_dir / "metadata.json"
+        if metadata_path.exists():
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                asset_name = metadata["asset_name"]
+                asset_path = cache_dir / asset_name
+                if asset_path.exists():
+                    self._write_camoufox_install_script(script_path)
+                    return CamoufoxPrefetch(
+                        asset_name=asset_name,
+                        version=metadata["version"],
+                        release=metadata["release"],
+                    )
+            except Exception:
+                pass
+
+        try:
+            asset = self._select_camoufox_asset(source_dir)
+        except Exception as exc:
+            self.reporter(
+                f"Step 2/5: Could not prefetch Camoufox asset on the host ({exc}). Falling back to in-container fetch."
+            )
+            return None
+
+        asset_name = asset["asset_name"]
+        asset_path = cache_dir / asset_name
+        if not asset_path.exists():
+            self.reporter(
+                f"Step 2/5: Prefetching Camoufox browser asset {asset_name} on the host to avoid slow in-container GitHub downloads."
+            )
+            urllib.request.urlretrieve(asset["url"], asset_path)
+        metadata_path.write_text(
+            json.dumps(
+                {
+                    "asset_name": asset_name,
+                    "version": asset["version"],
+                    "release": asset["release"],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        self._write_camoufox_install_script(script_path)
+        return CamoufoxPrefetch(
+            asset_name=asset_name,
+            version=asset["version"],
+            release=asset["release"],
+        )
+
+    def _write_camoufox_install_script(self, script_path: Path) -> None:
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text(
+            (
+                "import json\n"
+                "import os\n"
+                "import shutil\n"
+                "import stat\n"
+                "import sys\n"
+                "import zipfile\n"
+                "\n"
+                "zip_path, install_dir, version, release = sys.argv[1:5]\n"
+                "if os.path.exists(install_dir):\n"
+                "    shutil.rmtree(install_dir)\n"
+                "os.makedirs(install_dir, exist_ok=True)\n"
+                "with zipfile.ZipFile(zip_path) as zf:\n"
+                "    zf.extractall(install_dir)\n"
+                "with open(os.path.join(install_dir, 'version.json'), 'w', encoding='utf-8') as fh:\n"
+                "    json.dump({'version': version, 'release': release}, fh)\n"
+                "for root, dirs, files in os.walk(install_dir):\n"
+                "    os.chmod(root, 0o755)\n"
+                "    for name in dirs:\n"
+                "        os.chmod(os.path.join(root, name), 0o755)\n"
+                "    for name in files:\n"
+                "        path = os.path.join(root, name)\n"
+                "        mode = os.stat(path).st_mode\n"
+                "        os.chmod(path, mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)\n"
+            ),
+            encoding="utf-8",
+        )
+
+    def _select_camoufox_asset(self, source_dir: Path) -> dict[str, str]:
+        camoufox_js_version = self._camoufox_js_version(source_dir)
+        if not camoufox_js_version:
+            raise ValueError("camoufox-js version was not found in package-lock.json")
+        min_release, max_release = self._camoufox_release_constraints(camoufox_js_version)
+        arch = self._docker_target_arch()
+        pattern = re.compile(rf"^camoufox-(.+)-(.+)-lin\.{re.escape(arch)}\.zip$")
+        releases = self._fetch_json("https://api.github.com/repos/daijro/camoufox/releases")
+        for release in releases:
+            for asset in release.get("assets", []):
+                name = asset.get("name", "")
+                match = pattern.match(name)
+                if not match:
+                    continue
+                version, release_name = match.groups()
+                if not self._release_is_supported(release_name, min_release, max_release):
+                    continue
+                return {
+                    "asset_name": name,
+                    "version": version,
+                    "release": release_name,
+                    "url": asset["browser_download_url"],
+                }
+        raise ValueError(f"no supported Camoufox asset found for linux/{arch}")
+
+    def _camoufox_js_version(self, source_dir: Path) -> str | None:
+        lockfile = source_dir / "package-lock.json"
+        if not lockfile.exists():
+            return None
+        payload = json.loads(lockfile.read_text(encoding="utf-8"))
+        package = payload.get("packages", {}).get("node_modules/camoufox-js", {})
+        version = package.get("version")
+        return str(version) if version else None
+
+    def _camoufox_release_constraints(self, camoufox_js_version: str) -> tuple[str, str]:
+        tarball_url = f"https://registry.npmjs.org/camoufox-js/-/camoufox-js-{camoufox_js_version}.tgz"
+        with urllib.request.urlopen(tarball_url) as response:
+            contents = response.read()
+        with tarfile.open(fileobj=io.BytesIO(contents), mode="r:gz") as archive:
+            member = archive.extractfile("package/dist/__version__.js")
+            if member is None:
+                raise ValueError("camoufox-js version constraints were not found")
+            version_js = member.read().decode("utf-8")
+        min_match = re.search(r'MIN_VERSION = "([^"]+)"', version_js)
+        max_match = re.search(r'MAX_VERSION = "([^"]+)"', version_js)
+        if not min_match or not max_match:
+            raise ValueError("camoufox-js version constraints were not found")
+        return min_match.group(1), max_match.group(1)
+
+    def _docker_target_arch(self) -> str:
+        machine = os.uname().machine.lower()
+        if machine in {"arm64", "aarch64"}:
+            return "arm64"
+        if machine in {"x86_64", "amd64"}:
+            return "x86_64"
+        if machine in {"i386", "i686"}:
+            return "i686"
+        raise ValueError(f"unsupported Docker target architecture: {machine}")
+
+    def _fetch_json(self, url: str) -> object:
+        with urllib.request.urlopen(url) as response:
+            return json.load(response)
+
+    def _release_is_supported(self, release: str, minimum: str, maximum: str) -> bool:
+        return self._release_less_than(minimum, release) and self._release_less_than(release, maximum)
+
+    def _release_less_than(self, left: str, right: str) -> bool:
+        for left_value, right_value in zip(self._sorted_release(left), self._sorted_release(right)):
+            if left_value < right_value:
+                return True
+            if left_value > right_value:
+                return False
+        return False
+
+    def _sorted_release(self, release: str) -> list[int]:
+        parts: list[int] = []
+        for component in release.split("."):
+            if component.isdigit():
+                parts.append(int(component))
+            else:
+                parts.append(ord(component[0]) - 1024)
+        while len(parts) < 5:
+            parts.append(0)
+        return parts

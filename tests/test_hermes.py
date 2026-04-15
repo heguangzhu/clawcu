@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from clawcu.hermes import DEFAULT_HERMES_SOURCE_REPO, HermesManager
+from clawcu.hermes.manager import CamoufoxPrefetch
 from clawcu.paths import get_paths
 from clawcu.storage import StateStore
 from tests.support import make_service
@@ -111,7 +112,7 @@ def test_ensure_image_skips_build_when_local_image_exists(temp_clawcu_home) -> N
     ]
 
 
-def test_prepare_build_dockerfile_splits_heavy_dependency_layer(temp_clawcu_home) -> None:
+def test_prepare_build_dockerfile_splits_heavy_dependency_layer(temp_clawcu_home, monkeypatch) -> None:
     store = StateStore(get_paths())
     docker = FakeBuildDocker()
     manager = HermesManager(store, docker)
@@ -132,6 +133,15 @@ RUN npm install --prefer-offline --no-audit && \\
 """,
         encoding="utf-8",
     )
+    monkeypatch.setattr(
+        manager,
+        "prepare_camoufox_prefetch",
+        lambda _source_dir: CamoufoxPrefetch(
+            asset_name="camoufox-135.0.1-beta.24-lin.arm64.zip",
+            version="135.0.1",
+            release="beta.24",
+        ),
+    )
 
     observable_dockerfile = manager.prepare_build_dockerfile(source_dir)
 
@@ -141,6 +151,11 @@ RUN npm install --prefer-offline --no-audit && \\
     assert "RUN npm config set progress false && npm config set fund false && npm config set update-notifier false\n" in contents
     assert "RUN npm ci --prefer-offline --no-audit --ignore-scripts\n" in contents
     assert "RUN node node_modules/agent-browser/scripts/postinstall.js\n" in contents
+    assert (
+        "RUN python3 /opt/hermes/.clawcu-cache/install_camoufox.py "
+        "/opt/hermes/.clawcu-cache/camoufox/camoufox-135.0.1-beta.24-lin.arm64.zip "
+        "/root/.cache/camoufox 135.0.1 beta.24\n"
+    ) in contents
     assert "RUN npx camoufox-js fetch || true\n" in contents
     assert "RUN npx playwright install --with-deps chromium --only-shell\n" in contents
     assert "RUN cd /opt/hermes/scripts/whatsapp-bridge && npm ci --prefer-offline --no-audit --foreground-scripts\n" in contents
