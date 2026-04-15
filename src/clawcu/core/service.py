@@ -377,6 +377,20 @@ class ClawCUService:
                 "hint": "",
             }
         )
+        hermes_proxy = self.get_hermes_proxy()
+        checks.append(
+            {
+                "name": "hermes_proxy",
+                "status": "ok",
+                "ok": True,
+                "summary": (
+                    f"Hermes build proxy is configured as {hermes_proxy}."
+                    if hermes_proxy
+                    else "Hermes build proxy is not configured."
+                ),
+                "hint": "",
+            }
+        )
         return checks
 
     def get_clawcu_home(self) -> str:
@@ -393,6 +407,14 @@ class ClawCUService:
             "CLAWCU_OPENCLAW_IMAGE_REPO",
             getattr(self.openclaw, "image_repo", "ghcr.io/openclaw/openclaw"),
         )
+        self.hermes.source_repo = self.store.get_hermes_source_repo() or os.environ.get(
+            "CLAWCU_HERMES_SOURCE_REPO",
+            getattr(self.hermes, "source_repo", DEFAULT_HERMES_SOURCE_REPO),
+        )
+        self.hermes.github_proxy = self.store.get_hermes_proxy() or os.environ.get(
+            "CLAWCU_HERMES_PROXY",
+            getattr(self.hermes, "github_proxy", None) or "",
+        ) or None
         self.store.append_log(f"setup clawcu_home={resolved}")
         return resolved
 
@@ -409,6 +431,15 @@ class ClawCUService:
             "source_repo",
             DEFAULT_HERMES_SOURCE_REPO,
         )
+
+    def get_hermes_proxy(self) -> str:
+        configured = self.store.get_hermes_proxy()
+        if configured:
+            return configured
+        env_proxy = os.environ.get("CLAWCU_HERMES_PROXY")
+        if isinstance(env_proxy, str) and env_proxy.strip():
+            return env_proxy.strip()
+        return getattr(self.hermes, "github_proxy", None) or ""
 
     def suggest_openclaw_image_repo(self) -> str:
         configured = self.store.get_openclaw_image_repo()
@@ -438,6 +469,13 @@ class ClawCUService:
         self.store.set_hermes_source_repo(cleaned)
         self.hermes.source_repo = cleaned
         self.store.append_log(f"setup hermes_source_repo={cleaned}")
+        return cleaned
+
+    def set_hermes_proxy(self, proxy: str) -> str:
+        cleaned = proxy.strip()
+        self.store.set_hermes_proxy(cleaned)
+        self.hermes.github_proxy = cleaned or None
+        self.store.append_log(f"setup hermes_proxy={cleaned or '-'}")
         return cleaned
 
     def _detect_public_country_code(self) -> str | None:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 from pathlib import Path
+from urllib.request import Request
 
 import pytest
 
@@ -133,6 +135,7 @@ def test_prepare_build_dockerfile_splits_heavy_dependency_layer(temp_clawcu_home
     store = StateStore(get_paths())
     docker = FakeBuildDocker()
     manager = HermesManager(store, docker)
+    manager.github_proxy = "http://127.0.0.1:7890"
     source_dir = store.source_dir("hermes", "v0.9.0")
     source_dir.mkdir(parents=True, exist_ok=True)
     source_dockerfile = source_dir / "Dockerfile"
@@ -162,6 +165,14 @@ RUN npm install --prefer-offline --no-audit && \\
 
     contents = observable_dockerfile.read_text(encoding="utf-8")
     assert observable_dockerfile == source_dir / "Dockerfile.clawcu"
+    assert (
+        'ENV HTTP_PROXY="http://127.0.0.1:7890" HTTPS_PROXY="http://127.0.0.1:7890" ALL_PROXY="http://127.0.0.1:7890" '
+        'http_proxy="http://127.0.0.1:7890" https_proxy="http://127.0.0.1:7890" all_proxy="http://127.0.0.1:7890"\n'
+    ) in contents
+    assert (
+        'RUN git config --global url."https://github.com/".insteadOf git@github.com: && '
+        'git config --global url."https://github.com/".insteadOf ssh://git@github.com/\n'
+    ) in contents
     assert "RUN npm config set registry https://registry.npmmirror.com\n" in contents
     assert "RUN npm config set progress false && npm config set fund false && npm config set update-notifier false\n" in contents
     assert "RUN npm ci --prefer-offline --no-audit --ignore-scripts\n" in contents
@@ -179,6 +190,40 @@ RUN npm install --prefer-offline --no-audit && \\
     assert "RUN npx playwright install --with-deps chromium --only-shell\n" in contents
     assert "RUN cd /opt/hermes/scripts/whatsapp-bridge && npm ci --prefer-offline --no-audit --foreground-scripts\n" in contents
     assert "RUN npm cache clean --force\n" in contents
+
+
+def test_download_file_uses_configured_proxy(temp_clawcu_home, monkeypatch, tmp_path) -> None:
+    store = StateStore(get_paths())
+    docker = FakeBuildDocker()
+    manager = HermesManager(store, docker)
+    manager.github_proxy = "http://127.0.0.1:7890"
+    events: list[object] = []
+
+    class FakeResponse(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self.close()
+            return False
+
+    class FakeOpener:
+        def open(self, request):
+            events.append(request)
+            return FakeResponse(b"payload")
+
+    def fake_build_opener(handler):
+        events.append(handler.proxies)
+        return FakeOpener()
+
+    monkeypatch.setattr("urllib.request.build_opener", fake_build_opener)
+
+    destination = tmp_path / "payload.bin"
+    manager._download_file("https://api.github.com/repos/example/release", destination)
+
+    assert events[0] == {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"}
+    assert isinstance(events[1], Request)
+    assert destination.read_bytes() == b"payload"
 
 
 def test_collect_providers_supports_hermes_home(temp_clawcu_home, tmp_path) -> None:

@@ -43,12 +43,19 @@ class HermesManager:
         self.docker = docker
         self.runner = runner
         configured_source_repo = None
+        configured_github_proxy = None
         if hasattr(store, "get_hermes_source_repo"):
             configured_source_repo = store.get_hermes_source_repo()
+        if hasattr(store, "get_hermes_proxy"):
+            configured_github_proxy = store.get_hermes_proxy()
         self.source_repo = source_repo or os.environ.get(
             "CLAWCU_HERMES_SOURCE_REPO",
             configured_source_repo or DEFAULT_HERMES_SOURCE_REPO,
         )
+        self.github_proxy = os.environ.get(
+            "CLAWCU_HERMES_PROXY",
+            configured_github_proxy or "",
+        ).strip() or None
         self.reporter = reporter or (lambda _message: None)
         self.build_attempts = 3
 
@@ -145,6 +152,9 @@ class HermesManager:
         )
         replacement = (
             "# Install Node dependencies and Playwright as root (--with-deps needs apt)\n"
+            f"{self._docker_proxy_env_block()}"
+            "RUN git config --global url.\"https://github.com/\".insteadOf git@github.com: && "
+            "git config --global url.\"https://github.com/\".insteadOf ssh://git@github.com/\n"
             "RUN npm config set registry https://registry.npmmirror.com\n"
             "RUN npm config set progress false && npm config set fund false && npm config set update-notifier false\n"
             "RUN npm ci --prefer-offline --no-audit --ignore-scripts\n"
@@ -191,7 +201,7 @@ class HermesManager:
             self.reporter(
                 f"Step 2/5: Prefetching Camoufox browser asset {asset_name} on the host to avoid slow in-container GitHub downloads."
             )
-            urllib.request.urlretrieve(asset["url"], asset_path)
+            self._download_file(asset["url"], asset_path)
         metadata_path.write_text(
             json.dumps(
                 {
@@ -278,7 +288,7 @@ class HermesManager:
 
     def _camoufox_release_constraints(self, camoufox_js_version: str) -> tuple[str, str]:
         tarball_url = f"https://registry.npmjs.org/camoufox-js/-/camoufox-js-{camoufox_js_version}.tgz"
-        with urllib.request.urlopen(tarball_url) as response:
+        with self._open_url(tarball_url) as response:
             contents = response.read()
         with tarfile.open(fileobj=io.BytesIO(contents), mode="r:gz") as archive:
             member = archive.extractfile("package/dist/__version__.js")
@@ -302,8 +312,36 @@ class HermesManager:
         raise ValueError(f"unsupported Docker target architecture: {machine}")
 
     def _fetch_json(self, url: str) -> object:
-        with urllib.request.urlopen(url) as response:
+        request = urllib.request.Request(url, headers={"User-Agent": "clawcu-hermes-build"})
+        with self._open_url(request) as response:
             return json.load(response)
+
+    def _open_url(self, url: str | urllib.request.Request):
+        if not self.github_proxy:
+            return urllib.request.urlopen(url)
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler(
+                {
+                    "http": self.github_proxy,
+                    "https": self.github_proxy,
+                }
+            )
+        )
+        return opener.open(url)
+
+    def _download_file(self, url: str, destination: Path) -> None:
+        request = urllib.request.Request(url, headers={"User-Agent": "clawcu-hermes-build"})
+        with self._open_url(request) as response:
+            destination.write_bytes(response.read())
+
+    def _docker_proxy_env_block(self) -> str:
+        if not self.github_proxy:
+            return ""
+        proxy = json.dumps(self.github_proxy)
+        return (
+            f"ENV HTTP_PROXY={proxy} HTTPS_PROXY={proxy} ALL_PROXY={proxy} "
+            f"http_proxy={proxy} https_proxy={proxy} all_proxy={proxy}\n"
+        )
 
     def _release_is_supported(self, release: str, minimum: str, maximum: str) -> bool:
         return self._release_less_than(minimum, release) and self._release_less_than(release, maximum)

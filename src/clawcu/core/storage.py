@@ -78,6 +78,18 @@ class StateStore:
     def set_hermes_source_repo(self, source_repo: str) -> None:
         self._set_string_config("hermes_source_repo", source_repo)
 
+    def get_hermes_proxy(self) -> str | None:
+        return self._get_string_config("hermes_proxy")
+
+    def set_hermes_proxy(self, proxy: str) -> None:
+        cleaned = proxy.strip()
+        payload = self.load_config()
+        if cleaned:
+            payload["hermes_proxy"] = cleaned
+        else:
+            payload.pop("hermes_proxy", None)
+        self.save_config(payload)
+
     def instance_path(self, name: str) -> Path:
         return self.paths.instances_dir / f"{name}.json"
 

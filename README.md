@@ -112,6 +112,7 @@ In an interactive terminal, `clawcu setup` prompts for:
 - the default `ClawCU home`
 - the default OpenClaw image repo
 - the default Hermes source repo
+- an optional Hermes build proxy for slow GitHub-dependent installs
 
 ### OpenClaw
 

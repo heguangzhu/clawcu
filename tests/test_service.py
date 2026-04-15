@@ -83,6 +83,13 @@ def test_check_setup_reports_running_docker_daemon(temp_clawcu_home, monkeypatch
             "summary": "Hermes source repo is configured as https://github.com/NousResearch/hermes-agent.git.",
             "hint": "",
         },
+        {
+            "name": "hermes_proxy",
+            "status": "ok",
+            "ok": True,
+            "summary": "Hermes build proxy is not configured.",
+            "hint": "",
+        },
     ]
 
 
@@ -114,6 +121,31 @@ def test_set_openclaw_image_repo_persists_global_config(temp_clawcu_home) -> Non
     assert json.loads(store.paths.config_path.read_text(encoding="utf-8")) == {
         "openclaw_image_repo": "registry.example.com/openclaw/openclaw"
     }
+
+
+def test_set_hermes_proxy_persists_global_config(temp_clawcu_home) -> None:
+    service, _, _, store = make_service(temp_clawcu_home)
+
+    saved = service.set_hermes_proxy("http://127.0.0.1:7890")
+
+    assert saved == "http://127.0.0.1:7890"
+    assert store.get_hermes_proxy() == "http://127.0.0.1:7890"
+    assert service.hermes.github_proxy == "http://127.0.0.1:7890"
+    assert json.loads(store.paths.config_path.read_text(encoding="utf-8")) == {
+        "hermes_proxy": "http://127.0.0.1:7890"
+    }
+
+
+def test_set_hermes_proxy_clears_empty_value(temp_clawcu_home) -> None:
+    service, _, _, store = make_service(temp_clawcu_home)
+    store.set_hermes_proxy("http://127.0.0.1:7890")
+
+    saved = service.set_hermes_proxy("")
+
+    assert saved == ""
+    assert store.get_hermes_proxy() is None
+    assert service.hermes.github_proxy is None
+    assert json.loads(store.paths.config_path.read_text(encoding="utf-8")) == {}
 
 
 def test_suggest_openclaw_image_repo_uses_china_mirror_when_ip_is_in_china(temp_clawcu_home, monkeypatch) -> None:

@@ -14,7 +14,7 @@ It describes the shared command surface, the service-specific differences betwee
 | Command | Description |
 |------|------|
 | `clawcu --version` | Show the installed ClawCU version. |
-| `clawcu setup [--completion]` | Check Docker, ClawCU home, runtime directories, and interactively configure the default ClawCU home, the OpenClaw image repo, and the Hermes source repo. |
+| `clawcu setup [--completion]` | Check Docker, ClawCU home, runtime directories, and interactively configure the default ClawCU home, the OpenClaw image repo, the Hermes source repo, and an optional Hermes build proxy. |
 | `clawcu pull openclaw --version <version>` | Pull the official OpenClaw image for the requested version. If the image is missing or cannot be pulled, ClawCU reports the error directly. |
 | `clawcu pull hermes --version <ref>` | Fetch the official Hermes repository at the requested git ref and build a managed Docker image from its Dockerfile. |
 

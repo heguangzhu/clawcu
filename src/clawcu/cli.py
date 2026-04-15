@@ -346,6 +346,15 @@ def setup_environment(
             ).strip()
             saved_hermes_repo = service.set_hermes_source_repo(configured_hermes_repo)
             console.print(f"[green]Saved Hermes source repo:[/green] {saved_hermes_repo}")
+            configured_hermes_proxy = typer.prompt(
+                "Hermes build proxy (optional)",
+                default=service.get_hermes_proxy(),
+            ).strip()
+            saved_hermes_proxy = service.set_hermes_proxy(configured_hermes_proxy)
+            if saved_hermes_proxy:
+                console.print(f"[green]Saved Hermes build proxy:[/green] {saved_hermes_proxy}")
+            else:
+                console.print("[green]Hermes build proxy:[/green] not configured")
         console.print("[green]ClawCU setup check passed.[/green] Docker and the ClawCU runtime layout are ready.")
         return
     raise typer.Exit(code=1)
