@@ -208,11 +208,11 @@ class FakeService:
 
     def get_hermes_apt_mirror(self) -> str:
         self._record("get_hermes_apt_mirror")
-        return "https://deb.debian.org/debian"
+        return "http://deb.debian.org/debian"
 
     def suggest_hermes_apt_mirror(self) -> str:
         self._record("suggest_hermes_apt_mirror")
-        return "https://deb.debian.org/debian"
+        return "http://deb.debian.org/debian"
 
     def set_hermes_apt_mirror(self, apt_mirror: str) -> str:
         self._record("set_hermes_apt_mirror", apt_mirror=apt_mirror)
@@ -725,7 +725,7 @@ def test_setup_command_prompts_for_openclaw_image_repo_in_interactive_shell(monk
             "registry.example.com/openclaw/openclaw",
             "https://github.com/NousResearch/hermes-agent.git",
             "http://127.0.0.1:7890",
-            "https://mirrors.nju.edu.cn/debian",
+            "http://mirrors.nju.edu.cn/debian",
         ]
     )
     monkeypatch.setattr(
@@ -752,7 +752,7 @@ def test_setup_command_prompts_for_openclaw_image_repo_in_interactive_shell(monk
     assert "Saved OpenClaw image repo: registry.example.com/openclaw/openclaw" in result.stdout
     assert "Saved Hermes source repo: https://github.com/NousResearch/hermes-agent.git" in result.stdout
     assert "Saved Hermes build proxy: http://127.0.0.1:7890" in result.stdout
-    assert "Saved Hermes apt mirror: https://mirrors.nju.edu.cn/debian" in result.stdout
+    assert "Saved Hermes apt mirror: http://mirrors.nju.edu.cn/debian" in result.stdout
     assert ("get_clawcu_home", (), {}) in service.calls
     assert ("suggest_openclaw_image_repo", (), {}) in service.calls
     assert ("get_hermes_proxy", (), {}) in service.calls
@@ -770,7 +770,7 @@ def test_setup_command_prompts_for_openclaw_image_repo_in_interactive_shell(monk
     assert (
         "set_hermes_apt_mirror",
         (),
-        {"apt_mirror": "https://mirrors.nju.edu.cn/debian"},
+        {"apt_mirror": "http://mirrors.nju.edu.cn/debian"},
     ) in service.calls
 
 
@@ -785,7 +785,7 @@ def test_setup_command_uses_china_mirror_as_interactive_default(monkeypatch) -> 
             "ghcr.nju.edu.cn/openclaw/openclaw",
             "https://github.com/NousResearch/hermes-agent.git",
             "",
-            "https://mirrors.nju.edu.cn/debian",
+            "http://mirrors.nju.edu.cn/debian",
         ]
     )
 
@@ -795,7 +795,7 @@ def test_setup_command_uses_china_mirror_as_interactive_default(monkeypatch) -> 
 
     monkeypatch.setattr("clawcu.cli.typer.prompt", fake_prompt)
     monkeypatch.setattr(service, "suggest_openclaw_image_repo", lambda: "ghcr.nju.edu.cn/openclaw/openclaw")
-    monkeypatch.setattr(service, "suggest_hermes_apt_mirror", lambda: "https://mirrors.nju.edu.cn/debian")
+    monkeypatch.setattr(service, "suggest_hermes_apt_mirror", lambda: "http://mirrors.nju.edu.cn/debian")
 
     result = runner.invoke(app, ["setup"])
 
@@ -805,7 +805,7 @@ def test_setup_command_uses_china_mirror_as_interactive_default(monkeypatch) -> 
     assert prompts[2][0][0] == "Hermes source repo"
     assert prompts[3][0][0] == "Hermes build proxy (optional)"
     assert prompts[4][0][0] == "Hermes apt mirror"
-    assert prompts[4][1]["default"] == "https://mirrors.nju.edu.cn/debian"
+    assert prompts[4][1]["default"] == "http://mirrors.nju.edu.cn/debian"
     assert (
         "set_openclaw_image_repo",
         (),
@@ -864,7 +864,7 @@ def test_setup_command_noninteractive_applies_explicit_options(monkeypatch) -> N
             "--hermes-build-proxy",
             "http://127.0.0.1:7890",
             "--hermes-apt-mirror",
-            "https://mirrors.nju.edu.cn/debian",
+            "http://mirrors.nju.edu.cn/debian",
         ],
     )
 
@@ -873,7 +873,7 @@ def test_setup_command_noninteractive_applies_explicit_options(monkeypatch) -> N
     assert "Saved OpenClaw image repo: registry.example.com/openclaw/openclaw" in result.stdout
     assert "Saved Hermes source repo: https://github.com/NousResearch/hermes-agent.git" in result.stdout
     assert "Saved Hermes build proxy: http://127.0.0.1:7890" in result.stdout
-    assert "Saved Hermes apt mirror: https://mirrors.nju.edu.cn/debian" in result.stdout
+    assert "Saved Hermes apt mirror: http://mirrors.nju.edu.cn/debian" in result.stdout
     assert (
         "set_clawcu_home",
         (),
@@ -897,7 +897,7 @@ def test_setup_command_noninteractive_applies_explicit_options(monkeypatch) -> N
     assert (
         "set_hermes_apt_mirror",
         (),
-        {"apt_mirror": "https://mirrors.nju.edu.cn/debian"},
+        {"apt_mirror": "http://mirrors.nju.edu.cn/debian"},
     ) in service.calls
 
 

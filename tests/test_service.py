@@ -159,13 +159,13 @@ def test_set_hermes_proxy_clears_empty_value(temp_clawcu_home) -> None:
 def test_set_hermes_apt_mirror_persists_global_config(temp_clawcu_home) -> None:
     service, _, _, store = make_service(temp_clawcu_home)
 
-    saved = service.set_hermes_apt_mirror("https://mirrors.nju.edu.cn/debian")
+    saved = service.set_hermes_apt_mirror("http://mirrors.nju.edu.cn/debian")
 
-    assert saved == "https://mirrors.nju.edu.cn/debian"
-    assert store.get_hermes_apt_mirror() == "https://mirrors.nju.edu.cn/debian"
-    assert service.hermes.apt_mirror == "https://mirrors.nju.edu.cn/debian"
+    assert saved == "http://mirrors.nju.edu.cn/debian"
+    assert store.get_hermes_apt_mirror() == "http://mirrors.nju.edu.cn/debian"
+    assert service.hermes.apt_mirror == "http://mirrors.nju.edu.cn/debian"
     assert json.loads(store.paths.config_path.read_text(encoding="utf-8")) == {
-        "hermes_apt_mirror": "https://mirrors.nju.edu.cn/debian"
+        "hermes_apt_mirror": "http://mirrors.nju.edu.cn/debian"
     }
 
 

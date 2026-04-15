@@ -16,8 +16,8 @@ from clawcu.core.subprocess_utils import run_command
 from clawcu.core.validation import image_tag_for_service, normalize_ref
 
 DEFAULT_HERMES_SOURCE_REPO = "https://github.com/NousResearch/hermes-agent.git"
-DEFAULT_HERMES_APT_MIRROR = "https://deb.debian.org/debian"
-DEFAULT_HERMES_APT_MIRROR_CN = "https://mirrors.nju.edu.cn/debian"
+DEFAULT_HERMES_APT_MIRROR = "http://deb.debian.org/debian"
+DEFAULT_HERMES_APT_MIRROR_CN = "http://mirrors.nju.edu.cn/debian"
 DEFAULT_HERMES_DOCKERFILE_NAME = "Dockerfile"
 OBSERVABLE_HERMES_DOCKERFILE_NAME = "Dockerfile.clawcu"
 Reporter = Callable[[str], None]
@@ -188,18 +188,23 @@ class HermesManager:
             "    rm -rf /var/lib/apt/lists/*"
         )
         if self.apt_mirror:
-            security_mirror = self._derive_security_mirror(self.apt_mirror)
+            bootstrap_mirror = self._bootstrap_apt_mirror(self.apt_mirror)
+            security_mirror = self._derive_security_mirror(bootstrap_mirror)
             replacement = (
                 "RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \\\n"
-                f"      sed -i -e 's|http://deb.debian.org/debian|{self.apt_mirror}|g' "
-                f"-e 's|https://deb.debian.org/debian|{self.apt_mirror}|g' "
+                f"      sed -i -e 's|http://deb.debian.org/debian|{bootstrap_mirror}|g' "
+                f"-e 's|https://deb.debian.org/debian|{bootstrap_mirror}|g' "
+                f"-e 's|http://deb.debian.org/debian-security|{security_mirror}|g' "
+                f"-e 's|https://deb.debian.org/debian-security|{security_mirror}|g' "
                 f"-e 's|http://security.debian.org/debian-security|{security_mirror}|g' "
                 f"-e 's|https://security.debian.org/debian-security|{security_mirror}|g' "
                 f"/etc/apt/sources.list.d/debian.sources; \\\n"
                 "    fi && \\\n"
                 "    if [ -f /etc/apt/sources.list ]; then \\\n"
-                f"      sed -i -e 's|http://deb.debian.org/debian|{self.apt_mirror}|g' "
-                f"-e 's|https://deb.debian.org/debian|{self.apt_mirror}|g' "
+                f"      sed -i -e 's|http://deb.debian.org/debian|{bootstrap_mirror}|g' "
+                f"-e 's|https://deb.debian.org/debian|{bootstrap_mirror}|g' "
+                f"-e 's|http://deb.debian.org/debian-security|{security_mirror}|g' "
+                f"-e 's|https://deb.debian.org/debian-security|{security_mirror}|g' "
                 f"-e 's|http://security.debian.org/debian-security|{security_mirror}|g' "
                 f"-e 's|https://security.debian.org/debian-security|{security_mirror}|g' "
                 f"/etc/apt/sources.list; \\\n"
@@ -217,6 +222,11 @@ class HermesManager:
         if cleaned.endswith("/debian"):
             return f"{cleaned[:-7]}/debian-security"
         return f"{cleaned}-security"
+
+    def _bootstrap_apt_mirror(self, apt_mirror: str) -> str:
+        if apt_mirror.startswith("https://"):
+            return "http://" + apt_mirror[len("https://") :]
+        return apt_mirror
 
     def prepare_camoufox_prefetch(self, source_dir: Path) -> CamoufoxPrefetch | None:
         cache_dir = self.store.paths.home / "cache" / "hermes" / "camoufox" / normalize_ref(source_dir.name)
