@@ -103,8 +103,11 @@ class HermesAdapter(ServiceAdapter):
             extra_env={
                 "HERMES_HOME": "/opt/data",
                 "API_SERVER_ENABLED": "true",
+                "API_SERVER_HOST": "0.0.0.0",
             },
-            command=["hermes", "gateway", "run"],
+            # The Hermes Docker image already uses an entrypoint that executes
+            # `hermes "$@"`, so we only pass the subcommand here.
+            command=["gateway", "run"],
         )
 
     def configure_before_run(self, service, record: InstanceRecord) -> None:

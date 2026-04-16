@@ -7,6 +7,7 @@ import pytest
 from clawcu.hermes import DEFAULT_HERMES_IMAGE_REPO, HermesManager
 from clawcu.paths import get_paths
 from clawcu.storage import StateStore
+from clawcu.validation import build_instance_record
 from tests.support import make_service
 
 
@@ -129,6 +130,26 @@ def test_create_hermes_saves_record_and_writes_native_home(temp_clawcu_home, tmp
     assert record.image_tag == "clawcu/hermes-agent:v2026.4.8"
     assert store.load_record("scribe").container_name == "clawcu-hermes-scribe"
     assert (datadir / "config.yaml").exists()
+
+
+def test_hermes_run_spec_respects_image_entrypoint(temp_clawcu_home, tmp_path) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+    adapter = service.adapters["hermes"]
+    spec = adapter.build_spec(
+        service,
+        name="scribe",
+        version="2026.4.8",
+        datadir=str(tmp_path / "hermes-home"),
+        port=8642,
+        cpu="1",
+        memory="2g",
+    )
+    instance = build_instance_record(spec, status="creating", history=[])
+
+    run_spec = adapter.run_spec(service, instance)
+
+    assert run_spec.command == ["gateway", "run"]
+    assert run_spec.extra_env["API_SERVER_HOST"] == "0.0.0.0"
 
 
 def test_hermes_env_commands_use_datadir_env_file(temp_clawcu_home, tmp_path) -> None:
