@@ -14,7 +14,7 @@ from clawcu.core.adapters import ServiceAdapter
 from clawcu.core.models import AccessInfo, ContainerRunSpec, InstanceRecord, InstanceSpec
 from clawcu.core.validation import (
     build_instance_record,
-    normalize_ref,
+    normalize_service_version,
     resolve_datadir,
     updated_record,
     utc_now_iso,
@@ -79,7 +79,7 @@ class HermesAdapter(ServiceAdapter):
         return InstanceSpec(
             service=self.service_name,
             name=validated_name,
-            version=normalize_ref(version),
+            version=normalize_service_version(self.service_name, version),
             datadir=resolved_datadir,
             port=resolved_port,
             cpu=validate_cpu(cpu),

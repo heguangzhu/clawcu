@@ -61,6 +61,19 @@ def test_ensure_image_pulls_when_local_image_is_missing(temp_clawcu_home) -> Non
     assert any("Pulling Hermes image clawcu/hermes-agent:v2026.4.8" in message for message in messages)
 
 
+def test_ensure_image_accepts_numeric_date_version_and_maps_to_v_tag(temp_clawcu_home) -> None:
+    store = StateStore(get_paths())
+    docker = FakePullDocker()
+    messages: list[str] = []
+    manager = HermesManager(store, docker, reporter=messages.append)
+
+    image_tag = manager.ensure_image("2026.4.8")
+
+    assert image_tag == "clawcu/hermes-agent:v2026.4.8"
+    assert docker.pull_calls == ["clawcu/hermes-agent:v2026.4.8"]
+    assert any("Pulling Hermes image clawcu/hermes-agent:v2026.4.8" in message for message in messages)
+
+
 def test_ensure_image_skips_pull_when_local_image_exists(temp_clawcu_home) -> None:
     store = StateStore(get_paths())
     docker = FakePullDocker()
@@ -104,7 +117,7 @@ def test_create_hermes_saves_record_and_writes_native_home(temp_clawcu_home, tmp
 
     record = service.create_hermes(
         name="scribe",
-        version="v2026.4.8",
+        version="2026.4.8",
         datadir=str(datadir),
         port=8642,
         cpu="1",
@@ -112,6 +125,7 @@ def test_create_hermes_saves_record_and_writes_native_home(temp_clawcu_home, tmp
     )
 
     assert record.service == "hermes"
+    assert record.version == "v2026.4.8"
     assert record.image_tag == "clawcu/hermes-agent:v2026.4.8"
     assert store.load_record("scribe").container_name == "clawcu-hermes-scribe"
     assert (datadir / "config.yaml").exists()
@@ -124,7 +138,7 @@ def test_hermes_env_commands_use_datadir_env_file(temp_clawcu_home, tmp_path) ->
     datadir = tmp_path / "hermes-home"
     service.create_hermes(
         name="scribe",
-        version="v2026.4.8",
+        version="2026.4.8",
         datadir=str(datadir),
         port=8642,
         cpu="1",
@@ -144,7 +158,7 @@ def test_hermes_token_and_approve_are_unsupported(temp_clawcu_home, tmp_path) ->
     datadir = tmp_path / "hermes-home"
     service.create_hermes(
         name="scribe",
-        version="v2026.4.8",
+        version="2026.4.8",
         datadir=str(datadir),
         port=8642,
         cpu="1",
@@ -174,7 +188,7 @@ def test_apply_provider_updates_hermes_config_and_env(temp_clawcu_home, tmp_path
     target_root = tmp_path / "hermes-target"
     service.create_hermes(
         name="scribe",
-        version="v2026.4.8",
+        version="2026.4.8",
         datadir=str(target_root),
         port=8642,
         cpu="1",

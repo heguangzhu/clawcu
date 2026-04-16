@@ -11,6 +11,7 @@ NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$")
 MEMORY_PATTERN = re.compile(r"^\d+(\.\d+)?([bkmgBKMG])?$")
 API_STYLE_PATTERN = {"openai", "anthropic"}
 DOCKER_TAG_SAFE = re.compile(r"[^A-Za-z0-9_.-]+")
+HERMES_TAG_LIKE_PATTERN = re.compile(r"^\d+(?:\.\d+){1,3}$")
 
 
 def utc_now_iso() -> str:
@@ -33,9 +34,20 @@ def normalize_ref(ref: str) -> str:
     return cleaned
 
 
+def normalize_hermes_tag(ref: str) -> str:
+    cleaned = normalize_ref(ref)
+    if cleaned.startswith("v"):
+        return cleaned
+    if HERMES_TAG_LIKE_PATTERN.fullmatch(cleaned):
+        return f"v{cleaned}"
+    return cleaned
+
+
 def normalize_service_version(service: str, version: str) -> str:
     if service == "openclaw":
         return normalize_version(version)
+    if service == "hermes":
+        return normalize_hermes_tag(version)
     return normalize_ref(version)
 
 
@@ -46,7 +58,7 @@ def upstream_ref_for_version(version: str) -> str:
 def upstream_ref_for_service(service: str, version: str) -> str:
     if service == "openclaw":
         return upstream_ref_for_version(version)
-    return normalize_ref(version)
+    return normalize_service_version(service, version)
 
 
 def _docker_tag_component(value: str) -> str:

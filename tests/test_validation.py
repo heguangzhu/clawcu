@@ -5,6 +5,7 @@ import pytest
 from clawcu.validation import (
     container_name_for_service,
     image_tag_for_service,
+    normalize_hermes_tag,
     normalize_ref,
     normalize_service_version,
     normalize_version,
@@ -25,8 +26,15 @@ def test_normalize_ref_preserves_non_version_git_ref() -> None:
     assert normalize_service_version("hermes", "main") == "main"
 
 
+def test_normalize_hermes_tag_adds_v_prefix_for_numeric_tags() -> None:
+    assert normalize_hermes_tag("2026.4.8") == "v2026.4.8"
+    assert normalize_hermes_tag("0.9.0") == "v0.9.0"
+    assert normalize_hermes_tag("v2026.4.8") == "v2026.4.8"
+
+
 def test_service_aware_image_and_container_names() -> None:
     assert image_tag_for_service("openclaw", "2026.4.1") == "clawcu/openclaw:2026.4.1"
+    assert image_tag_for_service("hermes", "2026.4.8") == "clawcu/hermes-agent:v2026.4.8"
     assert image_tag_for_service("hermes", "v0.9.0") == "clawcu/hermes-agent:v0.9.0"
     assert container_name_for_service("openclaw", "writer") == "clawcu-openclaw-writer"
     assert container_name_for_service("hermes", "writer") == "clawcu-hermes-writer"

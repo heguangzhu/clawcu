@@ -6,7 +6,7 @@ from typing import Callable
 from clawcu.core.docker import DockerManager
 from clawcu.core.storage import StateStore
 from clawcu.core.subprocess_utils import CommandError, run_command
-from clawcu.core.validation import image_tag_for_service, normalize_ref
+from clawcu.core.validation import image_tag_for_service, normalize_service_version
 
 DEFAULT_HERMES_IMAGE_REPO = "clawcu/hermes-agent"
 Reporter = Callable[[str], None]
@@ -38,10 +38,10 @@ class HermesManager:
         self.reporter = reporter or (lambda _message: None)
 
     def official_image_tag(self, version: str) -> str:
-        return f"{self.image_repo}:{normalize_ref(version)}"
+        return f"{self.image_repo}:{normalize_service_version('hermes', version)}"
 
     def pull_official_image(self, version: str) -> str:
-        normalized = normalize_ref(version)
+        normalized = normalize_service_version("hermes", version)
         official_image = self.official_image_tag(normalized)
         local_image = image_tag_for_service("hermes", normalized)
         self.reporter(
@@ -54,7 +54,7 @@ class HermesManager:
         return local_image
 
     def ensure_image(self, version: str) -> str:
-        normalized = normalize_ref(version)
+        normalized = normalize_service_version("hermes", version)
         image_tag = image_tag_for_service("hermes", normalized)
         if not self.docker.image_exists(image_tag):
             try:
