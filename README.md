@@ -69,7 +69,7 @@ ClawCU is built to solve those problems with a Docker-based workflow that favors
 ### Hermes
 
 - Artifact source:
-  - official Hermes repository checkout plus managed Docker build
+  - prebuilt Hermes images pulled from `clawcu/hermes-agent:<tag>`
 - Access model:
   - local Web Dashboard URL
   - CLI/chat access through `tui`, `config`, and `exec`
@@ -111,9 +111,7 @@ In an interactive terminal, `clawcu setup` prompts for:
 
 - the default `ClawCU home`
 - the default OpenClaw image repo
-- the default Hermes source repo
-- an optional Hermes build proxy for slow GitHub-dependent installs
-- the Hermes apt mirror used during Docker builds
+- the default Hermes image repo
 
 ### OpenClaw
 

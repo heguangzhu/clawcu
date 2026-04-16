@@ -20,7 +20,7 @@
   - `clawcu create`、`pull`、`list`、`inspect`、`clone`、`upgrade`、`rollback`、`exec`、`config`、`tui` 现在都能按服务分发。
 
 - Hermes 正式接入
-  - ClawCU 现在可以从 Hermes 官方仓库按 git ref 拉取源码，并构建受管 Docker 镜像。
+  - ClawCU 现在可以从配置好的 Hermes 镜像仓库拉取预构建 Hermes Docker 镜像。
   - Hermes 实例拥有独立的访问 URL、`.env`、快照、clone、upgrade 和 rollback 流程。
 
 - 服务感知的模型配置复用
@@ -60,7 +60,7 @@ ClawCU 现在拆成三层：
   - OpenClaw 模型配置收集与 apply
 
 - `src/clawcu/hermes/`
-  - Hermes 源码与构建管理
+  - Hermes 镜像拉取与管理
   - Hermes home/config/env 处理
   - 就绪判断与访问摘要
   - Hermes config/chat 集成
@@ -97,14 +97,11 @@ Hermes 现在已经是 ClawCU 中的正式托管服务。
 
 ### 制品准备
 
-`clawcu pull hermes --version <ref>`
+`clawcu pull hermes --version <tag>`
 
 会完成以下动作：
 
-- 拉取 Hermes 官方仓库到受管源码缓存
-- checkout 指定 git ref
-- 必要时更新 submodules
-- 基于官方 Dockerfile 构建受管镜像
+- 从配置好的 Hermes 镜像仓库拉取指定 tag
 
 ### 实例模型
 

@@ -14,9 +14,9 @@
 | 命令 | 说明 |
 |------|------|
 | `clawcu --version` | 显示当前安装的 ClawCU 版本。 |
-| `clawcu setup [--completion]` | 检查 Docker、ClawCU home、运行目录，并交互式配置默认的 ClawCU home、OpenClaw 镜像源、Hermes 源码仓库、可选的 Hermes 构建代理，以及 Hermes Docker 构建时使用的 apt 镜像源。 |
+| `clawcu setup [--completion]` | 检查 Docker、ClawCU home、运行目录，并交互式配置默认的 ClawCU home、OpenClaw 镜像源和 Hermes 镜像源。 |
 | `clawcu pull openclaw --version <version>` | 拉取指定版本的 OpenClaw 官方镜像。如果镜像不存在或拉取失败，ClawCU 会直接报错。 |
-| `clawcu pull hermes --version <ref>` | 拉取指定 git ref 的 Hermes 官方仓库源码，并用其 Dockerfile 构建受管镜像。 |
+| `clawcu pull hermes --version <tag>` | 从配置好的 Hermes 镜像仓库拉取指定 tag 的预构建 Hermes 镜像。 |
 
 ## 2. 实例创建
 
@@ -36,7 +36,7 @@
 | `clawcu restart <name>` | 重启一个托管实例。 |
 | `clawcu retry <name>` | 重试一个处于 `create_failed` 的实例。 |
 | `clawcu recreate <name>` | 按保存的实例配置重建容器，保留同一套实例设置。 |
-| `clawcu upgrade <name> --version <version-or-ref>` | 将实例升级到新的服务版本或 git ref。升级前会自动快照实例 home 和对应的 env 路径。 |
+| `clawcu upgrade <name> --version <version-or-tag>` | 将实例升级到新的服务版本或 tag。升级前会自动快照实例 home 和对应的 env 路径。 |
 | `clawcu rollback <name>` | 通过恢复匹配的快照和 env 快照，把实例回退到上一次可逆的版本切换。 |
 | `clawcu clone <source> --name <name> [--datadir <path>] [--port <port>]` | 复制源实例，生成新的隔离实验实例。 |
 | `clawcu logs <name> [--follow]` | 查看实例日志，`--follow` 会持续跟随输出。 |

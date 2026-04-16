@@ -61,7 +61,13 @@ def image_tag_for_version(version: str) -> str:
 
 def image_tag_for_service(service: str, version: str) -> str:
     normalized = normalize_service_version(service, version)
-    return f"clawcu/{service}:{_docker_tag_component(normalized)}"
+    if service == "openclaw":
+        repository = "clawcu/openclaw"
+    elif service == "hermes":
+        repository = "clawcu/hermes-agent"
+    else:
+        repository = f"clawcu/{service}"
+    return f"{repository}:{_docker_tag_component(normalized)}"
 
 
 def container_name_for_instance(name: str) -> str:

@@ -27,7 +27,7 @@ def test_normalize_ref_preserves_non_version_git_ref() -> None:
 
 def test_service_aware_image_and_container_names() -> None:
     assert image_tag_for_service("openclaw", "2026.4.1") == "clawcu/openclaw:2026.4.1"
-    assert image_tag_for_service("hermes", "v0.9.0") == "clawcu/hermes:v0.9.0"
+    assert image_tag_for_service("hermes", "v0.9.0") == "clawcu/hermes-agent:v0.9.0"
     assert container_name_for_service("openclaw", "writer") == "clawcu-openclaw-writer"
     assert container_name_for_service("hermes", "writer") == "clawcu-hermes-writer"
 

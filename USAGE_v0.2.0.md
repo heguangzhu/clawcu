@@ -14,9 +14,9 @@ It describes the shared command surface, the service-specific differences betwee
 | Command | Description |
 |------|------|
 | `clawcu --version` | Show the installed ClawCU version. |
-| `clawcu setup [--completion]` | Check Docker, ClawCU home, runtime directories, and interactively configure the default ClawCU home, the OpenClaw image repo, the Hermes source repo, an optional Hermes build proxy, and the Hermes apt mirror used during Docker builds. |
+| `clawcu setup [--completion]` | Check Docker, ClawCU home, runtime directories, and interactively configure the default ClawCU home, the OpenClaw image repo, and the Hermes image repo. |
 | `clawcu pull openclaw --version <version>` | Pull the official OpenClaw image for the requested version. If the image is missing or cannot be pulled, ClawCU reports the error directly. |
-| `clawcu pull hermes --version <ref>` | Fetch the official Hermes repository at the requested git ref and build a managed Docker image from its Dockerfile. |
+| `clawcu pull hermes --version <tag>` | Pull the prebuilt Hermes image for the requested tag from the configured Hermes image repo. |
 
 ## 2. Instance Creation
 
@@ -36,7 +36,7 @@ It describes the shared command surface, the service-specific differences betwee
 | `clawcu restart <name>` | Restart a managed instance. |
 | `clawcu retry <name>` | Retry an instance that is stuck in `create_failed`. |
 | `clawcu recreate <name>` | Recreate an instance container from saved configuration while keeping the same instance settings. |
-| `clawcu upgrade <name> --version <version-or-ref>` | Upgrade an instance to a new service version or git ref. ClawCU snapshots the instance home plus the matching env path before replacing the container. |
+| `clawcu upgrade <name> --version <version-or-tag>` | Upgrade an instance to a new service version or tag. ClawCU snapshots the instance home plus the matching env path before replacing the container. |
 | `clawcu rollback <name>` | Roll back an instance to the previous reversible version transition by restoring the matching snapshot and env snapshot. |
 | `clawcu clone <source> --name <name> [--datadir <path>] [--port <port>]` | Copy a source instance into a new isolated experiment instance. |
 | `clawcu logs <name> [--follow]` | Show instance logs. `--follow` keeps streaming them. |

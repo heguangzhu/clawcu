@@ -120,11 +120,11 @@ class FakeOpenClawManager:
 class FakeHermesManager:
     def __init__(self) -> None:
         self.versions: list[str] = []
-        self.source_repo = "https://github.com/NousResearch/hermes-agent.git"
+        self.image_repo = "clawcu/hermes-agent"
 
     def ensure_image(self, version: str) -> str:
         self.versions.append(version)
-        return f"clawcu/hermes:{version}"
+        return f"clawcu/hermes-agent:{version}"
 
 
 def make_service(

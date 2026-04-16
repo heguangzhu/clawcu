@@ -20,7 +20,7 @@ Release Date: April 15, 2026
   - `clawcu create`, `pull`, `list`, `inspect`, `clone`, `upgrade`, `rollback`, `exec`, `config`, and `tui` are now service-aware.
 
 - Hermes Support
-  - ClawCU can now fetch Hermes from the official repository at a requested git ref and build a managed Docker image.
+  - ClawCU can now manage Hermes from prebuilt Docker images pulled from the configured Hermes image repo.
   - Hermes instances are managed as isolated homes with their own access URL, `.env`, snapshots, clone flow, upgrade flow, and rollback flow.
 
 - Service-Aware Model Configuration Reuse
@@ -97,14 +97,11 @@ Hermes is now a real managed service inside ClawCU.
 
 ### Artifact Preparation
 
-`clawcu pull hermes --version <ref>`
+`clawcu pull hermes --version <tag>`
 
 does all of the following:
 
-- fetches the official Hermes repo into the managed source cache
-- checks out the requested git ref
-- updates submodules when needed
-- builds a managed Docker image from the official Dockerfile
+- pulls the requested image tag from the configured Hermes image repo
 
 ### Instance Model
 

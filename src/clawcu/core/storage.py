@@ -72,35 +72,11 @@ class StateStore:
     def set_openclaw_image_repo(self, image_repo: str) -> None:
         self._set_string_config("openclaw_image_repo", image_repo)
 
-    def get_hermes_source_repo(self) -> str | None:
-        return self._get_string_config("hermes_source_repo")
+    def get_hermes_image_repo(self) -> str | None:
+        return self._get_string_config("hermes_image_repo")
 
-    def set_hermes_source_repo(self, source_repo: str) -> None:
-        self._set_string_config("hermes_source_repo", source_repo)
-
-    def get_hermes_proxy(self) -> str | None:
-        return self._get_string_config("hermes_proxy")
-
-    def set_hermes_proxy(self, proxy: str) -> None:
-        cleaned = proxy.strip()
-        payload = self.load_config()
-        if cleaned:
-            payload["hermes_proxy"] = cleaned
-        else:
-            payload.pop("hermes_proxy", None)
-        self.save_config(payload)
-
-    def get_hermes_apt_mirror(self) -> str | None:
-        return self._get_string_config("hermes_apt_mirror")
-
-    def set_hermes_apt_mirror(self, apt_mirror: str) -> None:
-        cleaned = apt_mirror.strip()
-        payload = self.load_config()
-        if cleaned:
-            payload["hermes_apt_mirror"] = cleaned
-        else:
-            payload.pop("hermes_apt_mirror", None)
-        self.save_config(payload)
+    def set_hermes_image_repo(self, image_repo: str) -> None:
+        self._set_string_config("hermes_image_repo", image_repo)
 
     def instance_path(self, name: str) -> Path:
         return self.paths.instances_dir / f"{name}.json"

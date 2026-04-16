@@ -1,292 +1,80 @@
 from __future__ import annotations
 
-import io
 from pathlib import Path
-from urllib.request import Request
 
 import pytest
 
-from clawcu.hermes import DEFAULT_HERMES_SOURCE_REPO, HermesManager
-from clawcu.hermes.manager import CamoufoxPrefetch
+from clawcu.hermes import DEFAULT_HERMES_IMAGE_REPO, HermesManager
 from clawcu.paths import get_paths
 from clawcu.storage import StateStore
 from tests.support import make_service
 
 
-class RecordingRunner:
-    def __init__(self) -> None:
-        self.calls: list[tuple[list[str], Path | None]] = []
-
-    def __call__(self, command: list[str], *, cwd=None, capture_output=True, check=True, stream_output=False):
-        self.calls.append((command, cwd))
-        return type("Completed", (), {"stdout": "", "stderr": "", "returncode": 0})()
-
-
-class FakeBuildDocker:
+class FakePullDocker:
     def __init__(self) -> None:
         self.existing_images: set[str] = set()
-        self.build_calls: list[tuple[Path, str, str | None, dict[str, str | Path] | None]] = []
-        self.failures_remaining = 0
+        self.pull_calls: list[str] = []
+        self.tag_calls: list[tuple[str, str]] = []
 
     def image_exists(self, image_tag: str) -> bool:
         return image_tag in self.existing_images
 
-    def build_image(
-        self,
-        source_dir: Path,
-        image_tag: str,
-        *,
-        dockerfile: str | None = None,
-        build_contexts: dict[str, str | Path] | None = None,
-    ) -> None:
-        if self.failures_remaining > 0:
-            self.failures_remaining -= 1
-            raise RuntimeError("transient docker build failure")
-        self.build_calls.append((source_dir, image_tag, dockerfile, build_contexts))
+    def pull_image(self, image_tag: str) -> None:
+        self.pull_calls.append(image_tag)
+
+    def tag_image(self, source_image: str, target_image: str) -> None:
+        self.tag_calls.append((source_image, target_image))
 
 
-def test_prepare_source_clones_and_checks_out_requested_ref(temp_clawcu_home) -> None:
+def test_pull_official_image_tags_custom_repo_into_local_managed_name(temp_clawcu_home) -> None:
     store = StateStore(get_paths())
-    runner = RecordingRunner()
-    docker = FakeBuildDocker()
-    manager = HermesManager(store, docker, runner=runner, source_repo=DEFAULT_HERMES_SOURCE_REPO)
+    docker = FakePullDocker()
+    messages: list[str] = []
+    manager = HermesManager(
+        store,
+        docker,
+        image_repo="registry.example.com/hermes-agent",
+        reporter=messages.append,
+    )
 
-    source_dir = manager.prepare_source("v0.9.0")
+    image_tag = manager.pull_official_image("v2026.4.8")
 
-    assert source_dir == store.source_dir("hermes", "v0.9.0")
-    assert runner.calls == [
-        (
-            [
-                "git",
-                "clone",
-                "--recurse-submodules",
-                DEFAULT_HERMES_SOURCE_REPO,
-                str(source_dir),
-            ],
-            None,
-        ),
-        (["git", "checkout", "v0.9.0"], source_dir),
-        (["git", "submodule", "update", "--init", "--recursive"], source_dir),
+    assert image_tag == "clawcu/hermes-agent:v2026.4.8"
+    assert docker.pull_calls == ["registry.example.com/hermes-agent:v2026.4.8"]
+    assert docker.tag_calls == [
+        ("registry.example.com/hermes-agent:v2026.4.8", "clawcu/hermes-agent:v2026.4.8")
     ]
+    assert any("Pulling Hermes image registry.example.com/hermes-agent:v2026.4.8" in message for message in messages)
 
 
-def test_ensure_image_builds_from_prepared_source(temp_clawcu_home, monkeypatch) -> None:
+def test_ensure_image_pulls_when_local_image_is_missing(temp_clawcu_home) -> None:
     store = StateStore(get_paths())
-    docker = FakeBuildDocker()
-    messages: list[str] = []
-    manager = HermesManager(store, docker, reporter=messages.append)
-    source_dir = store.source_dir("hermes", "v0.9.0")
-    monkeypatch.setattr(manager, "prepare_source", lambda version: source_dir)
-    monkeypatch.setattr(
-        manager,
-        "prepare_build_dockerfile",
-        lambda _source_dir, *, camoufox_prefetch=None: source_dir / "Dockerfile.clawcu",
-    )
-    monkeypatch.setattr(manager, "prepare_camoufox_prefetch", lambda _source_dir: None)
-
-    image_tag = manager.ensure_image("v0.9.0")
-
-    assert image_tag == "clawcu/hermes:v0.9.0"
-    assert docker.build_calls == [(source_dir, "clawcu/hermes:v0.9.0", "Dockerfile.clawcu", None)]
-    assert any("Building Hermes image clawcu/hermes:v0.9.0" in message for message in messages)
-
-
-def test_ensure_image_retries_transient_build_failures(temp_clawcu_home, monkeypatch) -> None:
-    store = StateStore(get_paths())
-    docker = FakeBuildDocker()
-    docker.failures_remaining = 1
-    messages: list[str] = []
-    manager = HermesManager(store, docker, reporter=messages.append)
-    source_dir = store.source_dir("hermes", "v0.9.0")
-    monkeypatch.setattr(manager, "prepare_source", lambda version: source_dir)
-    monkeypatch.setattr(
-        manager,
-        "prepare_build_dockerfile",
-        lambda _source_dir, *, camoufox_prefetch=None: source_dir / "Dockerfile.clawcu",
-    )
-    monkeypatch.setattr(manager, "prepare_camoufox_prefetch", lambda _source_dir: None)
-
-    image_tag = manager.ensure_image("v0.9.0")
-
-    assert image_tag == "clawcu/hermes:v0.9.0"
-    assert docker.build_calls == [(source_dir, "clawcu/hermes:v0.9.0", "Dockerfile.clawcu", None)]
-    assert any("attempt 1/3" in message for message in messages)
-    assert any("attempt 2/3" in message for message in messages)
-    assert any("Retrying from the same source checkout" in message for message in messages)
-
-
-def test_ensure_image_skips_build_when_local_image_exists(temp_clawcu_home) -> None:
-    store = StateStore(get_paths())
-    docker = FakeBuildDocker()
-    docker.existing_images.add("clawcu/hermes:v0.9.0")
+    docker = FakePullDocker()
     messages: list[str] = []
     manager = HermesManager(store, docker, reporter=messages.append)
 
-    image_tag = manager.ensure_image("v0.9.0")
+    image_tag = manager.ensure_image("v2026.4.8")
 
-    assert image_tag == "clawcu/hermes:v0.9.0"
-    assert docker.build_calls == []
+    assert image_tag == "clawcu/hermes-agent:v2026.4.8"
+    assert docker.pull_calls == ["clawcu/hermes-agent:v2026.4.8"]
+    assert docker.tag_calls == []
+    assert any("Pulling Hermes image clawcu/hermes-agent:v2026.4.8" in message for message in messages)
+
+
+def test_ensure_image_skips_pull_when_local_image_exists(temp_clawcu_home) -> None:
+    store = StateStore(get_paths())
+    docker = FakePullDocker()
+    docker.existing_images.add("clawcu/hermes-agent:v2026.4.8")
+    messages: list[str] = []
+    manager = HermesManager(store, docker, reporter=messages.append)
+
+    image_tag = manager.ensure_image("v2026.4.8")
+
+    assert image_tag == "clawcu/hermes-agent:v2026.4.8"
+    assert docker.pull_calls == []
     assert messages == [
-        "Step 2/5: Docker image clawcu/hermes:v0.9.0 already exists locally. Skipping source sync/build."
+        "Step 2/5: Docker image clawcu/hermes-agent:v2026.4.8 already exists locally. Skipping pull."
     ]
-
-
-def test_prepare_build_dockerfile_splits_heavy_dependency_layer(temp_clawcu_home, monkeypatch) -> None:
-    store = StateStore(get_paths())
-    docker = FakeBuildDocker()
-    manager = HermesManager(store, docker)
-    manager.github_proxy = "http://127.0.0.1:7890"
-    manager.apt_mirror = "http://mirrors.nju.edu.cn/debian"
-    source_dir = store.source_dir("hermes", "v0.9.0")
-    source_dir.mkdir(parents=True, exist_ok=True)
-    source_dockerfile = source_dir / "Dockerfile"
-    source_dockerfile.write_text(
-        """FROM debian:13.4
-
-RUN apt-get update && \\
-    apt-get install -y --no-install-recommends \\
-        build-essential nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps && \\
-    rm -rf /var/lib/apt/lists/*
-
-WORKDIR /opt/hermes
-
-# Install Node dependencies and Playwright as root (--with-deps needs apt)
-RUN npm install --prefer-offline --no-audit && \\
-    npx playwright install --with-deps chromium --only-shell && \\
-    cd /opt/hermes/scripts/whatsapp-bridge && \\
-    npm install --prefer-offline --no-audit && \\
-    npm cache clean --force
-""",
-        encoding="utf-8",
-    )
-    observable_dockerfile = manager.prepare_build_dockerfile(
-        source_dir,
-        camoufox_prefetch=CamoufoxPrefetch(
-            asset_name="camoufox-135.0.1-beta.24-lin.arm64.zip",
-            version="135.0.1",
-            release="beta.24",
-            context_dir=Path("/tmp/clawcu-camoufox-context"),
-        ),
-    )
-
-    contents = observable_dockerfile.read_text(encoding="utf-8")
-    assert observable_dockerfile == source_dir / "Dockerfile.clawcu"
-    assert "build-essential git nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps" in contents
-    assert "apt-get -o Acquire::Retries=5 update" in contents
-    assert "http://mirrors.nju.edu.cn/debian" in contents
-    assert "http://mirrors.nju.edu.cn/debian-security" in contents
-    assert (
-        'ENV HTTP_PROXY="http://127.0.0.1:7890" HTTPS_PROXY="http://127.0.0.1:7890" ALL_PROXY="http://127.0.0.1:7890" '
-        'http_proxy="http://127.0.0.1:7890" https_proxy="http://127.0.0.1:7890" all_proxy="http://127.0.0.1:7890"\n'
-    ) in contents
-    assert (
-        'RUN git config --global url."https://github.com/".insteadOf git@github.com: && '
-        'git config --global url."https://github.com/".insteadOf ssh://git@github.com/\n'
-    ) in contents
-    assert "RUN npm config set registry https://registry.npmmirror.com\n" in contents
-    assert "RUN npm config set progress false && npm config set fund false && npm config set update-notifier false\n" in contents
-    assert "RUN npm ci --prefer-offline --no-audit --ignore-scripts\n" in contents
-    assert "RUN node node_modules/agent-browser/scripts/postinstall.js\n" in contents
-    assert "COPY --from=clawcu_cache install_camoufox.py /opt/clawcu-cache/install_camoufox.py\n" in contents
-    assert (
-        "COPY --from=clawcu_cache camoufox-135.0.1-beta.24-lin.arm64.zip /opt/clawcu-cache/camoufox.zip\n"
-    ) in contents
-    assert (
-        "RUN python3 /opt/clawcu-cache/install_camoufox.py "
-        "/opt/clawcu-cache/camoufox.zip "
-        "/root/.cache/camoufox 135.0.1 beta.24\n"
-    ) in contents
-    assert "RUN npx camoufox-js fetch || true\n" in contents
-    assert "RUN npx playwright install --with-deps chromium --only-shell\n" in contents
-    assert "RUN cd /opt/hermes/scripts/whatsapp-bridge && npm ci --prefer-offline --no-audit --foreground-scripts\n" in contents
-    assert "RUN npm cache clean --force\n" in contents
-
-
-def test_prepare_build_dockerfile_adds_apt_retries_without_custom_mirror(temp_clawcu_home) -> None:
-    store = StateStore(get_paths())
-    docker = FakeBuildDocker()
-    manager = HermesManager(store, docker)
-    source_dir = store.source_dir("hermes", "v0.9.0")
-    source_dir.mkdir(parents=True, exist_ok=True)
-    source_dockerfile = source_dir / "Dockerfile"
-    source_dockerfile.write_text(
-        """FROM debian:13.4
-
-RUN apt-get update && \\
-    apt-get install -y --no-install-recommends \\
-        build-essential nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps && \\
-    rm -rf /var/lib/apt/lists/*
-
-WORKDIR /opt/hermes
-""",
-        encoding="utf-8",
-    )
-
-    observable_dockerfile = manager.prepare_build_dockerfile(source_dir)
-
-    contents = observable_dockerfile.read_text(encoding="utf-8")
-    assert "RUN apt-get -o Acquire::Retries=5 update && \\" in contents
-
-
-def test_prepare_build_dockerfile_downgrades_https_apt_mirror_for_bootstrap(temp_clawcu_home) -> None:
-    store = StateStore(get_paths())
-    docker = FakeBuildDocker()
-    manager = HermesManager(store, docker)
-    manager.apt_mirror = "https://mirrors.nju.edu.cn/debian"
-    source_dir = store.source_dir("hermes", "v0.9.0")
-    source_dir.mkdir(parents=True, exist_ok=True)
-    source_dockerfile = source_dir / "Dockerfile"
-    source_dockerfile.write_text(
-        """FROM debian:13.4
-
-RUN apt-get update && \\
-    apt-get install -y --no-install-recommends \\
-        build-essential nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps && \\
-    rm -rf /var/lib/apt/lists/*
-""",
-        encoding="utf-8",
-    )
-
-    observable_dockerfile = manager.prepare_build_dockerfile(source_dir)
-
-    contents = observable_dockerfile.read_text(encoding="utf-8")
-    assert "http://mirrors.nju.edu.cn/debian" in contents
-    assert "http://mirrors.nju.edu.cn/debian-security" in contents
-    assert "https://mirrors.nju.edu.cn/debian" not in contents
-
-
-def test_download_file_uses_configured_proxy(temp_clawcu_home, monkeypatch, tmp_path) -> None:
-    store = StateStore(get_paths())
-    docker = FakeBuildDocker()
-    manager = HermesManager(store, docker)
-    manager.github_proxy = "http://127.0.0.1:7890"
-    events: list[object] = []
-
-    class FakeResponse(io.BytesIO):
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            self.close()
-            return False
-
-    class FakeOpener:
-        def open(self, request):
-            events.append(request)
-            return FakeResponse(b"payload")
-
-    def fake_build_opener(handler):
-        events.append(handler.proxies)
-        return FakeOpener()
-
-    monkeypatch.setattr("urllib.request.build_opener", fake_build_opener)
-
-    destination = tmp_path / "payload.bin"
-    manager._download_file("https://api.github.com/repos/example/release", destination)
-
-    assert events[0] == {"http": "http://127.0.0.1:7890", "https": "http://127.0.0.1:7890"}
-    assert isinstance(events[1], Request)
-    assert destination.read_bytes() == b"payload"
 
 
 def test_collect_providers_supports_hermes_home(temp_clawcu_home, tmp_path) -> None:
@@ -316,7 +104,7 @@ def test_create_hermes_saves_record_and_writes_native_home(temp_clawcu_home, tmp
 
     record = service.create_hermes(
         name="scribe",
-        version="v0.9.0",
+        version="v2026.4.8",
         datadir=str(datadir),
         port=8642,
         cpu="1",
@@ -324,7 +112,7 @@ def test_create_hermes_saves_record_and_writes_native_home(temp_clawcu_home, tmp
     )
 
     assert record.service == "hermes"
-    assert record.image_tag == "clawcu/hermes:v0.9.0"
+    assert record.image_tag == "clawcu/hermes-agent:v2026.4.8"
     assert store.load_record("scribe").container_name == "clawcu-hermes-scribe"
     assert (datadir / "config.yaml").exists()
 
@@ -336,7 +124,7 @@ def test_hermes_env_commands_use_datadir_env_file(temp_clawcu_home, tmp_path) ->
     datadir = tmp_path / "hermes-home"
     service.create_hermes(
         name="scribe",
-        version="v0.9.0",
+        version="v2026.4.8",
         datadir=str(datadir),
         port=8642,
         cpu="1",
@@ -356,7 +144,7 @@ def test_hermes_token_and_approve_are_unsupported(temp_clawcu_home, tmp_path) ->
     datadir = tmp_path / "hermes-home"
     service.create_hermes(
         name="scribe",
-        version="v0.9.0",
+        version="v2026.4.8",
         datadir=str(datadir),
         port=8642,
         cpu="1",
@@ -386,7 +174,7 @@ def test_apply_provider_updates_hermes_config_and_env(temp_clawcu_home, tmp_path
     target_root = tmp_path / "hermes-target"
     service.create_hermes(
         name="scribe",
-        version="v0.9.0",
+        version="v2026.4.8",
         datadir=str(target_root),
         port=8642,
         cpu="1",
@@ -405,3 +193,7 @@ def test_apply_provider_updates_hermes_config_and_env(temp_clawcu_home, tmp_path
     config_yaml = (target_root / "config.yaml").read_text(encoding="utf-8")
     assert "provider: openrouter" in config_yaml
     assert "default: openai/gpt-5" in config_yaml
+
+
+def test_default_hermes_image_repo_constant() -> None:
+    assert DEFAULT_HERMES_IMAGE_REPO == "clawcu/hermes-agent"

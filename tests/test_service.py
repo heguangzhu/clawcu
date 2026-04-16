@@ -8,7 +8,7 @@ import pytest
 
 from clawcu.models import InstanceRecord
 from clawcu.paths import bootstrap_config_path
-from clawcu.hermes import DEFAULT_HERMES_APT_MIRROR, DEFAULT_HERMES_APT_MIRROR_CN
+from clawcu.hermes import DEFAULT_HERMES_IMAGE_REPO
 from clawcu.openclaw import DEFAULT_OPENCLAW_IMAGE_REPO, DEFAULT_OPENCLAW_IMAGE_REPO_CN
 from clawcu.subprocess_utils import CommandError
 from tests.support import make_service, write_provider_source, write_root_provider_source
@@ -78,24 +78,10 @@ def test_check_setup_reports_running_docker_daemon(temp_clawcu_home, monkeypatch
             "hint": "",
         },
         {
-            "name": "hermes_source_repo",
+            "name": "hermes_image_repo",
             "status": "ok",
             "ok": True,
-            "summary": "Hermes source repo is configured as https://github.com/NousResearch/hermes-agent.git.",
-            "hint": "",
-        },
-        {
-            "name": "hermes_proxy",
-            "status": "ok",
-            "ok": True,
-            "summary": "Hermes build proxy is not configured.",
-            "hint": "",
-        },
-        {
-            "name": "hermes_apt_mirror",
-            "status": "ok",
-            "ok": True,
-            "summary": "Hermes apt mirror is not configured.",
+            "summary": "Hermes image repo is configured as clawcu/hermes-agent.",
             "hint": "",
         },
     ]
@@ -131,58 +117,23 @@ def test_set_openclaw_image_repo_persists_global_config(temp_clawcu_home) -> Non
     }
 
 
-def test_set_hermes_proxy_persists_global_config(temp_clawcu_home) -> None:
+def test_set_hermes_image_repo_persists_global_config(temp_clawcu_home) -> None:
     service, _, _, store = make_service(temp_clawcu_home)
 
-    saved = service.set_hermes_proxy("http://127.0.0.1:7890")
+    saved = service.set_hermes_image_repo("registry.example.com/hermes-agent")
 
-    assert saved == "http://127.0.0.1:7890"
-    assert store.get_hermes_proxy() == "http://127.0.0.1:7890"
-    assert service.hermes.github_proxy == "http://127.0.0.1:7890"
+    assert saved == "registry.example.com/hermes-agent"
+    assert store.get_hermes_image_repo() == "registry.example.com/hermes-agent"
+    assert service.hermes.image_repo == "registry.example.com/hermes-agent"
     assert json.loads(store.paths.config_path.read_text(encoding="utf-8")) == {
-        "hermes_proxy": "http://127.0.0.1:7890"
+        "hermes_image_repo": "registry.example.com/hermes-agent"
     }
 
 
-def test_set_hermes_proxy_clears_empty_value(temp_clawcu_home) -> None:
-    service, _, _, store = make_service(temp_clawcu_home)
-    store.set_hermes_proxy("http://127.0.0.1:7890")
-
-    saved = service.set_hermes_proxy("")
-
-    assert saved == ""
-    assert store.get_hermes_proxy() is None
-    assert service.hermes.github_proxy is None
-    assert json.loads(store.paths.config_path.read_text(encoding="utf-8")) == {}
-
-
-def test_set_hermes_apt_mirror_persists_global_config(temp_clawcu_home) -> None:
-    service, _, _, store = make_service(temp_clawcu_home)
-
-    saved = service.set_hermes_apt_mirror("http://mirrors.nju.edu.cn/debian")
-
-    assert saved == "http://mirrors.nju.edu.cn/debian"
-    assert store.get_hermes_apt_mirror() == "http://mirrors.nju.edu.cn/debian"
-    assert service.hermes.apt_mirror == "http://mirrors.nju.edu.cn/debian"
-    assert json.loads(store.paths.config_path.read_text(encoding="utf-8")) == {
-        "hermes_apt_mirror": "http://mirrors.nju.edu.cn/debian"
-    }
-
-
-def test_suggest_hermes_apt_mirror_uses_china_mirror_when_ip_is_in_china(temp_clawcu_home, monkeypatch) -> None:
+def test_get_hermes_image_repo_falls_back_to_default(temp_clawcu_home) -> None:
     service, _, _, _ = make_service(temp_clawcu_home)
 
-    monkeypatch.setattr(service, "_detect_public_country_code", lambda: "CN")
-
-    assert service.suggest_hermes_apt_mirror() == DEFAULT_HERMES_APT_MIRROR_CN
-
-
-def test_suggest_hermes_apt_mirror_falls_back_to_global_default(temp_clawcu_home, monkeypatch) -> None:
-    service, _, _, _ = make_service(temp_clawcu_home)
-
-    monkeypatch.setattr(service, "_detect_public_country_code", lambda: None)
-
-    assert service.suggest_hermes_apt_mirror() == DEFAULT_HERMES_APT_MIRROR
+    assert service.get_hermes_image_repo() == DEFAULT_HERMES_IMAGE_REPO
 
 
 def test_suggest_openclaw_image_repo_uses_china_mirror_when_ip_is_in_china(temp_clawcu_home, monkeypatch) -> None:
