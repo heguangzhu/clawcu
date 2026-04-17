@@ -61,6 +61,9 @@ class ServiceAdapter(ABC):
     def access_info(self, service: "ClawCUService", record: InstanceRecord) -> AccessInfo:
         raise NotImplementedError
 
+    def display_port(self, service: "ClawCUService", record: InstanceRecord) -> int:
+        return record.port
+
     @abstractmethod
     def lifecycle_summary(self, service: "ClawCUService", action: str, record: InstanceRecord) -> str:
         raise NotImplementedError

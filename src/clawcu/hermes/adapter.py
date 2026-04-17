@@ -209,12 +209,19 @@ class HermesAdapter(ServiceAdapter):
                 continue
         return False
 
+    def _dashboard_base_url(self, record: InstanceRecord) -> str:
+        port = record.dashboard_port or self.dashboard_internal_port
+        return f"http://127.0.0.1:{port}/"
+
     def access_info(self, service, record: InstanceRecord) -> AccessInfo:
         return AccessInfo(
-            base_url=f"http://127.0.0.1:{record.port}/health",
-            readiness_label="api_server",
-            auth_hint="Hermes gateway API server (use `clawcu tui <instance>` for chat)",
+            base_url=self._dashboard_base_url(record),
+            readiness_label="dashboard",
+            auth_hint="Hermes dashboard (use `clawcu tui <instance>` for chat, API server stays on /health)",
         )
+
+    def display_port(self, service, record: InstanceRecord) -> int:
+        return record.dashboard_port or record.port
 
     def lifecycle_summary(self, service, action: str, record: InstanceRecord) -> str:
         verb = {
@@ -225,7 +232,10 @@ class HermesAdapter(ServiceAdapter):
             "rolled_back": "rolled back",
         }.get(action, action)
         if record.status == "running":
-            return f"Instance '{record.name}' {verb}. Hermes {record.version} is ready on port {record.port}."
+            return (
+                f"Instance '{record.name}' {verb}. Hermes {record.version} is ready. "
+                f"Dashboard: {self._dashboard_base_url(record)} (API: http://127.0.0.1:{record.port}/health)."
+            )
         return f"Instance '{record.name}' {verb} with status '{record.status}' on port {record.port}."
 
     def configure_instance(self, service, name: str, extra_args: list[str] | None = None) -> None:
@@ -321,8 +331,9 @@ class HermesAdapter(ServiceAdapter):
                 "name": "local-hermes",
                 "home": str(root),
                 "version": version,
-                "port": self.internal_port,
+                "port": self.dashboard_internal_port,
                 "status": "local",
+                "access_url": f"http://127.0.0.1:{self.dashboard_internal_port}/",
                 "providers": summary["providers"],
                 "models": summary["models"],
                 "service": self.service_name,

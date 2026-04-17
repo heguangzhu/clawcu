@@ -594,6 +594,7 @@ class ClawCUService:
             adapter = self.adapter_for_record(record)
             access = adapter.access_info(self, record)
             payload.update(adapter.instance_provider_summary(self, record))
+            payload["port"] = adapter.display_port(self, record)
             payload["source"] = "managed"
             payload["home"] = record.datadir
             payload["snapshot"] = self._latest_snapshot_label(record)

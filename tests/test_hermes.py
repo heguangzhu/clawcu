@@ -184,7 +184,7 @@ def test_hermes_run_spec_respects_image_entrypoint(temp_clawcu_home, tmp_path) -
     assert run_spec.additional_ports == [(9129, 9119)]
 
 
-def test_hermes_access_info_points_to_api_server(temp_clawcu_home, tmp_path) -> None:
+def test_hermes_access_info_points_to_dashboard(temp_clawcu_home, tmp_path) -> None:
     service, _, _, _ = make_service(temp_clawcu_home)
     adapter = service.adapters["hermes"]
     spec = adapter.build_spec(
@@ -200,9 +200,50 @@ def test_hermes_access_info_points_to_api_server(temp_clawcu_home, tmp_path) -> 
 
     access = adapter.access_info(service, instance)
 
-    assert access.base_url == "http://127.0.0.1:8642/health"
-    assert access.readiness_label == "api_server"
-    assert access.auth_hint == "Hermes gateway API server (use `clawcu tui <instance>` for chat)"
+    assert access.base_url == "http://127.0.0.1:9129/"
+    assert access.readiness_label == "dashboard"
+    assert access.auth_hint == "Hermes dashboard (use `clawcu tui <instance>` for chat, API server stays on /health)"
+    assert adapter.display_port(service, instance) == 9129
+
+
+def test_list_instance_summaries_show_hermes_dashboard_port_and_access(temp_clawcu_home, tmp_path) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+    hermes_adapter = service.adapters["hermes"]
+    hermes_adapter._dashboard_ready = lambda _record: True  # type: ignore[method-assign]
+    datadir = tmp_path / "hermes-home"
+
+    service.create_hermes(
+        name="scribe",
+        version="2026.4.8",
+        datadir=str(datadir),
+        port=8642,
+        cpu="1",
+        memory="2g",
+    )
+
+    [summary] = service.list_instance_summaries()
+
+    assert summary["service"] == "hermes"
+    assert summary["port"] == 9129
+    assert summary["access_url"] == "http://127.0.0.1:9129/"
+
+
+def test_local_hermes_summary_uses_dashboard_port_and_access(temp_clawcu_home, tmp_path) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+    adapter = service.adapters["hermes"]
+    root = tmp_path / ".hermes"
+    root.mkdir(parents=True)
+    (root / "config.yaml").write_text(
+        "model:\n  provider: openrouter\n  default: anthropic/claude-sonnet-4.6\n",
+        encoding="utf-8",
+    )
+    service._local_hermes_home = lambda: root  # type: ignore[method-assign]
+    adapter._local_version = lambda _service: "v0.9.0 (2026.4.13)"  # type: ignore[method-assign]
+
+    [summary] = adapter.local_instance_summaries(service)
+
+    assert summary["port"] == 9119
+    assert summary["access_url"] == "http://127.0.0.1:9119/"
 
 
 def test_hermes_env_commands_use_datadir_env_file(temp_clawcu_home, tmp_path) -> None:
