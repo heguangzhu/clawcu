@@ -188,9 +188,9 @@ class HermesAdapter(ServiceAdapter):
 
     def access_info(self, service, record: InstanceRecord) -> AccessInfo:
         return AccessInfo(
-            base_url=f"http://127.0.0.1:{record.port}/",
-            readiness_label="dashboard",
-            auth_hint="native Hermes dashboard auth",
+            base_url=f"http://127.0.0.1:{record.port}/v1/models",
+            readiness_label="api_server",
+            auth_hint="Hermes gateway API server (use `clawcu tui <instance>` for chat)",
         )
 
     def lifecycle_summary(self, service, action: str, record: InstanceRecord) -> str:

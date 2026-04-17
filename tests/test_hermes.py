@@ -154,6 +154,27 @@ def test_hermes_run_spec_respects_image_entrypoint(temp_clawcu_home, tmp_path) -
     assert run_spec.extra_env["API_SERVER_HOST"] == "0.0.0.0"
 
 
+def test_hermes_access_info_points_to_api_server(temp_clawcu_home, tmp_path) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+    adapter = service.adapters["hermes"]
+    spec = adapter.build_spec(
+        service,
+        name="scribe",
+        version="2026.4.8",
+        datadir=str(tmp_path / "hermes-home"),
+        port=8642,
+        cpu="1",
+        memory="2g",
+    )
+    instance = build_instance_record(spec, status="running", history=[])
+
+    access = adapter.access_info(service, instance)
+
+    assert access.base_url == "http://127.0.0.1:8642/v1/models"
+    assert access.readiness_label == "api_server"
+    assert access.auth_hint == "Hermes gateway API server (use `clawcu tui <instance>` for chat)"
+
+
 def test_hermes_env_commands_use_datadir_env_file(temp_clawcu_home, tmp_path) -> None:
     service, _, _, _ = make_service(temp_clawcu_home)
     hermes_adapter = service.adapters["hermes"]
