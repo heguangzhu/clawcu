@@ -78,6 +78,14 @@ class ServiceAdapter(ABC):
     def exec_env(self, service: "ClawCUService", record: InstanceRecord) -> dict[str, str]:
         raise NotImplementedError
 
+    def normalize_exec_command(
+        self,
+        service: "ClawCUService",
+        record: InstanceRecord,
+        command: list[str],
+    ) -> list[str]:
+        return command
+
     @abstractmethod
     def tui_instance(self, service: "ClawCUService", name: str, *, agent: str = "main") -> None:
         raise NotImplementedError

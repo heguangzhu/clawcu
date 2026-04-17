@@ -225,8 +225,33 @@ def test_configure_hermes_runs_setup_command(temp_clawcu_home, tmp_path) -> None
 
     container_name, command, options = docker.interactive_exec_commands[-1]
     assert container_name == "clawcu-hermes-scribe"
-    assert command == ["hermes", "setup", "--help"]
+    assert command == ["/opt/hermes/.venv/bin/hermes", "setup", "--help"]
     assert "API_SERVER_KEY" in options["env"]
+    assert options["env"]["PATH"].startswith("/opt/hermes/.venv/bin:/opt/hermes:")
+
+
+def test_exec_instance_rewrites_hermes_cli_to_absolute_path(temp_clawcu_home, tmp_path) -> None:
+    service, docker, _, _ = make_service(temp_clawcu_home)
+    hermes_adapter = service.adapters["hermes"]
+    hermes_adapter._dashboard_ready = lambda _record: True  # type: ignore[method-assign]
+    datadir = tmp_path / "hermes-home"
+
+    service.create_hermes(
+        name="scribe",
+        version="2026.4.8",
+        datadir=str(datadir),
+        port=8642,
+        cpu="1",
+        memory="2g",
+    )
+
+    service.exec_instance("scribe", ["hermes", "version"])
+
+    container_name, command, options = docker.interactive_exec_commands[-1]
+    assert container_name == "clawcu-hermes-scribe"
+    assert command == ["/opt/hermes/.venv/bin/hermes", "version"]
+    assert "API_SERVER_KEY" in options["env"]
+    assert options["env"]["PATH"].startswith("/opt/hermes/.venv/bin:/opt/hermes:")
 
 
 def test_hermes_token_and_approve_are_unsupported(temp_clawcu_home, tmp_path) -> None:

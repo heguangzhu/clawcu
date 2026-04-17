@@ -52,6 +52,9 @@ HERMES_MODEL_ENV_ALLOWLIST = {
     "GH_TOKEN",
 }
 
+HERMES_EXECUTABLE = "/opt/hermes/.venv/bin/hermes"
+HERMES_EXEC_PATH = f"/opt/hermes/.venv/bin:/opt/hermes:{os.environ.get('PATH', '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin')}"
+
 
 class HermesAdapter(ServiceAdapter):
     service_name = "hermes"
@@ -214,7 +217,7 @@ class HermesAdapter(ServiceAdapter):
 
     def configure_instance(self, service, name: str, extra_args: list[str] | None = None) -> None:
         record = service._persist_live_status(service.store.load_record(name))
-        command = ["hermes", "setup", *(extra_args or [])]
+        command = self.normalize_exec_command(service, record, ["hermes", "setup", *(extra_args or [])])
         env_values = self.exec_env(service, record)
         service.store.append_log(
             f"configure instance name={record.name} args={' '.join(extra_args or [])}".strip()
@@ -222,13 +225,22 @@ class HermesAdapter(ServiceAdapter):
         service.docker.exec_in_container_interactive(record.container_name, command, env=env_values)
 
     def exec_env(self, service, record: InstanceRecord) -> dict[str, str]:
-        return service._load_env_file(self.env_path(service, record))
+        env_values = service._load_env_file(self.env_path(service, record))
+        existing_path = env_values.get("PATH", "")
+        env_values["PATH"] = f"{HERMES_EXEC_PATH}:{existing_path}" if existing_path else HERMES_EXEC_PATH
+        return env_values
+
+    def normalize_exec_command(self, service, record: InstanceRecord, command: list[str]) -> list[str]:
+        if command and command[0] == "hermes":
+            return [HERMES_EXECUTABLE, *command[1:]]
+        return command
 
     def tui_instance(self, service, name: str, *, agent: str = "main") -> None:
         record = service._persist_live_status(service.store.load_record(name))
         env_values = self.exec_env(service, record)
         service.store.append_log(f"tui instance name={record.name} agent={agent}")
-        service.docker.exec_in_container_interactive(record.container_name, ["hermes", "chat"], env=env_values)
+        command = self.normalize_exec_command(service, record, ["hermes", "chat"])
+        service.docker.exec_in_container_interactive(record.container_name, command, env=env_values)
 
     def instance_provider_summary(self, service, record: InstanceRecord) -> dict[str, str]:
         config = self._load_config(record)

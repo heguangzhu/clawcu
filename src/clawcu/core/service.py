@@ -822,7 +822,9 @@ class ClawCUService:
         if not command:
             raise ValueError("Please provide a command to run inside the instance.")
         record = self._persist_live_status(self.store.load_record(name))
-        env_values = self.adapter_for_record(record).exec_env(self, record)
+        adapter = self.adapter_for_record(record)
+        env_values = adapter.exec_env(self, record)
+        command = adapter.normalize_exec_command(self, record, command)
         self.store.append_log(
             f"exec instance name={record.name} command={' '.join(command)}"
         )
