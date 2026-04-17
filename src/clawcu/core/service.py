@@ -897,6 +897,7 @@ class ClawCUService:
             cpu=record.cpu,
             memory=record.memory,
             auth_mode=effective_auth_mode,
+            dashboard_port=record.dashboard_port,
         )
         history = copy.deepcopy(record.history)
         history.append(
@@ -931,6 +932,7 @@ class ClawCUService:
             cpu=record.cpu,
             memory=record.memory,
             auth_mode=effective_auth_mode,
+            dashboard_port=record.dashboard_port,
         )
         history = copy.deepcopy(record.history)
         history.append(

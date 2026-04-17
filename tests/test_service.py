@@ -2106,6 +2106,29 @@ def test_recreate_instance_rebuilds_container(temp_clawcu_home, tmp_path) -> Non
     assert "clawcu_version" in recreate_event
 
 
+def test_recreate_hermes_preserves_dashboard_port(temp_clawcu_home, tmp_path) -> None:
+    service, docker, _, store = make_service(temp_clawcu_home)
+    hermes_adapter = service.adapters["hermes"]
+    hermes_adapter._dashboard_ready = lambda _record: True  # type: ignore[method-assign]
+
+    created = service.create_hermes(
+        name="scribe",
+        version="2026.4.8",
+        datadir=str(tmp_path / "scribe"),
+        port=8652,
+        cpu="1",
+        memory="2g",
+    )
+
+    recreated = service.recreate_instance("scribe")
+
+    assert created.dashboard_port == 9129
+    assert recreated.port == 8652
+    assert recreated.dashboard_port == 9129
+    assert ("rm", "clawcu-hermes-scribe") in docker.commands
+    assert store.load_record("scribe").dashboard_port == 9129
+
+
 def test_create_openclaw_waits_for_healthcheck_until_running(temp_clawcu_home, tmp_path) -> None:
     service, docker, _, _ = make_service(temp_clawcu_home)
     service.STARTUP_POLL_INTERVAL_SECONDS = 0.0
