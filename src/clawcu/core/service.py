@@ -1302,11 +1302,29 @@ class ClawCUService:
                 if not isinstance(exc, CommandError) or not auto_port or not self._is_port_bind_error(exc):
                     raise RuntimeError(f"Failed to create instance '{record.name}': {exc}") from exc
                 next_port = self._next_available_port(current_spec.port + self.PORT_SEARCH_STEP)
-                self.reporter(
-                    f"Port {current_spec.port} was claimed before Docker could bind it. Retrying with port {next_port}."
-                )
+                next_dashboard_port = current_spec.dashboard_port
+                if current_spec.dashboard_port is not None:
+                    next_dashboard_port = self._next_available_port(
+                        current_spec.dashboard_port + self.PORT_SEARCH_STEP
+                    )
+                    while next_dashboard_port == next_port:
+                        next_dashboard_port = self._next_available_port(
+                            next_dashboard_port + self.PORT_SEARCH_STEP
+                        )
+                    self.reporter(
+                        "Port conflict detected before Docker could bind the instance. "
+                        f"Retrying with API port {next_port} and dashboard port {next_dashboard_port}."
+                    )
+                else:
+                    self.reporter(
+                        f"Port {current_spec.port} was claimed before Docker could bind it. Retrying with port {next_port}."
+                    )
                 current_history = copy.deepcopy(failure.history)
-                current_spec = replace(current_spec, port=next_port)
+                current_spec = replace(
+                    current_spec,
+                    port=next_port,
+                    dashboard_port=next_dashboard_port,
+                )
                 continue
 
             record.history.append(

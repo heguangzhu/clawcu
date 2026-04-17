@@ -2598,6 +2598,41 @@ def test_clone_instance_rolls_back_target_artifacts_when_start_fails(temp_clawcu
     assert ("rm", "clawcu-openclaw-writer-exp") in docker.commands
 
 
+def test_create_hermes_retries_dashboard_port_with_api_port(temp_clawcu_home, tmp_path) -> None:
+    service, docker, _, store = make_service(temp_clawcu_home)
+    hermes_adapter = service.adapters["hermes"]
+    hermes_adapter._dashboard_ready = lambda _record: True  # type: ignore[method-assign]
+    service._is_port_available = lambda port: port in {8652, 9129, 8662, 9139}  # type: ignore[method-assign]
+    docker.run_errors.append(
+        CommandError(
+            ["docker", "run"],
+            125,
+            "",
+            "Bind for 0.0.0.0:9129 failed: port is already allocated",
+        )
+    )
+
+    created = service.create_hermes(
+        name="scribe",
+        version="2026.4.13",
+        datadir=str(tmp_path / "scribe"),
+        cpu="1",
+        memory="2g",
+    )
+
+    assert created.port == 8662
+    assert created.dashboard_port == 9139
+    stored = store.load_record("scribe")
+    assert stored.port == 8662
+    assert stored.dashboard_port == 9139
+    assert ("rm", "clawcu-hermes-scribe") in docker.commands
+    assert [event["action"] for event in stored.history] == [
+        "create_requested",
+        "create_failed",
+        "created",
+    ]
+
+
 def test_clone_instance_rejects_existing_target_container(temp_clawcu_home, tmp_path) -> None:
     service, docker, _, _ = make_service(temp_clawcu_home)
     source_dir = tmp_path / "writer"
