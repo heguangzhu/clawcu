@@ -1455,6 +1455,30 @@ def test_create_hermes_times_out_when_dashboard_never_becomes_ready(temp_clawcu_
     assert record.history[-1]["action"] == "startup_failed"
 
 
+def test_remove_instance_preserves_record_when_container_removal_fails(temp_clawcu_home, tmp_path) -> None:
+    service, docker, _, store = make_service(temp_clawcu_home)
+    datadir = tmp_path / "writer"
+
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+    docker.fail_next_remove = True
+
+    with pytest.raises(RuntimeError, match="Failed to remove Docker container"):
+        service.remove_instance("writer", delete_data=True)
+
+    record = store.load_record("writer")
+    assert record.last_error is not None
+    assert "docker rm timed out" in record.last_error
+    assert record.history[-1]["action"] == "remove_failed"
+    assert datadir.exists()
+
+
 def test_set_instance_env_writes_instance_env_file(temp_clawcu_home, tmp_path) -> None:
     service, _, _, store = make_service(temp_clawcu_home)
     datadir = tmp_path / "writer"

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from clawcu.core.models import ContainerRunSpec
 from clawcu.docker import DockerManager
 from clawcu.models import InstanceRecord
@@ -239,6 +241,25 @@ def test_stop_container_ignores_missing_container() -> None:
     manager = DockerManager(runner=runner)
 
     manager.stop_container("clawcu-openclaw-writer")
+
+
+def test_remove_container_ignores_missing_container_when_allowed() -> None:
+    def runner(command: list[str], **_kwargs):
+        raise CommandError(command, 1, "", "Error response from daemon: No such container: clawcu-openclaw-writer")
+
+    manager = DockerManager(runner=runner)
+
+    manager.remove_container("clawcu-openclaw-writer", missing_ok=True)
+
+
+def test_remove_container_raises_non_missing_errors_even_when_missing_ok() -> None:
+    def runner(command: list[str], **_kwargs):
+        raise CommandError(command, 124, "", "Timed out after 15 seconds")
+
+    manager = DockerManager(runner=runner)
+
+    with pytest.raises(CommandError, match="Timed out"):
+        manager.remove_container("clawcu-openclaw-writer", missing_ok=True)
 
 
 def test_exec_in_container_interactive_omits_tty_flags_without_terminal(monkeypatch) -> None:

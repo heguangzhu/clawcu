@@ -21,6 +21,7 @@ class FakeDockerManager:
         self.run_env_files: list[str | None] = []
         self.fail_next_run = False
         self.fail_next_start = False
+        self.fail_next_remove = False
         self.run_errors: list[Exception] = []
 
     def image_exists(self, image_tag: str) -> bool:
@@ -87,6 +88,9 @@ class FakeDockerManager:
 
     def remove_container(self, container_name: str, *, missing_ok: bool = False) -> None:
         self.commands.append(("rm", container_name))
+        if self.fail_next_remove:
+            self.fail_next_remove = False
+            raise RuntimeError("docker rm timed out")
         self.status_map.pop(container_name, None)
 
     def exec_in_container(self, container_name: str, command: list[str], **kwargs) -> object:

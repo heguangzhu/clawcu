@@ -184,8 +184,9 @@ class DockerManager:
                 ["docker", "rm", "-f", container_name],
                 timeout_seconds=self.STOP_TIMEOUT_SECONDS,
             )
-        except Exception:
-            if not missing_ok:
+        except CommandError as exc:
+            details = f"{exc.stderr}\n{exc.stdout}".lower()
+            if not missing_ok or "no such container" not in details:
                 raise
 
     def stream_logs(self, container_name: str, *, follow: bool = False) -> None:

@@ -1268,7 +1268,24 @@ class ClawCUService:
     def remove_instance(self, name: str, *, delete_data: bool = False) -> None:
         record = self.store.load_record(name)
         adapter = self.adapter_for_record(record)
-        self.docker.remove_container(record.container_name, missing_ok=True)
+        try:
+            self.docker.remove_container(record.container_name, missing_ok=True)
+        except Exception as exc:
+            message = (
+                f"Failed to remove Docker container '{record.container_name}' for instance "
+                f"'{record.name}': {exc}"
+            )
+            failed = updated_record(record, last_error=message)
+            failed.history.append(
+                {
+                    "action": "remove_failed",
+                    "timestamp": utc_now_iso(),
+                    "version": record.version,
+                    "error": str(exc),
+                }
+            )
+            self.store.save_record(failed)
+            raise RuntimeError(message) from exc
         if delete_data and Path(record.datadir).exists():
             shutil.rmtree(record.datadir)
         if delete_data:
