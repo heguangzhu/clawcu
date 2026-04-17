@@ -70,10 +70,37 @@ class OpenClawAdapter(ServiceAdapter):
             mount_target="/home/node/.openclaw",
             env_file=str(env_path) if env_path.exists() else None,
             extra_env={"HOST": "0.0.0.0"},
+            command=[
+                "node",
+                "openclaw.mjs",
+                "gateway",
+                "--allow-unconfigured",
+                "--bind",
+                "lan",
+                "--port",
+                str(self.internal_port),
+            ],
         )
 
     def configure_before_run(self, service, record: InstanceRecord) -> None:
         config_path = Path(record.datadir) / "openclaw.json"
+        workspace_dir = Path(record.datadir) / "workspace"
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+        (workspace_dir / "memory").mkdir(parents=True, exist_ok=True)
+        workspace_state_path = workspace_dir / ".openclaw" / "workspace-state.json"
+        workspace_state_path.parent.mkdir(parents=True, exist_ok=True)
+        if not workspace_state_path.exists():
+            workspace_state_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "onboardingCompletedAt": utc_now_iso(),
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
         try:
             config: dict = {}
             if config_path.exists():
@@ -85,15 +112,22 @@ class OpenClawAdapter(ServiceAdapter):
                         f"Gateway config at {config_path} was empty. Rebuilding a minimal config."
                     )
             gw = config.setdefault("gateway", {})
+            gw["mode"] = "local"
             gw["bind"] = "lan"
-            gw.setdefault("controlUi", {})["allowedOrigins"] = ["*"]
+            gw["port"] = self.internal_port
+            control_ui = gw.setdefault("controlUi", {})
+            control_ui["allowedOrigins"] = ["*"]
+            control_ui["dangerouslyAllowHostHeaderOriginFallback"] = True
             gw.setdefault("auth", {})["mode"] = record.auth_mode
+            config.setdefault("agents", {}).setdefault("defaults", {})["workspace"] = (
+                "/home/node/.openclaw/workspace"
+            )
             config_path.write_text(
                 json.dumps(config, indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )
             service.reporter(
-                f"Gateway configured: bind=lan, auth.mode={record.auth_mode}, controlUi.allowedOrigins=[*]."
+                f"Gateway configured: mode=local, bind=lan, port={self.internal_port}, auth.mode={record.auth_mode}, controlUi.allowedOrigins=[*]."
             )
         except Exception as exc:
             service.reporter(f"Could not auto-configure gateway: {exc}")
@@ -202,6 +236,21 @@ class OpenClawAdapter(ServiceAdapter):
 
     def exec_env(self, service, record: InstanceRecord) -> dict[str, str]:
         return service._load_env_file(self.env_path(service, record))
+
+    def container_env_matches(self, service, record: InstanceRecord, inspection: dict | None) -> bool:
+        desired_env = self.exec_env(service, record)
+        if not desired_env:
+            return True
+        config = inspection.get("Config", {}) if isinstance(inspection, dict) else {}
+        existing_env = config.get("Env")
+        if not isinstance(existing_env, list):
+            return True
+        existing_keys = {
+            entry.split("=", 1)[0]
+            for entry in existing_env
+            if isinstance(entry, str) and "=" in entry
+        }
+        return all(key in existing_keys for key in desired_env)
 
     def tui_instance(self, service, name: str, *, agent: str = "main") -> None:
         agent_name = (agent or "main").strip() or "main"

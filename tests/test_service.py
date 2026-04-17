@@ -2015,6 +2015,60 @@ def test_start_instance_clears_start_failed_after_successful_retry(temp_clawcu_h
     assert store.load_record("writer").last_error is None
 
 
+def test_start_instance_recreates_when_container_env_is_stale(temp_clawcu_home, tmp_path) -> None:
+    service, docker, _, store = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=18789,
+        cpu="1",
+        memory="2g",
+    )
+    service.stop_instance("writer")
+    store.instance_env_path("writer").write_text("OPENAI_API_KEY=sk-managed\n", encoding="utf-8")
+
+    original_inspect = docker.inspect_container
+
+    def inspect_with_stale_env(container_name: str):
+        payload = original_inspect(container_name)
+        if payload is None:
+            return None
+        payload["Config"] = {"Env": ["HOST=0.0.0.0"]}
+        return payload
+
+    docker.inspect_container = inspect_with_stale_env  # type: ignore[method-assign]
+
+    started = service.start_instance("writer")
+
+    assert started.status == "running"
+    assert ("start", "clawcu-openclaw-writer") not in docker.commands
+    assert ("rm", "clawcu-openclaw-writer") in docker.commands
+    assert docker.commands.count(("run", "clawcu-openclaw-writer")) == 2
+    assert service.openclaw.versions == ["2026.4.1"]
+
+
+def test_start_instance_recreates_when_container_is_missing(temp_clawcu_home, tmp_path) -> None:
+    service, docker, _, store = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=18789,
+        cpu="1",
+        memory="2g",
+    )
+    docker.remove_container("clawcu-openclaw-writer")
+
+    started = service.start_instance("writer")
+
+    assert started.status == "running"
+    assert ("start", "clawcu-openclaw-writer") not in docker.commands
+    assert docker.commands.count(("run", "clawcu-openclaw-writer")) == 2
+    assert store.load_record("writer").status == "running"
+    assert service.openclaw.versions == ["2026.4.1"]
+
+
 def test_retry_instance_rejects_non_failed_instance(temp_clawcu_home, tmp_path) -> None:
     service, _, _, _ = make_service(temp_clawcu_home)
     service.create_openclaw(
@@ -2153,6 +2207,38 @@ def test_create_openclaw_waits_for_healthcheck_until_running(temp_clawcu_home, t
     assert any("still starting" in message for message in messages)
     assert any("clawcu logs writer" in message for message in messages)
     assert sum("docker ps --filter name=clawcu-openclaw-writer" in message for message in messages) == 1
+
+
+def test_create_openclaw_bootstraps_workspace_and_local_gateway_mode(temp_clawcu_home, tmp_path) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+    datadir = tmp_path / "writer"
+
+    record = service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+
+    config = json.loads((datadir / "openclaw.json").read_text(encoding="utf-8"))
+    workspace_state = json.loads(
+        (datadir / "workspace" / ".openclaw" / "workspace-state.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert record.status == "running"
+    assert config["gateway"]["mode"] == "local"
+    assert config["gateway"]["bind"] == "lan"
+    assert config["gateway"]["port"] == 18789
+    assert config["gateway"]["controlUi"]["allowedOrigins"] == ["*"]
+    assert config["gateway"]["controlUi"]["dangerouslyAllowHostHeaderOriginFallback"] is True
+    assert config["agents"]["defaults"]["workspace"] == "/home/node/.openclaw/workspace"
+    assert workspace_state["version"] == 1
+    assert workspace_state["onboardingCompletedAt"]
+    assert (datadir / "workspace" / "memory").is_dir()
 
 
 def test_create_openclaw_prefers_host_health_endpoint_over_docker_starting(temp_clawcu_home, tmp_path) -> None:

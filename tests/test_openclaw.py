@@ -185,6 +185,80 @@ def test_run_container_supports_additional_port_bindings() -> None:
     assert "9129:9119" in command
 
 
+def test_run_container_appends_explicit_container_command() -> None:
+    runner = RecordingRunner()
+    manager = DockerManager(runner=runner)
+    record = InstanceRecord(
+        service="openclaw",
+        name="writer",
+        version="2026.4.1",
+        upstream_ref="v2026.4.1",
+        image_tag="clawcu/openclaw:2026.4.1",
+        container_name="clawcu-openclaw-writer",
+        datadir="/tmp/writer",
+        port=18809,
+        cpu="1",
+        memory="2g",
+        auth_mode="token",
+        status="creating",
+        created_at="2026-04-11T00:00:00+00:00",
+        updated_at="2026-04-11T00:00:00+00:00",
+        history=[],
+    )
+
+    manager.run_container(
+        record,
+        ContainerRunSpec(
+            internal_port=18789,
+            mount_target="/home/node/.openclaw",
+            command=[
+                "node",
+                "openclaw.mjs",
+                "gateway",
+                "--allow-unconfigured",
+                "--bind",
+                "lan",
+                "--port",
+                "18789",
+            ],
+        ),
+    )
+
+    command, _, _ = runner.calls[0]
+    assert command[-8:] == [
+        "node",
+        "openclaw.mjs",
+        "gateway",
+        "--allow-unconfigured",
+        "--bind",
+        "lan",
+        "--port",
+        "18789",
+    ]
+
+
+def test_stop_and_restart_container_use_short_timeout() -> None:
+    runner = RecordingRunner()
+    manager = DockerManager(runner=runner)
+
+    manager.stop_container("clawcu-openclaw-writer")
+    manager.restart_container("clawcu-openclaw-writer")
+
+    stop_command, _, _ = runner.calls[0]
+    restart_command, _, _ = runner.calls[1]
+    assert stop_command == ["docker", "stop", "--time", "5", "clawcu-openclaw-writer"]
+    assert restart_command == ["docker", "restart", "--time", "5", "clawcu-openclaw-writer"]
+
+
+def test_stop_container_ignores_missing_container() -> None:
+    def runner(command: list[str], **_kwargs):
+        raise CommandError(command, 1, "", "Error response from daemon: No such container: clawcu-openclaw-writer")
+
+    manager = DockerManager(runner=runner)
+
+    manager.stop_container("clawcu-openclaw-writer")
+
+
 def test_exec_in_container_interactive_omits_tty_flags_without_terminal(monkeypatch) -> None:
     runner = RecordingRunner()
     manager = DockerManager(runner=runner)

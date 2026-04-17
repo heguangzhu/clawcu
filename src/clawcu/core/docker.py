@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Callable
 
 from clawcu.core.models import ContainerRunSpec, InstanceRecord
-from clawcu.core.subprocess_utils import run_command
+from clawcu.core.subprocess_utils import CommandError, run_command
 
 
 class DockerManager:
@@ -139,10 +139,15 @@ class DockerManager:
         self.runner(["docker", "start", container_name])
 
     def stop_container(self, container_name: str) -> None:
-        self.runner(["docker", "stop", container_name])
+        try:
+            self.runner(["docker", "stop", "--time", "5", container_name])
+        except CommandError as exc:
+            details = f"{exc.stderr}\n{exc.stdout}".lower()
+            if "no such container" not in details:
+                raise
 
     def restart_container(self, container_name: str) -> None:
-        self.runner(["docker", "restart", container_name])
+        self.runner(["docker", "restart", "--time", "5", container_name])
 
     def remove_container(self, container_name: str, *, missing_ok: bool = False) -> None:
         try:

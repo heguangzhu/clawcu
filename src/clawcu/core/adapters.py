@@ -81,6 +81,14 @@ class ServiceAdapter(ABC):
     def exec_env(self, service: "ClawCUService", record: InstanceRecord) -> dict[str, str]:
         raise NotImplementedError
 
+    def container_env_matches(
+        self,
+        service: "ClawCUService",
+        record: InstanceRecord,
+        inspection: dict | None,
+    ) -> bool:
+        return True
+
     def normalize_exec_command(
         self,
         service: "ClawCUService",

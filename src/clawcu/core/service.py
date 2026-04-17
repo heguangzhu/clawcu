@@ -837,6 +837,18 @@ class ClawCUService:
 
     def start_instance(self, name: str) -> InstanceRecord:
         record = self.store.load_record(name)
+        adapter = self.adapter_for_record(record)
+        inspection = self.docker.inspect_container(record.container_name)
+        if inspection is None:
+            self.reporter(
+                f"Instance '{record.name}' has no Docker container right now. Recreating it from the saved record."
+            )
+            return self.recreate_instance(name, prepare_artifact=False)
+        if not adapter.container_env_matches(self, record, inspection):
+            self.reporter(
+                f"Instance '{record.name}' needs a container refresh to pick up the current environment file. Recreating it instead of using docker start."
+            )
+            return self.recreate_instance(name, prepare_artifact=False)
         try:
             self.docker.start_container(record.container_name)
         except Exception as exc:
@@ -913,7 +925,7 @@ class ClawCUService:
         self.reporter(self._lifecycle_summary("retried", live_record))
         return live_record
 
-    def recreate_instance(self, name: str) -> InstanceRecord:
+    def recreate_instance(self, name: str, *, prepare_artifact: bool = True) -> InstanceRecord:
         record = self.store.load_record(name)
         adapter = self.adapter_for_record(record)
         effective_auth_mode = self._effective_auth_mode(record)
@@ -921,7 +933,12 @@ class ClawCUService:
             f"Recreating instance '{record.name}' (service={record.service}, version {record.version}, port {record.port}, auth={effective_auth_mode})."
         )
         self.store.append_log(f"recreate instance name={record.name} version={record.version}")
-        adapter.prepare_artifact(record.version)
+        if prepare_artifact:
+            adapter.prepare_artifact(record.version)
+        else:
+            self.reporter(
+                f"Reusing the existing image tag {record.image_tag} without re-running artifact preparation."
+            )
         self.docker.remove_container(record.container_name, missing_ok=True)
 
         spec = InstanceSpec(
