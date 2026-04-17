@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -44,6 +45,7 @@ app.add_typer(create_app, name="create")
 app.add_typer(provider_app, name="provider")
 provider_app.add_typer(provider_models_app, name="models")
 console = Console()
+_DISPLAY_DATE_RE = re.compile(r"(\d{4}\.\d{1,2}\.\d{1,2})")
 
 
 def get_service() -> ClawCUService:
@@ -94,6 +96,16 @@ def _mask_secret(value: str) -> str:
     if len(value) <= 8:
         return "*" * len(value)
     return f"{value[:6]}...{value[-4:]}"
+
+
+def _display_version(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return "-"
+    date_match = _DISPLAY_DATE_RE.search(raw)
+    if date_match:
+        return date_match.group(1)
+    return raw
 
 
 def _redact_provider_payload(value):
@@ -152,7 +164,7 @@ def _print_instance_table(records: list[dict]) -> None:
             record.get("service", "-"),
             record["name"],
             record.get("home", "-"),
-            record["version"],
+            _display_version(record["version"]),
             str(record["port"]),
             record["status"],
             record.get("access_url", "-"),

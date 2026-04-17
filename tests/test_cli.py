@@ -5,10 +5,17 @@ from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
-from clawcu.cli import app
+from clawcu.cli import _display_version, app
 from clawcu.models import InstanceRecord
 
 runner = CliRunner()
+
+
+def test_display_version_prefers_release_date_format() -> None:
+    assert _display_version("2026.4.12") == "2026.4.12"
+    assert _display_version("v2026.4.8") == "2026.4.8"
+    assert _display_version("v0.9.0 (2026.4.16)") == "2026.4.16"
+    assert _display_version("main") == "main"
 
 
 class FakeService:
