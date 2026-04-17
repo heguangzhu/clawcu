@@ -11,7 +11,8 @@ from clawcu.core.subprocess_utils import CommandError, run_command
 
 class DockerManager:
     INSPECT_TIMEOUT_SECONDS = 5
-    RUN_TIMEOUT_SECONDS = 20
+    PULL_TIMEOUT_SECONDS = 1800
+    RUN_TIMEOUT_SECONDS = 1800
     START_TIMEOUT_SECONDS = 20
     STOP_TIMEOUT_SECONDS = 15
     RESTART_TIMEOUT_SECONDS = 20
@@ -32,7 +33,11 @@ class DockerManager:
             return False
 
     def pull_image(self, image_tag: str) -> None:
-        self.runner(["docker", "pull", image_tag], stream_output=True)
+        self.runner(
+            ["docker", "pull", image_tag],
+            stream_output=True,
+            timeout_seconds=self.PULL_TIMEOUT_SECONDS,
+        )
 
     def tag_image(self, source_image: str, target_image: str) -> None:
         self.runner(["docker", "tag", source_image, target_image], capture_output=False)
@@ -84,7 +89,7 @@ class DockerManager:
             "run",
             "-d",
             "--pull",
-            "never",
+            "missing",
             "--name",
             record.container_name,
             "--restart",

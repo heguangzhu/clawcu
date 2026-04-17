@@ -47,7 +47,7 @@ def test_pull_image_streams_progress_output() -> None:
     command, _, options = runner.calls[0]
     assert command == ["docker", "pull", "ghcr.io/openclaw/openclaw:2026.4.10"]
     assert options["stream_output"] is True
-    assert options["timeout_seconds"] is None
+    assert options["timeout_seconds"] == DockerManager.PULL_TIMEOUT_SECONDS
 
 
 class FakeDocker:
@@ -121,7 +121,7 @@ def test_run_container_binds_host_port_to_internal_gateway_port() -> None:
     )
 
     command, _, _ = runner.calls[0]
-    assert command[:5] == ["docker", "run", "-d", "--pull", "never"]
+    assert command[:5] == ["docker", "run", "-d", "--pull", "missing"]
     assert "18809:18789" in command
     assert "PORT=3000" not in command
 
@@ -203,7 +203,7 @@ def test_run_container_appends_explicit_container_command() -> None:
     )
 
     command, _, options = runner.calls[0]
-    assert command[:5] == ["docker", "run", "-d", "--pull", "never"]
+    assert command[:5] == ["docker", "run", "-d", "--pull", "missing"]
     assert command[-8:] == [
         "node",
         "openclaw.mjs",
