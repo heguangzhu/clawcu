@@ -270,7 +270,7 @@ class FakeService:
                 "home": "/Users/test/.clawcu/writer",
                 "providers": "openai, anthropic",
                 "models": "openai/gpt-5, anthropic/claude-sonnet-4.5",
-                "snapshot": "upgrade -> 2026.4.2",
+                "snapshot": "upgrade 2026.4.1 -> 2026.4.2",
             }
         )
         return [payload]

@@ -2233,7 +2233,7 @@ def test_list_instance_summaries_includes_latest_snapshot_label(temp_clawcu_home
 
     summaries = service.list_instance_summaries()
 
-    assert summaries[0]["snapshot"] == "rollback -> 2026.4.1"
+    assert summaries[0]["snapshot"] == "rollback 2026.4.10 -> 2026.4.1"
 
 
 def test_host_healthcheck_treats_connection_reset_as_not_ready(temp_clawcu_home) -> None:

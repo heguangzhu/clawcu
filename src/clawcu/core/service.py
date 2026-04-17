@@ -2047,11 +2047,13 @@ class ClawCUService:
         for event in reversed(record.history):
             action = event.get("action")
             if action == "rollback":
+                source = event.get("from_version") or "-"
                 target = event.get("to_version") or "-"
-                return f"rollback -> {target}"
+                return f"rollback {source} -> {target}"
             if action == "upgrade":
+                source = event.get("from_version") or "-"
                 target = event.get("to_version") or "-"
-                return f"upgrade -> {target}"
+                return f"upgrade {source} -> {target}"
         return "-"
 
     def _lifecycle_summary(self, action: str, record: InstanceRecord) -> str:
