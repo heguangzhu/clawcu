@@ -28,6 +28,7 @@ def run_command(
     capture_output: bool = True,
     check: bool = True,
     stream_output: bool = False,
+    timeout_seconds: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     if stream_output:
         process = subprocess.Popen(
@@ -40,12 +41,18 @@ def run_command(
         )
         output_chunks: list[str] = []
         assert process.stdout is not None
-        for line in process.stdout:
-            sys.stdout.write(line)
-            sys.stdout.flush()
-            output_chunks.append(line)
-        process.stdout.close()
-        returncode = process.wait()
+        try:
+            for line in process.stdout:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                output_chunks.append(line)
+            process.stdout.close()
+            returncode = process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as exc:
+            process.kill()
+            stdout = "".join(output_chunks) + (exc.stdout or "")
+            stderr = (exc.stderr or "") + f"\nTimed out after {timeout_seconds} seconds"
+            raise CommandError(command, 124, stdout, stderr) from exc
         result = subprocess.CompletedProcess(
             command,
             returncode,
@@ -53,13 +60,19 @@ def run_command(
             "",
         )
     else:
-        result = subprocess.run(
-            command,
-            cwd=str(cwd) if cwd else None,
-            capture_output=capture_output,
-            text=True,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                command,
+                cwd=str(cwd) if cwd else None,
+                capture_output=capture_output,
+                text=True,
+                check=False,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout or ""
+            stderr = (exc.stderr or "") + f"\nTimed out after {timeout_seconds} seconds"
+            raise CommandError(command, 124, stdout, stderr) from exc
     if check and result.returncode != 0:
         raise CommandError(command, result.returncode, result.stdout, result.stderr)
     return result

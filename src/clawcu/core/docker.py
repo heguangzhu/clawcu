@@ -10,12 +10,23 @@ from clawcu.core.subprocess_utils import CommandError, run_command
 
 
 class DockerManager:
+    INSPECT_TIMEOUT_SECONDS = 5
+    RUN_TIMEOUT_SECONDS = 20
+    START_TIMEOUT_SECONDS = 20
+    STOP_TIMEOUT_SECONDS = 15
+    RESTART_TIMEOUT_SECONDS = 20
+    EXEC_TIMEOUT_SECONDS = 30
+    LOGS_TIMEOUT_SECONDS = 10
+
     def __init__(self, runner: Callable = run_command):
         self.runner = runner
 
     def image_exists(self, image_tag: str) -> bool:
         try:
-            self.runner(["docker", "image", "inspect", image_tag])
+            self.runner(
+                ["docker", "image", "inspect", image_tag],
+                timeout_seconds=self.INSPECT_TIMEOUT_SECONDS,
+            )
             return True
         except Exception:
             return False
@@ -47,7 +58,8 @@ class DockerManager:
     def inspect_container(self, container_name: str) -> dict | None:
         try:
             result = self.runner(
-                ["docker", "inspect", container_name, "--format", "{{json .}}"]
+                ["docker", "inspect", container_name, "--format", "{{json .}}"],
+                timeout_seconds=self.INSPECT_TIMEOUT_SECONDS,
             )
         except Exception:
             return None
@@ -71,6 +83,8 @@ class DockerManager:
             "docker",
             "run",
             "-d",
+            "--pull",
+            "never",
             "--name",
             record.container_name,
             "--restart",
@@ -99,7 +113,7 @@ class DockerManager:
         command.append(record.image_tag)
         if spec.command:
             command.extend(spec.command)
-        self.runner(command)
+        self.runner(command, timeout_seconds=self.RUN_TIMEOUT_SECONDS)
 
     def exec_in_container(
         self,
@@ -113,6 +127,7 @@ class DockerManager:
         if env:
             for key, value in sorted(env.items()):
                 docker_command.extend(["-e", f"{key}={value}"])
+        kwargs.setdefault("timeout_seconds", self.EXEC_TIMEOUT_SECONDS)
         return self.runner(docker_command + [container_name] + command, **kwargs)
 
     def exec_in_container_interactive(
@@ -136,22 +151,34 @@ class DockerManager:
         )
 
     def start_container(self, container_name: str) -> None:
-        self.runner(["docker", "start", container_name])
+        self.runner(
+            ["docker", "start", container_name],
+            timeout_seconds=self.START_TIMEOUT_SECONDS,
+        )
 
     def stop_container(self, container_name: str) -> None:
         try:
-            self.runner(["docker", "stop", "--time", "5", container_name])
+            self.runner(
+                ["docker", "stop", "--time", "5", container_name],
+                timeout_seconds=self.STOP_TIMEOUT_SECONDS,
+            )
         except CommandError as exc:
             details = f"{exc.stderr}\n{exc.stdout}".lower()
             if "no such container" not in details:
                 raise
 
     def restart_container(self, container_name: str) -> None:
-        self.runner(["docker", "restart", "--time", "5", container_name])
+        self.runner(
+            ["docker", "restart", "--time", "5", container_name],
+            timeout_seconds=self.RESTART_TIMEOUT_SECONDS,
+        )
 
     def remove_container(self, container_name: str, *, missing_ok: bool = False) -> None:
         try:
-            self.runner(["docker", "rm", "-f", container_name])
+            self.runner(
+                ["docker", "rm", "-f", container_name],
+                timeout_seconds=self.STOP_TIMEOUT_SECONDS,
+            )
         except Exception:
             if not missing_ok:
                 raise
@@ -161,4 +188,8 @@ class DockerManager:
         if follow:
             command.append("-f")
         command.append(container_name)
-        self.runner(command, capture_output=False)
+        self.runner(
+            command,
+            capture_output=False,
+            timeout_seconds=None if follow else self.LOGS_TIMEOUT_SECONDS,
+        )

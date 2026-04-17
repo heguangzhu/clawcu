@@ -18,6 +18,7 @@ class InstanceSpec:
     memory: str
     auth_mode: str
     dashboard_port: int | None = None
+    image_tag_override: str | None = None
 
 
 @dataclass(kw_only=True)

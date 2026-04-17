@@ -171,7 +171,7 @@ def build_instance_record(spec: InstanceSpec, *, status: str, history: list[dict
         name=spec.name,
         version=normalized_version,
         upstream_ref=upstream_ref_for_service(spec.service, normalized_version),
-        image_tag=image_tag_for_service(spec.service, normalized_version),
+        image_tag=spec.image_tag_override or image_tag_for_service(spec.service, normalized_version),
         container_name=container_name_for_service(spec.service, spec.name),
         datadir=resolve_datadir(spec.datadir),
         port=spec.port,

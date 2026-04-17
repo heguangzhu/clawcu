@@ -6,7 +6,7 @@ from typing import Callable
 from clawcu.core.docker import DockerManager
 from clawcu.core.storage import StateStore
 from clawcu.core.subprocess_utils import CommandError, run_command
-from clawcu.core.validation import image_tag_for_service, normalize_version
+from clawcu.core.validation import normalize_version
 
 DEFAULT_OPENCLAW_IMAGE_REPO = "ghcr.io/openclaw/openclaw"
 DEFAULT_OPENCLAW_IMAGE_REPO_CN = "ghcr.nju.edu.cn/openclaw/openclaw"
@@ -44,32 +44,20 @@ class OpenClawManager:
     def pull_official_image(self, version: str) -> str:
         normalized = normalize_version(version)
         official_image = self.official_image_tag(normalized)
-        local_image = image_tag_for_service("openclaw", normalized)
         self.reporter(
             f"Step 2/5: Pulling official image {official_image}. This usually takes 10-60 seconds depending on your network."
         )
         self.docker.pull_image(official_image)
-        if official_image != local_image:
-            self.reporter(f"Step 2/5: Tagging official image as {local_image} for local ClawCU management.")
-            self.docker.tag_image(official_image, local_image)
-        return local_image
+        return official_image
 
     def ensure_image(self, version: str) -> str:
         normalized = normalize_version(version)
-        image_tag = image_tag_for_service("openclaw", normalized)
-        if not self.docker.image_exists(image_tag):
-            try:
-                return self.pull_official_image(normalized)
-            except CommandError as exc:
-                if self._is_missing_version_error(exc):
-                    raise RuntimeError(
-                        f"OpenClaw version {normalized} was not found in the official image registry {self.image_repo}."
-                    ) from exc
-                raise RuntimeError(
-                    f"Failed to prepare OpenClaw {normalized} from the official image registry {self.image_repo}: {exc}"
-                ) from exc
-        self.reporter(f"Step 2/5: Docker image {image_tag} already exists locally. Skipping pull.")
-        return image_tag
+        official_image = self.official_image_tag(normalized)
+        self.reporter(
+            f"Step 2/5: Using OpenClaw image {official_image} for this run. "
+            "If it is missing locally, Docker will pull it when the container starts."
+        )
+        return official_image
 
     def _is_missing_version_error(self, exc: CommandError) -> bool:
         details = f"{exc.stderr}\n{exc.stdout}".lower()

@@ -13,7 +13,16 @@ class RecordingRunner:
     def __init__(self) -> None:
         self.calls: list[tuple[list[str], Path | None, dict]] = []
 
-    def __call__(self, command: list[str], *, cwd=None, capture_output=True, check=True, stream_output=False):
+    def __call__(
+        self,
+        command: list[str],
+        *,
+        cwd=None,
+        capture_output=True,
+        check=True,
+        stream_output=False,
+        timeout_seconds=None,
+    ):
         self.calls.append(
             (
                 command,
@@ -22,6 +31,7 @@ class RecordingRunner:
                     "capture_output": capture_output,
                     "check": check,
                     "stream_output": stream_output,
+                    "timeout_seconds": timeout_seconds,
                 },
             )
         )
@@ -37,6 +47,7 @@ def test_pull_image_streams_progress_output() -> None:
     command, _, options = runner.calls[0]
     assert command == ["docker", "pull", "ghcr.io/openclaw/openclaw:2026.4.10"]
     assert options["stream_output"] is True
+    assert options["timeout_seconds"] is None
 
 
 class FakeDocker:
@@ -62,55 +73,22 @@ def test_ensure_image_prefers_official_registry_pull(tmp_path) -> None:
 
     image_tag = manager.ensure_image("2026.4.1")
 
-    assert image_tag == "clawcu/openclaw:2026.4.1"
-    assert docker.calls == [
-        ("pull_image", ("ghcr.io/openclaw/openclaw:2026.4.1",)),
-        ("tag_image", ("ghcr.io/openclaw/openclaw:2026.4.1", "clawcu/openclaw:2026.4.1")),
-    ]
+    assert image_tag == "ghcr.io/openclaw/openclaw:2026.4.1"
+    assert docker.calls == []
 
 
-def test_ensure_image_reports_missing_version_in_official_registry(tmp_path) -> None:
+def test_pull_official_image_streams_registry_pull(tmp_path) -> None:
     docker = FakeDocker()
-    docker.pull_error = CommandError(
-        ["docker", "pull", "ghcr.io/openclaw/openclaw:2026.4.1"],
-        1,
-        "",
-        'failed to resolve reference "ghcr.io/openclaw/openclaw:2026.4.1": not found',
-    )
     messages: list[str] = []
-    manager = OpenClawManager(
-        object(),
-        docker,
-        reporter=messages.append,
-    )
+    manager = OpenClawManager(object(), docker, reporter=messages.append)
 
-    try:
-        manager.ensure_image("2026.4.1")
-        assert False, "ensure_image should have failed"
-    except RuntimeError as exc:
-        assert (
-            str(exc)
-            == "OpenClaw version 2026.4.1 was not found in the official image registry ghcr.io/openclaw/openclaw."
-        )
+    image_tag = manager.pull_official_image("2026.4.1")
 
+    assert image_tag == "ghcr.io/openclaw/openclaw:2026.4.1"
+    assert docker.calls == [("pull_image", ("ghcr.io/openclaw/openclaw:2026.4.1",))]
     assert messages == [
         "Step 2/5: Pulling official image ghcr.io/openclaw/openclaw:2026.4.1. This usually takes 10-60 seconds depending on your network."
     ]
-
-
-def test_ensure_image_reports_pull_failure_without_build_fallback(tmp_path) -> None:
-    docker = FakeDocker()
-    docker.pull_error = CommandError(["docker", "pull", "ghcr.io/openclaw/openclaw:2026.4.1"], 1, "", "network nope")
-    manager = OpenClawManager(object(), docker)
-
-    try:
-        manager.ensure_image("2026.4.1")
-        assert False, "ensure_image should have failed"
-    except RuntimeError as exc:
-        assert (
-            str(exc)
-            == "Failed to prepare OpenClaw 2026.4.1 from the official image registry ghcr.io/openclaw/openclaw: Command failed (1): docker pull ghcr.io/openclaw/openclaw:2026.4.1\nnetwork nope"
-        )
 
 
 def test_run_container_binds_host_port_to_internal_gateway_port() -> None:
@@ -139,13 +117,12 @@ def test_run_container_binds_host_port_to_internal_gateway_port() -> None:
         ContainerRunSpec(
             internal_port=18789,
             mount_target="/home/node/.openclaw",
-            extra_env={"HOST": "0.0.0.0"},
         ),
     )
 
     command, _, _ = runner.calls[0]
+    assert command[:5] == ["docker", "run", "-d", "--pull", "never"]
     assert "18809:18789" in command
-    assert "HOST=0.0.0.0" in command
     assert "PORT=3000" not in command
 
 
@@ -180,9 +157,10 @@ def test_run_container_supports_additional_port_bindings() -> None:
         ),
     )
 
-    command, _, _ = runner.calls[0]
+    command, _, options = runner.calls[0]
     assert "8652:8642" in command
     assert "9129:9119" in command
+    assert options["timeout_seconds"] == DockerManager.RUN_TIMEOUT_SECONDS
 
 
 def test_run_container_appends_explicit_container_command() -> None:
@@ -224,7 +202,8 @@ def test_run_container_appends_explicit_container_command() -> None:
         ),
     )
 
-    command, _, _ = runner.calls[0]
+    command, _, options = runner.calls[0]
+    assert command[:5] == ["docker", "run", "-d", "--pull", "never"]
     assert command[-8:] == [
         "node",
         "openclaw.mjs",
@@ -235,6 +214,7 @@ def test_run_container_appends_explicit_container_command() -> None:
         "--port",
         "18789",
     ]
+    assert options["timeout_seconds"] == DockerManager.RUN_TIMEOUT_SECONDS
 
 
 def test_stop_and_restart_container_use_short_timeout() -> None:
@@ -244,10 +224,12 @@ def test_stop_and_restart_container_use_short_timeout() -> None:
     manager.stop_container("clawcu-openclaw-writer")
     manager.restart_container("clawcu-openclaw-writer")
 
-    stop_command, _, _ = runner.calls[0]
-    restart_command, _, _ = runner.calls[1]
+    stop_command, _, stop_options = runner.calls[0]
+    restart_command, _, restart_options = runner.calls[1]
     assert stop_command == ["docker", "stop", "--time", "5", "clawcu-openclaw-writer"]
     assert restart_command == ["docker", "restart", "--time", "5", "clawcu-openclaw-writer"]
+    assert stop_options["timeout_seconds"] == DockerManager.STOP_TIMEOUT_SECONDS
+    assert restart_options["timeout_seconds"] == DockerManager.RESTART_TIMEOUT_SECONDS
 
 
 def test_stop_container_ignores_missing_container() -> None:

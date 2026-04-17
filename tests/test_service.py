@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import stat
 import urllib.request
 from pathlib import Path
 
@@ -185,6 +186,49 @@ def test_create_openclaw_saves_record(temp_clawcu_home, tmp_path) -> None:
     assert openclaw.versions == ["2026.4.1"]
     assert store.load_record("writer").image_tag == "clawcu/openclaw:2026.4.1"
     assert docker.commands[0][0] == "run"
+
+
+def test_create_service_uses_prepared_image_tag_override(temp_clawcu_home, tmp_path) -> None:
+    service, docker, openclaw, store = make_service(temp_clawcu_home)
+
+    def ensure_official(version: str) -> str:
+        openclaw.versions.append(version)
+        return f"ghcr.io/openclaw/openclaw:{version}"
+
+    openclaw.ensure_image = ensure_official  # type: ignore[method-assign]
+
+    record = service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+
+    assert record.image_tag == "ghcr.io/openclaw/openclaw:2026.4.1"
+    assert store.load_record("writer").image_tag == "ghcr.io/openclaw/openclaw:2026.4.1"
+    assert openclaw.versions == ["2026.4.1"]
+    assert docker.commands[0] == ("run", "clawcu-openclaw-writer")
+
+
+def test_create_openclaw_makes_runtime_tree_writable(temp_clawcu_home, tmp_path) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+    datadir = tmp_path / "writer"
+
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+
+    assert stat.S_IMODE(datadir.stat().st_mode) == 0o777
+    assert stat.S_IMODE((datadir / "openclaw.json").stat().st_mode) == 0o666
+    assert stat.S_IMODE((datadir / "workspace").stat().st_mode) == 0o777
+    assert stat.S_IMODE((datadir / "workspace" / ".openclaw" / "workspace-state.json").stat().st_mode) == 0o666
 
 
 def test_collect_providers_saves_directory_bundle_from_managed_instance(temp_clawcu_home, tmp_path) -> None:
@@ -1080,7 +1124,15 @@ def test_list_local_summaries_read_from_home_hermes(monkeypatch, tmp_path) -> No
     service, _, _, _ = make_service(tmp_path / ".clawcu")
     service._local_hermes_home = lambda: hermes_home  # type: ignore[method-assign]
 
-    def fake_runner(command, *, cwd=None, capture_output=True, check=True, stream_output=False):
+    def fake_runner(
+        command,
+        *,
+        cwd=None,
+        capture_output=True,
+        check=True,
+        stream_output=False,
+        timeout_seconds=None,
+    ):
         assert command == ["hermes", "version"]
         return type(
             "Completed",
@@ -1336,7 +1388,7 @@ def test_token_returns_dashboard_token_when_available(temp_clawcu_home, tmp_path
     assert service.token("writer") == "abc123"
 
 
-def test_token_raises_when_dashboard_token_missing(temp_clawcu_home, tmp_path) -> None:
+def test_token_returns_bootstrapped_dashboard_token(temp_clawcu_home, tmp_path) -> None:
     service, _, _, _ = make_service(temp_clawcu_home)
     datadir = tmp_path / "writer"
 
@@ -1349,8 +1401,58 @@ def test_token_raises_when_dashboard_token_missing(temp_clawcu_home, tmp_path) -
         memory="2g",
     )
 
-    with pytest.raises(ValueError, match="does not have a dashboard token"):
-        service.token("writer")
+    token = service.token("writer")
+
+    assert token
+    assert len(token) == 48
+
+
+def test_create_openclaw_times_out_when_health_never_becomes_ready(temp_clawcu_home, tmp_path) -> None:
+    service, docker, _, store = make_service(temp_clawcu_home)
+    service.STARTUP_TIMEOUT_SECONDS = 0.01
+    service.STARTUP_POLL_INTERVAL_SECONDS = 0
+    service.STARTUP_PROGRESS_INTERVAL_SECONDS = 0
+    docker.startup_sequences["clawcu-openclaw-writer"] = ["starting"]
+
+    with pytest.raises(RuntimeError, match="did not become ready within"):
+        service.create_openclaw(
+            name="writer",
+            version="2026.4.1",
+            datadir=str(tmp_path / "writer"),
+            port=3000,
+            cpu="1",
+            memory="2g",
+        )
+
+    record = store.load_record("writer")
+    assert record.last_error is not None
+    assert "did not become ready within" in record.last_error
+    assert record.history[-1]["action"] == "startup_failed"
+
+
+def test_create_hermes_times_out_when_dashboard_never_becomes_ready(temp_clawcu_home, tmp_path) -> None:
+    service, docker, _, store = make_service(temp_clawcu_home)
+    service.STARTUP_TIMEOUT_SECONDS = 0.01
+    service.STARTUP_POLL_INTERVAL_SECONDS = 0
+    service.STARTUP_PROGRESS_INTERVAL_SECONDS = 0
+    docker.startup_sequences["clawcu-hermes-javis"] = ["starting"]
+    hermes_adapter = service.adapter_for_service("hermes")
+    hermes_adapter._dashboard_ready = lambda _record: False  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="did not become ready within"):
+        service.create_hermes(
+            name="javis",
+            version="2026.4.13",
+            datadir=str(tmp_path / "javis"),
+            port=8652,
+            cpu="1",
+            memory="2g",
+        )
+
+    record = store.load_record("javis")
+    assert record.last_error is not None
+    assert "did not become ready within" in record.last_error
+    assert record.history[-1]["action"] == "startup_failed"
 
 
 def test_set_instance_env_writes_instance_env_file(temp_clawcu_home, tmp_path) -> None:
@@ -2034,7 +2136,7 @@ def test_start_instance_recreates_when_container_env_is_stale(temp_clawcu_home, 
         payload = original_inspect(container_name)
         if payload is None:
             return None
-        payload["Config"] = {"Env": ["HOST=0.0.0.0"]}
+        payload["Config"] = {"Env": []}
         return payload
 
     docker.inspect_container = inspect_with_stale_env  # type: ignore[method-assign]

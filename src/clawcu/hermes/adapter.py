@@ -148,6 +148,7 @@ class HermesAdapter(ServiceAdapter):
         if not env_values.get("API_SERVER_KEY"):
             env_values["API_SERVER_KEY"] = secrets.token_hex(32)
         env_path.write_text(service._dump_env_file(env_values), encoding="utf-8")
+        service._make_runtime_tree_writable(datadir)
 
     def wait_for_readiness(self, service, record: InstanceRecord) -> InstanceRecord:
         pending_statuses = {"starting", "created"}
@@ -159,6 +160,7 @@ class HermesAdapter(ServiceAdapter):
             f"or inspect details with 'clawcu inspect {record.name}' or 'clawcu logs {record.name}'."
         )
         start_time = time.monotonic()
+        startup_timeout = max(float(getattr(service, "STARTUP_TIMEOUT_SECONDS", 120.0)), 0.0)
         last_reported_status: str | None = None
         last_reported_bucket = -1
         current = record
@@ -179,6 +181,14 @@ class HermesAdapter(ServiceAdapter):
                 service.store.save_record(updated_record(current, last_error=message))
                 raise RuntimeError(message)
             elapsed = int(time.monotonic() - start_time)
+            if startup_timeout and (time.monotonic() - start_time) >= startup_timeout:
+                message = (
+                    f"Instance '{current.name}' did not become ready within {int(startup_timeout)}s. "
+                    f"Current status is '{current.status}'. "
+                    f"Use 'clawcu inspect {current.name}' or 'clawcu logs {current.name}' for details."
+                )
+                service.store.save_record(updated_record(current, last_error=message))
+                raise RuntimeError(message)
             progress_bucket = (
                 int(elapsed // service.STARTUP_PROGRESS_INTERVAL_SECONDS)
                 if service.STARTUP_PROGRESS_INTERVAL_SECONDS > 0
