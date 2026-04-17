@@ -99,7 +99,10 @@ def test_collect_providers_supports_hermes_home(temp_clawcu_home, tmp_path) -> N
         "model:\n  provider: openrouter\n  default: anthropic/claude-sonnet-4.6\n",
         encoding="utf-8",
     )
-    (root / ".env").write_text("OPENROUTER_API_KEY=sk-hermes\n", encoding="utf-8")
+    (root / ".env").write_text(
+        "OPENROUTER_API_KEY=sk-hermes\nAPI_SERVER_KEY=server-secret\n",
+        encoding="utf-8",
+    )
 
     result = service.collect_providers(path=str(root))
     bundle = store.load_provider_bundle("hermes", "openrouter")
@@ -108,6 +111,7 @@ def test_collect_providers_supports_hermes_home(temp_clawcu_home, tmp_path) -> N
     assert bundle["service"] == "hermes"
     assert "config_yaml" in bundle
     assert "OPENROUTER_API_KEY=sk-hermes" in str(bundle["env"])
+    assert "API_SERVER_KEY" not in str(bundle["env"])
 
 
 def test_create_hermes_saves_record_and_writes_native_home(temp_clawcu_home, tmp_path) -> None:
@@ -132,6 +136,9 @@ def test_create_hermes_saves_record_and_writes_native_home(temp_clawcu_home, tmp
     config_path = datadir / "config.yaml"
     assert config_path.exists()
     assert "backend: local" in config_path.read_text(encoding="utf-8")
+    env_path = datadir / ".env"
+    assert env_path.exists()
+    assert "API_SERVER_KEY=" in env_path.read_text(encoding="utf-8")
 
 
 def test_hermes_run_spec_respects_image_entrypoint(temp_clawcu_home, tmp_path) -> None:
@@ -147,11 +154,13 @@ def test_hermes_run_spec_respects_image_entrypoint(temp_clawcu_home, tmp_path) -
         memory="2g",
     )
     instance = build_instance_record(spec, status="creating", history=[])
+    adapter.configure_before_run(service, instance)
 
     run_spec = adapter.run_spec(service, instance)
 
     assert run_spec.command == ["gateway", "run"]
     assert run_spec.extra_env["API_SERVER_HOST"] == "0.0.0.0"
+    assert run_spec.extra_env["API_SERVER_KEY"]
 
 
 def test_hermes_access_info_points_to_api_server(temp_clawcu_home, tmp_path) -> None:
@@ -170,7 +179,7 @@ def test_hermes_access_info_points_to_api_server(temp_clawcu_home, tmp_path) -> 
 
     access = adapter.access_info(service, instance)
 
-    assert access.base_url == "http://127.0.0.1:8642/v1/models"
+    assert access.base_url == "http://127.0.0.1:8642/health"
     assert access.readiness_label == "api_server"
     assert access.auth_hint == "Hermes gateway API server (use `clawcu tui <instance>` for chat)"
 
@@ -192,7 +201,9 @@ def test_hermes_env_commands_use_datadir_env_file(temp_clawcu_home, tmp_path) ->
     result = service.set_instance_env("scribe", ["OPENAI_API_KEY=sk-hermes"])
 
     assert result["path"] == str(datadir / ".env")
-    assert (datadir / ".env").read_text(encoding="utf-8") == "OPENAI_API_KEY=sk-hermes\n"
+    env_text = (datadir / ".env").read_text(encoding="utf-8")
+    assert "OPENAI_API_KEY=sk-hermes\n" in env_text
+    assert "API_SERVER_KEY=" in env_text
 
 
 def test_configure_hermes_runs_setup_command(temp_clawcu_home, tmp_path) -> None:
@@ -212,11 +223,10 @@ def test_configure_hermes_runs_setup_command(temp_clawcu_home, tmp_path) -> None
 
     service.configure_instance("scribe", extra_args=["--help"])
 
-    assert docker.interactive_exec_commands[-1] == (
-        "clawcu-hermes-scribe",
-        ["hermes", "setup", "--help"],
-        {"env": {}},
-    )
+    container_name, command, options = docker.interactive_exec_commands[-1]
+    assert container_name == "clawcu-hermes-scribe"
+    assert command == ["hermes", "setup", "--help"]
+    assert "API_SERVER_KEY" in options["env"]
 
 
 def test_hermes_token_and_approve_are_unsupported(temp_clawcu_home, tmp_path) -> None:

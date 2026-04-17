@@ -1009,6 +1009,7 @@ class ClawCUService:
                 "with the existing data directory."
             )
             self.docker.remove_container(previous.container_name, missing_ok=True)
+            adapter.configure_before_run(self, upgraded)
             self._run_container(upgraded)
             upgraded = adapter.wait_for_readiness(self, self._persist_live_status(upgraded))
         except Exception as exc:
@@ -1025,6 +1026,7 @@ class ClawCUService:
                         Path(previous.datadir),
                         env_path=env_path,
                     )
+                adapter.configure_before_run(self, previous)
                 self._run_container(previous)
                 previous = adapter.wait_for_readiness(self, self._persist_live_status(previous))
             except Exception as nested_exc:
@@ -1132,6 +1134,7 @@ class ClawCUService:
             f"Step 4/4: Starting {adapter.display_name} {previous_version} "
             "with the restored data directory and env file."
         )
+        adapter.configure_before_run(self, rolled)
         self._run_container(rolled)
         rolled = adapter.wait_for_readiness(self, self._persist_live_status(rolled))
         self.store.save_record(rolled)

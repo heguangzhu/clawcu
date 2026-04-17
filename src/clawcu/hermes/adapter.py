@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import secrets
 import time
 import urllib.error
 import urllib.request
@@ -49,8 +50,6 @@ HERMES_MODEL_ENV_ALLOWLIST = {
     "OPENCODE_GO_API_KEY",
     "COPILOT_GITHUB_TOKEN",
     "GH_TOKEN",
-    "API_SERVER_ENABLED",
-    "API_SERVER_KEY",
 }
 
 
@@ -96,6 +95,7 @@ class HermesAdapter(ServiceAdapter):
 
     def run_spec(self, service, record: InstanceRecord) -> ContainerRunSpec:
         env_path = self.env_path(service, record)
+        env_values = service._load_env_file(env_path)
         return ContainerRunSpec(
             internal_port=self.internal_port,
             mount_target="/opt/data",
@@ -104,6 +104,7 @@ class HermesAdapter(ServiceAdapter):
                 "HERMES_HOME": "/opt/data",
                 "API_SERVER_ENABLED": "true",
                 "API_SERVER_HOST": "0.0.0.0",
+                "API_SERVER_KEY": env_values["API_SERVER_KEY"],
             },
             # The Hermes Docker image already uses an entrypoint that executes
             # `hermes "$@"`, so we only pass the subcommand here.
@@ -125,6 +126,12 @@ class HermesAdapter(ServiceAdapter):
                 },
             }
             config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+        env_path = self.env_path(service, record)
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_values = service._load_env_file(env_path)
+        if not env_values.get("API_SERVER_KEY"):
+            env_values["API_SERVER_KEY"] = secrets.token_hex(32)
+        env_path.write_text(service._dump_env_file(env_values), encoding="utf-8")
 
     def wait_for_readiness(self, service, record: InstanceRecord) -> InstanceRecord:
         pending_statuses = {"starting", "created"}
@@ -145,7 +152,7 @@ class HermesAdapter(ServiceAdapter):
                 ready = updated_record(current, status="running", last_error=None)
                 service.store.save_record(ready)
                 service.reporter(
-                    f"Hermes dashboard is responding on http://127.0.0.1:{ready.port}/. Marking the instance as ready."
+                    f"Hermes API server is responding on http://127.0.0.1:{ready.port}/health. Marking the instance as ready."
                 )
                 return ready
             if current.status not in pending_statuses and current.status != "running":
@@ -188,7 +195,7 @@ class HermesAdapter(ServiceAdapter):
 
     def access_info(self, service, record: InstanceRecord) -> AccessInfo:
         return AccessInfo(
-            base_url=f"http://127.0.0.1:{record.port}/v1/models",
+            base_url=f"http://127.0.0.1:{record.port}/health",
             readiness_label="api_server",
             auth_hint="Hermes gateway API server (use `clawcu tui <instance>` for chat)",
         )
