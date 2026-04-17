@@ -157,8 +157,22 @@ class ClawCUService:
             )
         else:
             resolved_path = Path(path or "").expanduser().resolve()
-            service_name = "hermes" if (resolved_path / "config.yaml").exists() else "openclaw"
-            roots.append((service_name, f"path:{path}", resolved_path, self._load_env_file(resolved_path / ".env")))
+            managed_record = next(
+                (
+                    record
+                    for record in self.store.list_records()
+                    if Path(record.datadir).expanduser().resolve() == resolved_path
+                ),
+                None,
+            )
+            if managed_record is not None:
+                adapter = self.adapter_for_record(managed_record)
+                service_name = managed_record.service
+                env_values = self._load_env_file(adapter.env_path(self, managed_record))
+            else:
+                service_name = "hermes" if (resolved_path / "config.yaml").exists() else "openclaw"
+                env_values = self._load_env_file(resolved_path / ".env")
+            roots.append((service_name, f"path:{path}", resolved_path, env_values))
 
         saved: list[str] = []
         merged: list[str] = []

@@ -518,6 +518,46 @@ def test_collect_providers_resolves_root_env_placeholders_for_external_path(temp
     assert bundle["auth_profiles"]["profiles"]["openai:default"]["key"] == "sk-local"
 
 
+def test_collect_providers_resolves_root_env_placeholders_for_managed_datadir_path(temp_clawcu_home, tmp_path) -> None:
+    service, _, _, store = make_service(temp_clawcu_home)
+    datadir = tmp_path / "writer"
+    write_root_provider_source(
+        datadir,
+        provider_name="openai",
+        profile_name="openai:default",
+        api_key="${OPENAI_API_KEY}",
+        api="openai-responses",
+        endpoint="https://api.openai.com/v1",
+        models=[{"id": "gpt-5", "name": "GPT-5"}],
+    )
+    store.save_record(
+        InstanceRecord(
+            service="openclaw",
+            name="writer",
+            version="2026.4.1",
+            upstream_ref="v2026.4.1",
+            image_tag="clawcu/openclaw:2026.4.1",
+            container_name="clawcu-openclaw-writer",
+            datadir=str(datadir),
+            port=3000,
+            cpu="1",
+            memory="2g",
+            auth_mode="token",
+            status="running",
+            created_at="2026-04-11T00:00:00+00:00",
+            updated_at="2026-04-11T00:00:00+00:00",
+            history=[],
+        )
+    )
+    store.instance_env_path("writer").write_text("OPENAI_API_KEY=sk-managed-path\n", encoding="utf-8")
+
+    service.collect_providers(path=str(datadir))
+    bundle = store.load_provider_bundle("openai")
+
+    assert bundle["models"]["providers"]["openai"]["apiKey"] == "sk-managed-path"
+    assert bundle["auth_profiles"]["profiles"]["openai:default"]["key"] == "sk-managed-path"
+
+
 def test_list_show_and_remove_provider_use_directory_storage(temp_clawcu_home, tmp_path) -> None:
     service, _, _, store = make_service(temp_clawcu_home)
     root = tmp_path / "writer"
