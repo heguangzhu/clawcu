@@ -853,9 +853,9 @@ def test_config_help_explains_passthrough_usage() -> None:
     result = runner.invoke(app, ["config", "--help"])
 
     assert result.exit_code == 0
-    assert "service-native configuration flow" in result.stdout
+    assert "service-native setup or configuration flow" in result.stdout
     assert "clawcu config <instance>" in result.stdout
-    assert "--section model" in result.stdout
+    assert "clawcu config <instance> -- --help" in result.stdout
 
 
 def test_exec_help_explains_passthrough_usage() -> None:

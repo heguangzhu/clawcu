@@ -906,10 +906,9 @@ def configure_instance(
     if help_flag or not name:
         _show_passthrough_help(
             "config",
-            "This command runs the service-native configuration flow inside the managed instance container.",
+            "This command runs the service-native setup or configuration flow inside the managed instance container.",
             [
                 "clawcu config <instance>",
-                "clawcu config <instance> -- --section model",
                 "clawcu config <instance> -- --help",
             ],
         )

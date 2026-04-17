@@ -174,6 +174,30 @@ def test_hermes_env_commands_use_datadir_env_file(temp_clawcu_home, tmp_path) ->
     assert (datadir / ".env").read_text(encoding="utf-8") == "OPENAI_API_KEY=sk-hermes\n"
 
 
+def test_configure_hermes_runs_setup_command(temp_clawcu_home, tmp_path) -> None:
+    service, docker, _, _ = make_service(temp_clawcu_home)
+    hermes_adapter = service.adapters["hermes"]
+    hermes_adapter._dashboard_ready = lambda _record: True  # type: ignore[method-assign]
+    datadir = tmp_path / "hermes-home"
+
+    service.create_hermes(
+        name="scribe",
+        version="2026.4.8",
+        datadir=str(datadir),
+        port=8642,
+        cpu="1",
+        memory="2g",
+    )
+
+    service.configure_instance("scribe", extra_args=["--help"])
+
+    assert docker.interactive_exec_commands[-1] == (
+        "clawcu-hermes-scribe",
+        ["hermes", "setup", "--help"],
+        {"env": {}},
+    )
+
+
 def test_hermes_token_and_approve_are_unsupported(temp_clawcu_home, tmp_path) -> None:
     service, _, _, _ = make_service(temp_clawcu_home)
     hermes_adapter = service.adapters["hermes"]

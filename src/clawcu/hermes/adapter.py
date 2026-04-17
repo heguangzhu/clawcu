@@ -207,7 +207,7 @@ class HermesAdapter(ServiceAdapter):
 
     def configure_instance(self, service, name: str, extra_args: list[str] | None = None) -> None:
         record = service._persist_live_status(service.store.load_record(name))
-        command = ["hermes", "config", *(extra_args or [])]
+        command = ["hermes", "setup", *(extra_args or [])]
         env_values = self.exec_env(service, record)
         service.store.append_log(
             f"configure instance name={record.name} args={' '.join(extra_args or [])}".strip()
