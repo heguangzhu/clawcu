@@ -132,6 +132,7 @@ def test_create_hermes_saves_record_and_writes_native_home(temp_clawcu_home, tmp
     assert record.service == "hermes"
     assert record.version == "v2026.4.8"
     assert record.image_tag == "clawcu/hermes-agent:v2026.4.8"
+    assert record.dashboard_port == 9129
     assert store.load_record("scribe").container_name == "clawcu-hermes-scribe"
     config_path = datadir / "config.yaml"
     assert config_path.exists()
@@ -143,7 +144,7 @@ def test_create_hermes_saves_record_and_writes_native_home(temp_clawcu_home, tmp
 
 def test_create_hermes_defaults_datadir_and_port(temp_clawcu_home) -> None:
     service, _, _, _ = make_service(temp_clawcu_home)
-    service._is_port_available = lambda port: port == 8652  # type: ignore[method-assign]
+    service._is_port_available = lambda port: port in {8652, 9129}  # type: ignore[method-assign]
     hermes_adapter = service.adapters["hermes"]
     hermes_adapter._dashboard_ready = lambda _record: True  # type: ignore[method-assign]
 
@@ -156,6 +157,7 @@ def test_create_hermes_defaults_datadir_and_port(temp_clawcu_home) -> None:
 
     assert record.datadir.endswith("/.clawcu/scribe")
     assert record.port == 8652
+    assert record.dashboard_port == 9129
     assert record.auth_mode == "native"
 
 
@@ -179,6 +181,7 @@ def test_hermes_run_spec_respects_image_entrypoint(temp_clawcu_home, tmp_path) -
     assert run_spec.command == ["gateway", "run"]
     assert run_spec.extra_env["API_SERVER_HOST"] == "0.0.0.0"
     assert run_spec.extra_env["API_SERVER_KEY"]
+    assert run_spec.additional_ports == [(9129, 9119)]
 
 
 def test_hermes_access_info_points_to_api_server(temp_clawcu_home, tmp_path) -> None:

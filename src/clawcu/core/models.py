@@ -7,7 +7,7 @@ from typing import Any
 HistoryEntry = dict[str, Any]
 
 
-@dataclass
+@dataclass(kw_only=True)
 class InstanceSpec:
     service: str
     name: str
@@ -17,9 +17,10 @@ class InstanceSpec:
     cpu: str
     memory: str
     auth_mode: str
+    dashboard_port: int | None = None
 
 
-@dataclass
+@dataclass(kw_only=True)
 class InstanceRecord(InstanceSpec):
     upstream_ref: str
     image_tag: str
@@ -37,6 +38,7 @@ class InstanceRecord(InstanceSpec):
     def from_dict(cls, data: dict[str, Any]) -> "InstanceRecord":
         payload = dict(data)
         payload.setdefault("auth_mode", "token")
+        payload.setdefault("dashboard_port", None)
         return cls(**payload)
 
 
@@ -76,3 +78,4 @@ class ContainerRunSpec:
     env_file: str | None = None
     extra_env: dict[str, str] = field(default_factory=dict)
     command: list[str] | None = None
+    additional_ports: list[tuple[int, int]] = field(default_factory=list)

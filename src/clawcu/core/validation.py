@@ -175,6 +175,7 @@ def build_instance_record(spec: InstanceSpec, *, status: str, history: list[dict
         container_name=container_name_for_service(spec.service, spec.name),
         datadir=resolve_datadir(spec.datadir),
         port=spec.port,
+        dashboard_port=spec.dashboard_port,
         cpu=spec.cpu,
         memory=spec.memory,
         auth_mode=spec.auth_mode,

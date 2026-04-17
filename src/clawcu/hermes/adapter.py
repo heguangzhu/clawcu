@@ -61,6 +61,8 @@ class HermesAdapter(ServiceAdapter):
     display_name = "Hermes"
     default_port = 8652
     internal_port = 8642
+    dashboard_default_port = 9129
+    dashboard_internal_port = 9119
 
     def __init__(self, manager: HermesManager):
         self.manager = manager
@@ -78,6 +80,11 @@ class HermesAdapter(ServiceAdapter):
         validated_name = validate_name(name)
         resolved_datadir = resolve_datadir(datadir) if datadir else self.default_datadir(service, validated_name)
         resolved_port = validate_port(port) if port is not None else service._next_available_port(self.default_port)
+        resolved_dashboard_port = service._next_available_port(self.dashboard_default_port)
+        if resolved_dashboard_port == resolved_port:
+            resolved_dashboard_port = service._next_available_port(
+                resolved_dashboard_port + service.PORT_SEARCH_STEP
+            )
         return InstanceSpec(
             service=self.service_name,
             name=validated_name,
@@ -87,6 +94,7 @@ class HermesAdapter(ServiceAdapter):
             cpu=validate_cpu(cpu),
             memory=validate_memory(memory),
             auth_mode="native",
+            dashboard_port=resolved_dashboard_port,
         )
 
     def env_path(self, service, record: InstanceRecord | str) -> Path:
@@ -112,6 +120,11 @@ class HermesAdapter(ServiceAdapter):
             # The Hermes Docker image already uses an entrypoint that executes
             # `hermes "$@"`, so we only pass the subcommand here.
             command=["gateway", "run"],
+            additional_ports=[
+                (record.dashboard_port, self.dashboard_internal_port)
+            ]
+            if record.dashboard_port is not None
+            else [],
         )
 
     def configure_before_run(self, service, record: InstanceRecord) -> None:
