@@ -121,7 +121,7 @@ class HermesAdapter(ServiceAdapter):
                     "default": "anthropic/claude-sonnet-4.6",
                 },
                 "terminal": {
-                    "backend": "docker",
+                    "backend": "local",
                 },
             }
             config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")

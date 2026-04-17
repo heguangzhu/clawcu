@@ -129,7 +129,9 @@ def test_create_hermes_saves_record_and_writes_native_home(temp_clawcu_home, tmp
     assert record.version == "v2026.4.8"
     assert record.image_tag == "clawcu/hermes-agent:v2026.4.8"
     assert store.load_record("scribe").container_name == "clawcu-hermes-scribe"
-    assert (datadir / "config.yaml").exists()
+    config_path = datadir / "config.yaml"
+    assert config_path.exists()
+    assert "backend: local" in config_path.read_text(encoding="utf-8")
 
 
 def test_hermes_run_spec_respects_image_entrypoint(temp_clawcu_home, tmp_path) -> None:
