@@ -1790,7 +1790,7 @@ def test_create_openclaw_recovers_from_empty_gateway_config_file(temp_clawcu_hom
 
 def test_create_openclaw_defaults_datadir_and_port(temp_clawcu_home) -> None:
     service, _, _, _ = make_service(temp_clawcu_home)
-    service._is_port_available = lambda port: port == 18789
+    service._is_port_available = lambda port: port == 18799
 
     record = service.create_openclaw(
         name="writer",
@@ -1800,7 +1800,7 @@ def test_create_openclaw_defaults_datadir_and_port(temp_clawcu_home) -> None:
     )
 
     assert record.datadir.endswith("/.clawcu/writer")
-    assert record.port == 18789
+    assert record.port == 18799
     assert record.auth_mode == "token"
 
 
@@ -1850,7 +1850,7 @@ def test_create_openclaw_rejects_existing_docker_container_without_record(temp_c
 
 def test_create_openclaw_searches_next_port_by_ten(temp_clawcu_home, tmp_path) -> None:
     service, _, _, _ = make_service(temp_clawcu_home)
-    service._is_port_available = lambda port: port == 18809
+    service._is_port_available = lambda port: port == 18819
 
     record = service.create_openclaw(
         name="writer",
@@ -1860,18 +1860,18 @@ def test_create_openclaw_searches_next_port_by_ten(temp_clawcu_home, tmp_path) -
         memory="2g",
     )
 
-    assert record.port == 18809
+    assert record.port == 18819
 
 
 def test_create_openclaw_retries_next_port_when_docker_bind_races(temp_clawcu_home, tmp_path) -> None:
     service, docker, _, store = make_service(temp_clawcu_home)
-    service._is_port_available = lambda port: port in {18789, 18799}
+    service._is_port_available = lambda port: port in {18799, 18809}
     docker.run_errors.append(
         CommandError(
             ["docker", "run"],
             125,
             "",
-            "Bind for 0.0.0.0:18789 failed: port is already allocated",
+            "Bind for 0.0.0.0:18799 failed: port is already allocated",
         )
     )
 
@@ -1883,10 +1883,10 @@ def test_create_openclaw_retries_next_port_when_docker_bind_races(temp_clawcu_ho
         memory="2g",
     )
 
-    assert record.port == 18799
+    assert record.port == 18809
     assert ("rm", "clawcu-openclaw-writer") in docker.commands
     stored = store.load_record("writer")
-    assert stored.port == 18799
+    assert stored.port == 18809
     assert stored.last_error is None
     assert [event["action"] for event in stored.history] == [
         "create_requested",
@@ -2477,7 +2477,7 @@ def test_clone_instance_copies_instance_env_file(temp_clawcu_home, tmp_path) -> 
 
 def test_clone_instance_defaults_datadir_and_port_when_not_provided(temp_clawcu_home, tmp_path) -> None:
     service, _, _, store = make_service(temp_clawcu_home)
-    service._is_port_available = lambda port: port == 18789  # type: ignore[method-assign]
+    service._is_port_available = lambda port: port == 18799  # type: ignore[method-assign]
     source_dir = tmp_path / "writer"
     source_dir.mkdir()
     (source_dir / "memory.txt").write_text("hello", encoding="utf-8")
@@ -2499,12 +2499,12 @@ def test_clone_instance_defaults_datadir_and_port_when_not_provided(temp_clawcu_
     assert clone.name == "writer-exp"
     assert clone.datadir == str((store.paths.home / "writer-exp").resolve())
     assert (Path(clone.datadir) / "memory.txt").read_text(encoding="utf-8") == "hello"
-    assert store.load_record("writer-exp").port == 18789
+    assert store.load_record("writer-exp").port == 18799
 
 
 def test_clone_instance_retries_next_port_when_docker_bind_races(temp_clawcu_home, tmp_path) -> None:
     service, docker, _, store = make_service(temp_clawcu_home)
-    service._is_port_available = lambda port: port in {18789, 18799}  # type: ignore[method-assign]
+    service._is_port_available = lambda port: port in {18799, 18809}  # type: ignore[method-assign]
     source_dir = tmp_path / "writer"
     source_dir.mkdir()
     (source_dir / "memory.txt").write_text("hello", encoding="utf-8")
@@ -2522,7 +2522,7 @@ def test_clone_instance_retries_next_port_when_docker_bind_races(temp_clawcu_hom
             ["docker", "run"],
             125,
             "",
-            "Bind for 0.0.0.0:18789 failed: port is already allocated",
+            "Bind for 0.0.0.0:18799 failed: port is already allocated",
         )
     )
 
@@ -2531,10 +2531,10 @@ def test_clone_instance_retries_next_port_when_docker_bind_races(temp_clawcu_hom
         name="writer-exp",
     )
 
-    assert clone.port == 18799
+    assert clone.port == 18809
     assert ("rm", "clawcu-openclaw-writer-exp") in docker.commands
     stored = store.load_record("writer-exp")
-    assert stored.port == 18799
+    assert stored.port == 18809
     assert [event["action"] for event in stored.history] == [
         "cloned",
         "create_failed",

@@ -141,6 +141,24 @@ def test_create_hermes_saves_record_and_writes_native_home(temp_clawcu_home, tmp
     assert "API_SERVER_KEY=" in env_path.read_text(encoding="utf-8")
 
 
+def test_create_hermes_defaults_datadir_and_port(temp_clawcu_home) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+    service._is_port_available = lambda port: port == 8652  # type: ignore[method-assign]
+    hermes_adapter = service.adapters["hermes"]
+    hermes_adapter._dashboard_ready = lambda _record: True  # type: ignore[method-assign]
+
+    record = service.create_hermes(
+        name="scribe",
+        version="2026.4.8",
+        cpu="1",
+        memory="2g",
+    )
+
+    assert record.datadir.endswith("/.clawcu/scribe")
+    assert record.port == 8652
+    assert record.auth_mode == "native"
+
+
 def test_hermes_run_spec_respects_image_entrypoint(temp_clawcu_home, tmp_path) -> None:
     service, _, _, _ = make_service(temp_clawcu_home)
     adapter = service.adapters["hermes"]

@@ -59,7 +59,7 @@ HERMES_EXEC_PATH = f"/opt/hermes/.venv/bin:/opt/hermes:{os.environ.get('PATH', '
 class HermesAdapter(ServiceAdapter):
     service_name = "hermes"
     display_name = "Hermes"
-    default_port = 8642
+    default_port = 8652
     internal_port = 8642
 
     def __init__(self, manager: HermesManager):
@@ -308,7 +308,7 @@ class HermesAdapter(ServiceAdapter):
                 "name": "local-hermes",
                 "home": str(root),
                 "version": version,
-                "port": self.default_port,
+                "port": self.internal_port,
                 "status": "local",
                 "providers": summary["providers"],
                 "models": summary["models"],
@@ -327,7 +327,7 @@ class HermesAdapter(ServiceAdapter):
                 name="local-hermes",
                 version=version,
                 datadir=str(root),
-                port=self.default_port,
+                port=self.internal_port,
                 cpu="1",
                 memory="1g",
                 auth_mode="native",
@@ -343,7 +343,7 @@ class HermesAdapter(ServiceAdapter):
                 "home": str(root),
                 "service": self.service_name,
                 "version": version,
-                "port": self.default_port,
+                "port": self.internal_port,
                 "status": "local",
                 **summary,
             }

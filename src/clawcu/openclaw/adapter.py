@@ -29,7 +29,7 @@ from clawcu.openclaw.manager import OpenClawManager
 class OpenClawAdapter(ServiceAdapter):
     service_name = "openclaw"
     display_name = "OpenClaw"
-    default_port = 18789
+    default_port = 18799
     internal_port = 18789
 
     def __init__(self, manager: OpenClawManager):
@@ -344,7 +344,7 @@ class OpenClawAdapter(ServiceAdapter):
                 "name": "local-openclaw",
                 "home": str(service._local_openclaw_home()),
                 "version": version,
-                "port": self.default_port,
+                "port": self.internal_port,
                 "status": "local",
                 "providers": provider_summary["providers"],
                 "models": provider_summary["models"],
@@ -368,7 +368,7 @@ class OpenClawAdapter(ServiceAdapter):
                     "home": str(service._local_openclaw_home()),
                     "service": self.service_name,
                     "version": version,
-                    "port": self.default_port,
+                    "port": self.internal_port,
                     "status": "local",
                     "providers": provider_summary["providers"],
                     "models": provider_summary["models"],

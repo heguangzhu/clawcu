@@ -125,7 +125,7 @@ class FakeService:
         record.container_name = f"clawcu-hermes-{kwargs['name']}"
         record.image_tag = f"clawcu/hermes-agent:{kwargs['version']}"
         record.auth_mode = "native"
-        record.port = kwargs.get("port") or 8642
+        record.port = kwargs.get("port") or 8652
         return record
 
     def check_setup(self) -> list[dict[str, str | bool]]:
