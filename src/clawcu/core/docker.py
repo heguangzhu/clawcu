@@ -189,10 +189,21 @@ class DockerManager:
             if not missing_ok or "no such container" not in details:
                 raise
 
-    def stream_logs(self, container_name: str, *, follow: bool = False) -> None:
+    def stream_logs(
+        self,
+        container_name: str,
+        *,
+        follow: bool = False,
+        tail: int | None = None,
+        since: str | None = None,
+    ) -> None:
         command = ["docker", "logs"]
         if follow:
             command.append("-f")
+        if tail is not None and tail > 0:
+            command.extend(["--tail", str(tail)])
+        if since:
+            command.extend(["--since", since])
         command.append(container_name)
         self.runner(
             command,

@@ -1261,9 +1261,21 @@ class ClawCUService:
         )
         return record
 
-    def stream_logs(self, name: str, *, follow: bool = False) -> None:
+    def stream_logs(
+        self,
+        name: str,
+        *,
+        follow: bool = False,
+        tail: int | None = None,
+        since: str | None = None,
+    ) -> None:
         record = self.store.load_record(name)
-        self.docker.stream_logs(record.container_name, follow=follow)
+        self.docker.stream_logs(
+            record.container_name,
+            follow=follow,
+            tail=tail,
+            since=since,
+        )
 
     def remove_instance(self, name: str, *, delete_data: bool = False) -> None:
         record = self.store.load_record(name)

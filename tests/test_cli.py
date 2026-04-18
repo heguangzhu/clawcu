@@ -35,6 +35,7 @@ class FakeService:
         self.calls: list[tuple[str, tuple, dict]] = []
         self.reporter = None
         self.store = SimpleNamespace(paths=SimpleNamespace(home=Path("/tmp/clawcu-test-home")))
+        self.instance_statuses: dict[str, str] = {}
 
     def _record(self, method: str, *args, **kwargs) -> None:
         self.calls.append((method, args, kwargs))
@@ -432,6 +433,11 @@ class FakeService:
 
     def retry_instance(self, name: str) -> InstanceRecord:
         self._record("retry_instance", name=name)
+        status = self.instance_statuses.get(name, "running")
+        if status != "create_failed":
+            raise ValueError(
+                f"Instance '{name}' is in status '{status}'. Only create_failed instances can be retried."
+            )
         if self.reporter:
             self.reporter("Step 1/4: Loading the failed instance record")
             self.reporter("Step 4/4: Recreating the Docker container")
@@ -485,8 +491,15 @@ class FakeService:
             record.port = port
         return record
 
-    def stream_logs(self, name: str, *, follow: bool = False) -> None:
-        self._record("stream_logs", name=name, follow=follow)
+    def stream_logs(
+        self,
+        name: str,
+        *,
+        follow: bool = False,
+        tail: int | None = None,
+        since: str | None = None,
+    ) -> None:
+        self._record("stream_logs", name=name, follow=follow, tail=tail, since=since)
 
     def remove_instance(self, name: str, *, delete_data: bool = False) -> None:
         self._record("remove_instance", name=name, delete_data=delete_data)
@@ -574,9 +587,11 @@ def test_root_help_lists_descriptions_for_top_level_commands() -> None:
     assert "restart" in result.stdout
     assert "Restart a managed instance." in result.stdout
     assert "retry" in result.stdout
-    assert "Retry creating an instance that is in create_failed status." in result.stdout
+    assert "[Deprecated]" in result.stdout
+    assert "Alias of" in result.stdout
     assert "recreate" in result.stdout
-    assert "Recreate an existing instance with its saved configuration." in result.stdout
+    assert "Recreate an existing instance." in result.stdout
+    assert "Auto-retries instances in" in result.stdout
     assert "upgrade" in result.stdout
     assert "Upgrade an instance to a newer service version" in result.stdout
     assert "rollback" in result.stdout
@@ -1402,11 +1417,13 @@ def test_create_command_surfaces_duplicate_name_error(monkeypatch) -> None:
 
 def test_retry_command_retries_failed_instance(monkeypatch) -> None:
     service = FakeService()
+    service.instance_statuses["writer"] = "create_failed"
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
 
     result = runner.invoke(app, ["retry", "writer"])
 
     assert result.exit_code == 0
+    assert "Deprecation:" in result.stdout
     assert "Step 1/4: Loading the failed instance record" in result.stdout
     assert "Retried instance:" in result.stdout
     assert "(status: running)" in result.stdout
@@ -1425,6 +1442,21 @@ def test_recreate_command_recreates_instance(monkeypatch) -> None:
     assert "(status: running)" in result.stdout
     assert "Open URL:" in result.stdout
     assert service.calls[-1] == ("dashboard_url", (), {"name": "writer"})
+
+
+def test_recreate_command_auto_retries_create_failed_instance(monkeypatch) -> None:
+    service = FakeService()
+    service.instance_statuses["writer"] = "create_failed"
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["recreate", "writer"])
+
+    assert result.exit_code == 0
+    assert "Retried instance:" in result.stdout
+    # retry_instance is called first; recreate_instance should NOT be called
+    method_names = [call[0] for call in service.calls]
+    assert "retry_instance" in method_names
+    assert "recreate_instance" not in method_names
 
 
 def test_create_command_accepts_explicit_resource_options(monkeypatch) -> None:
@@ -1702,7 +1734,35 @@ def test_logs_follow_option_is_forwarded(monkeypatch) -> None:
     assert service.calls[-1] == (
         "stream_logs",
         (),
-        {"name": "writer", "follow": True},
+        {"name": "writer", "follow": True, "tail": 200, "since": None},
+    )
+
+
+def test_logs_tail_zero_disables_tail_limit(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["logs", "writer", "--tail", "0"])
+
+    assert result.exit_code == 0
+    assert service.calls[-1] == (
+        "stream_logs",
+        (),
+        {"name": "writer", "follow": False, "tail": None, "since": None},
+    )
+
+
+def test_logs_since_option_is_forwarded(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["logs", "writer", "--tail", "50", "--since", "10m"])
+
+    assert result.exit_code == 0
+    assert service.calls[-1] == (
+        "stream_logs",
+        (),
+        {"name": "writer", "follow": False, "tail": 50, "since": "10m"},
     )
 
 

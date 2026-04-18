@@ -103,7 +103,14 @@ class FakeDockerManager:
         self.interactive_exec_commands.append((container_name, command, kwargs))
         return type("Completed", (), {"stdout": "", "stderr": "", "returncode": 0})()
 
-    def stream_logs(self, container_name: str, *, follow: bool = False) -> None:
+    def stream_logs(
+        self,
+        container_name: str,
+        *,
+        follow: bool = False,
+        tail: int | None = None,
+        since: str | None = None,
+    ) -> None:
         self.commands.append(("logs", container_name))
 
 

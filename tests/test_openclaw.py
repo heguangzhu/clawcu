@@ -52,6 +52,39 @@ def test_pull_image_streams_progress_output() -> None:
     assert options["timeout_seconds"] == DockerManager.PULL_TIMEOUT_SECONDS
 
 
+def test_stream_logs_includes_tail_and_since_when_provided() -> None:
+    runner = RecordingRunner()
+    manager = DockerManager(runner=runner)
+
+    manager.stream_logs(
+        "clawcu-openclaw-writer",
+        follow=False,
+        tail=200,
+        since="10m",
+    )
+
+    command, _, _ = runner.calls[0]
+    assert command == [
+        "docker",
+        "logs",
+        "--tail",
+        "200",
+        "--since",
+        "10m",
+        "clawcu-openclaw-writer",
+    ]
+
+
+def test_stream_logs_omits_tail_when_tail_is_none() -> None:
+    runner = RecordingRunner()
+    manager = DockerManager(runner=runner)
+
+    manager.stream_logs("clawcu-openclaw-writer", follow=True, tail=None, since=None)
+
+    command, _, _ = runner.calls[0]
+    assert command == ["docker", "logs", "-f", "clawcu-openclaw-writer"]
+
+
 class FakeDocker:
     def __init__(self) -> None:
         self.existing_images: set[str] = set()

@@ -391,15 +391,38 @@ def _completion_check(service: ClawCUService) -> dict[str, str | bool]:
     }
 
 
+_OUTPUT_STATE: dict[str, bool] = {"json": False}
+
+
+def _json_mode() -> bool:
+    return bool(_OUTPUT_STATE.get("json"))
+
+
+def _print_json(payload) -> None:
+    """Emit a machine-readable JSON payload to stdout."""
+    console.print_json(json.dumps(payload, ensure_ascii=False, default=str))
+
+
 @app.callback(invoke_without_command=True)
 def root_callback(
     version: Annotated[
         bool,
         typer.Option("--version", help="Show the installed ClawCU version and exit."),
     ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Emit machine-readable JSON where supported (list, inspect, token, getenv, provider list/show/models).",
+        ),
+    ] = False,
 ) -> None:
+    _OUTPUT_STATE["json"] = json_output
     if version:
-        console.print(f"clawcu {__version__}")
+        if json_output:
+            _print_json({"clawcu": __version__})
+        else:
+            console.print(f"clawcu {__version__}")
         raise typer.Exit()
 
 
@@ -479,16 +502,110 @@ def setup_environment(
     raise typer.Exit(code=1)
 
 
+_KNOWN_SERVICES = ("openclaw", "hermes")
+
+
+def _do_pull(service_name: str, version: str) -> None:
+    if service_name not in _KNOWN_SERVICES:
+        _exit_with_error(
+            f"Unknown service '{service_name}'. Expected one of: {', '.join(_KNOWN_SERVICES)}."
+        )
+    service = get_service()
+    if hasattr(service, "set_reporter"):
+        service.set_reporter(_print_progress)
+    try:
+        if service_name == "openclaw":
+            image_tag = service.pull_openclaw(version)
+        else:
+            image_tag = service.pull_hermes(version)
+    except Exception as exc:
+        _exit_with_error(str(exc))
+    console.print(f"[green]Built image:[/green] {image_tag}")
+
+
+def _do_create(
+    service_name: str,
+    *,
+    name: str,
+    version: str,
+    datadir: str | None,
+    port: int | None,
+    cpu: str,
+    memory: str,
+) -> None:
+    if service_name not in _KNOWN_SERVICES:
+        _exit_with_error(
+            f"Unknown service '{service_name}'. Expected one of: {', '.join(_KNOWN_SERVICES)}."
+        )
+    service = get_service()
+    if hasattr(service, "set_reporter"):
+        service.set_reporter(_print_progress)
+    try:
+        if service_name == "openclaw":
+            record = service.create_openclaw(
+                name=name, version=version, datadir=datadir, port=port, cpu=cpu, memory=memory,
+            )
+        else:
+            record = service.create_hermes(
+                name=name, version=version, datadir=datadir, port=port, cpu=cpu, memory=memory,
+            )
+    except Exception as exc:
+        _exit_with_error(str(exc))
+    console.print(
+        f"[green]Created instance:[/green] {record.name} ({record.version}) on port {record.port} (status: {record.status})"
+    )
+    _print_access_url(service, record.name)
+
+
 @pull_app.callback(invoke_without_command=True)
-def pull_callback(ctx: typer.Context) -> None:
-    if ctx.invoked_subcommand is None:
-        _show_help_and_exit(ctx)
+def pull_callback(
+    ctx: typer.Context,
+    service: Annotated[
+        str | None,
+        typer.Option("--service", help=f"Service name ({' | '.join(_KNOWN_SERVICES)}). Unified alternative to the 'clawcu pull <service>' subcommand form."),
+    ] = None,
+    version: Annotated[
+        str | None,
+        typer.Option("--version", help="Service version or git ref."),
+    ] = None,
+) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+    if service:
+        if not version:
+            _exit_with_error("--service requires --version.")
+        _do_pull(service, version)
+        return
+    _show_help_and_exit(ctx)
 
 
 @create_app.callback(invoke_without_command=True)
-def create_callback(ctx: typer.Context) -> None:
-    if ctx.invoked_subcommand is None:
-        _show_help_and_exit(ctx)
+def create_callback(
+    ctx: typer.Context,
+    service: Annotated[
+        str | None,
+        typer.Option("--service", help=f"Service name ({' | '.join(_KNOWN_SERVICES)}). Unified alternative to the 'clawcu create <service>' subcommand form."),
+    ] = None,
+    name: Annotated[str | None, typer.Option("--name", help="Managed instance name.")] = None,
+    version: Annotated[str | None, typer.Option("--version", help="Service version or git ref.")] = None,
+    datadir: Annotated[
+        str | None,
+        typer.Option("--datadir", help="Host data directory. Defaults to ~/.clawcu/{name}."),
+    ] = None,
+    port: Annotated[int | None, typer.Option("--port", help="Host port exposed for the instance.")] = None,
+    cpu: Annotated[str, typer.Option("--cpu", help="Docker CPU limit.")] = "1",
+    memory: Annotated[str, typer.Option("--memory", help="Docker memory limit.")] = "2g",
+) -> None:
+    if ctx.invoked_subcommand is not None:
+        return
+    if service:
+        if not name or not version:
+            _exit_with_error("--service requires --name and --version.")
+        _do_create(
+            service, name=name, version=version, datadir=datadir, port=port, cpu=cpu, memory=memory,
+        )
+        return
+    _show_help_and_exit(ctx)
 
 
 @provider_app.callback(invoke_without_command=True)
@@ -510,14 +627,7 @@ def pull_openclaw(
 ) -> None:
     if not version:
         _show_help_and_exit(ctx)
-    service = get_service()
-    if hasattr(service, "set_reporter"):
-        service.set_reporter(_print_progress)
-    try:
-        image_tag = service.pull_openclaw(version)
-    except Exception as exc:  # pragma: no cover - exercised through tests via error path
-        _exit_with_error(str(exc))
-    console.print(f"[green]Built image:[/green] {image_tag}")
+    _do_pull("openclaw", version)
 
 
 @pull_app.command("hermes")
@@ -527,14 +637,7 @@ def pull_hermes(
 ) -> None:
     if not version:
         _show_help_and_exit(ctx)
-    service = get_service()
-    if hasattr(service, "set_reporter"):
-        service.set_reporter(_print_progress)
-    try:
-        image_tag = service.pull_hermes(version)
-    except Exception as exc:
-        _exit_with_error(str(exc))
-    console.print(f"[green]Built image:[/green] {image_tag}")
+    _do_pull("hermes", version)
 
 
 @create_app.command("openclaw")
@@ -558,24 +661,7 @@ def create_openclaw(
 ) -> None:
     if not name or not version:
         _show_help_and_exit(ctx)
-    service = get_service()
-    if hasattr(service, "set_reporter"):
-        service.set_reporter(_print_progress)
-    try:
-        record = service.create_openclaw(
-            name=name,
-            version=version,
-            datadir=datadir,
-            port=port,
-            cpu=cpu,
-            memory=memory,
-        )
-    except Exception as exc:
-        _exit_with_error(str(exc))
-    console.print(
-        f"[green]Created instance:[/green] {record.name} ({record.version}) on port {record.port} (status: {record.status})"
-    )
-    _print_access_url(service, record.name)
+    _do_create("openclaw", name=name, version=version, datadir=datadir, port=port, cpu=cpu, memory=memory)
 
 
 @create_app.command("hermes")
@@ -599,24 +685,7 @@ def create_hermes(
 ) -> None:
     if not name or not version:
         _show_help_and_exit(ctx)
-    service = get_service()
-    if hasattr(service, "set_reporter"):
-        service.set_reporter(_print_progress)
-    try:
-        record = service.create_hermes(
-            name=name,
-            version=version,
-            datadir=datadir,
-            port=port,
-            cpu=cpu,
-            memory=memory,
-        )
-    except Exception as exc:
-        _exit_with_error(str(exc))
-    console.print(
-        f"[green]Created instance:[/green] {record.name} ({record.version}) on port {record.port} (status: {record.status})"
-    )
-    _print_access_url(service, record.name)
+    _do_create("hermes", name=name, version=version, datadir=datadir, port=port, cpu=cpu, memory=memory)
 
 
 @provider_app.command("collect", help="Collect model configuration assets from managed instances or local agent homes.")
@@ -676,6 +745,18 @@ def list_providers(
         records = get_service().list_providers()
     except Exception as exc:
         _exit_with_error(str(exc))
+    if _json_mode():
+        if not reveal:
+            sanitized: list[dict] = []
+            for record in records:
+                copy = dict(record)
+                raw_key = str(copy.get("api_key") or "")
+                copy["api_key"] = _mask_secret(raw_key) if raw_key else ""
+                sanitized.append(copy)
+            _print_json(sanitized)
+        else:
+            _print_json(records)
+        return
     if not records:
         console.print("No providers found.")
         return
@@ -782,6 +863,9 @@ def list_provider_models(
         models = get_service().list_provider_models(name)
     except Exception as exc:
         _exit_with_error(str(exc))
+    if _json_mode():
+        _print_json({"provider": name, "models": models})
+        return
     if not models:
         console.print("No models configured.")
         return
@@ -815,6 +899,13 @@ def list_instances(
                 records.extend(service.list_instance_summaries(running_only=running))
     except Exception as exc:
         _exit_with_error(str(exc))
+    if _json_mode():
+        if not reveal and not agents:
+            for record in records:
+                if "access_url" in record:
+                    record["access_url"] = _strip_token_fragment(record.get("access_url") or "")
+        _print_json(records)
+        return
     if not records:
         if agents:
             console.print("No agents found.")
@@ -848,11 +939,22 @@ def token_for_instance(
 ) -> None:
     if not name:
         _show_help_and_exit(ctx)
+    service = get_service()
     try:
-        token = get_service().token(name)
+        token = service.token(name)
     except Exception as exc:
         _exit_with_error(str(exc))
+    dashboard_url: str | None = None
+    try:
+        dashboard_url = service.dashboard_url(name)
+    except Exception:
+        dashboard_url = None
+    if _json_mode():
+        _print_json({"name": name, "token": token, "url": dashboard_url})
+        return
     console.print(token)
+    if dashboard_url:
+        console.print(f"[blue]URL:[/blue] {dashboard_url}")
 
 
 @app.command("setenv", help="Set environment variables for a managed instance.")
@@ -911,15 +1013,23 @@ def get_instance_env(
     except Exception as exc:
         _exit_with_error(str(exc))
     values = result.get("values", {})
-    if not isinstance(values, dict) or not values:
-        console.print("No environment variables configured.")
-        return
+    if not isinstance(values, dict):
+        values = {}
+    display_values: dict[str, str] = {}
     masked_any = False
     for key in sorted(values):
         raw = str(values[key])
         displayed = _mask_env_value(key, raw, reveal=reveal)
         if displayed != raw:
             masked_any = True
+        display_values[key] = displayed
+    if _json_mode():
+        _print_json({"instance": name, "path": result.get("path"), "values": display_values, "masked": masked_any and not reveal})
+        return
+    if not display_values:
+        console.print("No environment variables configured.")
+        return
+    for key, displayed in display_values.items():
         console.print(f"{key}={displayed}")
     if masked_any and not reveal:
         console.print("[dim](sensitive values masked; re-run with --reveal to show)[/dim]")
@@ -1125,18 +1235,30 @@ def restart_instance(
     _print_access_url(service, record.name)
 
 
-@app.command("retry", help="Retry creating an instance that is in create_failed status.")
-def retry_instance(
-    ctx: typer.Context,
-    name: Annotated[str | None, typer.Argument(help="Failed instance name to retry.")] = None,
-) -> None:
-    if not name:
-        _show_help_and_exit(ctx)
-    service = get_service()
-    if hasattr(service, "set_reporter"):
-        service.set_reporter(_print_progress)
+def _do_recreate(service: ClawCUService, name: str) -> None:
+    """Unified recreate logic.
+
+    Tries retry_instance first (cheap auto-port recovery path for
+    create_failed records); if the service rejects it with a
+    ValueError ("Only create_failed ..."), falls back to the regular
+    recreate_instance flow. Prints the appropriate verb based on which
+    path succeeded.
+    """
     try:
         record = service.retry_instance(name)
+    except ValueError as exc:
+        message = str(exc)
+        if "create_failed" not in message:
+            _exit_with_error(message)
+        try:
+            record = service.recreate_instance(name)
+        except Exception as exc2:
+            _exit_with_error(str(exc2))
+        console.print(
+            f"[green]Recreated instance:[/green] {record.name} ({record.version}) on port {record.port} (status: {record.status})"
+        )
+        _print_access_url(service, record.name)
+        return
     except Exception as exc:
         _exit_with_error(str(exc))
     console.print(
@@ -1145,7 +1267,30 @@ def retry_instance(
     _print_access_url(service, record.name)
 
 
-@app.command("recreate", help="Recreate an existing instance with its saved configuration.")
+@app.command(
+    "retry",
+    help="[Deprecated] Alias of `clawcu recreate`. Prefer `clawcu recreate`, which auto-detects create_failed state.",
+)
+def retry_instance(
+    ctx: typer.Context,
+    name: Annotated[str | None, typer.Argument(help="Failed instance name to retry.")] = None,
+) -> None:
+    if not name:
+        _show_help_and_exit(ctx)
+    console.print(
+        "[yellow]Deprecation:[/yellow] `clawcu retry` is deprecated. "
+        "Use `clawcu recreate` instead — it auto-detects create_failed instances."
+    )
+    service = get_service()
+    if hasattr(service, "set_reporter"):
+        service.set_reporter(_print_progress)
+    _do_recreate(service, name)
+
+
+@app.command(
+    "recreate",
+    help="Recreate an existing instance. Auto-retries instances in create_failed status.",
+)
 def recreate_instance(
     ctx: typer.Context,
     name: Annotated[str | None, typer.Argument(help="Instance to recreate.")] = None,
@@ -1155,14 +1300,7 @@ def recreate_instance(
     service = get_service()
     if hasattr(service, "set_reporter"):
         service.set_reporter(_print_progress)
-    try:
-        record = service.recreate_instance(name)
-    except Exception as exc:
-        _exit_with_error(str(exc))
-    console.print(
-        f"[green]Recreated instance:[/green] {record.name} ({record.version}) on port {record.port} (status: {record.status})"
-    )
-    _print_access_url(service, record.name)
+    _do_recreate(service, name)
 
 
 @app.command(
@@ -1244,11 +1382,37 @@ def logs_instance(
     ctx: typer.Context,
     name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
     follow: Annotated[bool, typer.Option("--follow", help="Follow the Docker log stream.")] = False,
+    tail: Annotated[
+        int,
+        typer.Option(
+            "--tail",
+            help=(
+                "Number of trailing lines to print. Defaults to 200; pass 0 (or a negative value) "
+                "to stream the full log history."
+            ),
+        ),
+    ] = 200,
+    since: Annotated[
+        str | None,
+        typer.Option(
+            "--since",
+            help=(
+                "Only show logs more recent than this relative duration (e.g. 10m, 1h) or "
+                "RFC3339 timestamp. Passed through to `docker logs --since`."
+            ),
+        ),
+    ] = None,
 ) -> None:
     if not name:
         _show_help_and_exit(ctx)
+    effective_tail: int | None = tail if tail > 0 else None
     try:
-        get_service().stream_logs(name, follow=follow)
+        service = get_service()
+        try:
+            service.stream_logs(name, follow=follow, tail=effective_tail, since=since)
+        except TypeError:
+            # Support older ClawCUService builds that don't accept tail/since.
+            service.stream_logs(name, follow=follow)
     except Exception as exc:
         _exit_with_error(str(exc))
 
