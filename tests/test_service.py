@@ -2174,6 +2174,124 @@ def test_start_instance_recreates_when_container_env_is_stale(temp_clawcu_home, 
     assert service.openclaw.versions == ["2026.4.1"]
 
 
+def test_restart_instance_default_uses_docker_restart(temp_clawcu_home, tmp_path) -> None:
+    service, docker, _, _ = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=18789,
+        cpu="1",
+        memory="2g",
+    )
+
+    service.restart_instance("writer")
+
+    # Plain restart: docker restart is issued and no extra run/rm happens.
+    assert ("restart", "clawcu-openclaw-writer") in docker.commands
+    assert docker.commands.count(("run", "clawcu-openclaw-writer")) == 1
+    assert ("rm", "clawcu-openclaw-writer") not in docker.commands
+
+
+def test_restart_instance_recreate_if_config_changed_promotes_on_env_drift(
+    temp_clawcu_home, tmp_path
+) -> None:
+    service, docker, _, store = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=18789,
+        cpu="1",
+        memory="2g",
+    )
+    # Simulate `clawcu setenv` without --apply: env file has a new key
+    # that the live container was never started with.
+    store.instance_env_path("writer").write_text(
+        "OPENAI_API_KEY=sk-managed\n", encoding="utf-8"
+    )
+
+    original_inspect = docker.inspect_container
+
+    def inspect_with_stale_env(container_name: str):
+        payload = original_inspect(container_name)
+        if payload is None:
+            return None
+        payload["Config"] = {"Env": []}
+        return payload
+
+    docker.inspect_container = inspect_with_stale_env  # type: ignore[method-assign]
+
+    restarted = service.restart_instance("writer", recreate_if_config_changed=True)
+
+    assert restarted.status == "running"
+    # Promotion path: we should have gone through rm + re-run, not docker restart.
+    assert ("restart", "clawcu-openclaw-writer") not in docker.commands
+    assert ("rm", "clawcu-openclaw-writer") in docker.commands
+    assert docker.commands.count(("run", "clawcu-openclaw-writer")) == 2
+
+
+def test_restart_instance_recreate_if_config_changed_no_drift_stays_fast(
+    temp_clawcu_home, tmp_path
+) -> None:
+    service, docker, _, _ = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=18789,
+        cpu="1",
+        memory="2g",
+    )
+
+    # No env file, no drift — the flag should be a no-op and we should
+    # take the cheap docker-restart path.
+    service.restart_instance("writer", recreate_if_config_changed=True)
+
+    assert ("restart", "clawcu-openclaw-writer") in docker.commands
+    assert ("rm", "clawcu-openclaw-writer") not in docker.commands
+    assert docker.commands.count(("run", "clawcu-openclaw-writer")) == 1
+
+
+def test_restart_instance_recreate_if_config_changed_handles_missing_container(
+    temp_clawcu_home, tmp_path
+) -> None:
+    service, docker, _, _ = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=18789,
+        cpu="1",
+        memory="2g",
+    )
+    docker.remove_container("clawcu-openclaw-writer")
+
+    restarted = service.restart_instance("writer", recreate_if_config_changed=True)
+
+    assert restarted.status == "running"
+    # No plain `docker restart` against a missing container; we must
+    # have re-run from scratch.
+    assert ("restart", "clawcu-openclaw-writer") not in docker.commands
+    assert docker.commands.count(("run", "clawcu-openclaw-writer")) == 2
+
+
+def test_stop_instance_passes_timeout_to_docker(temp_clawcu_home, tmp_path) -> None:
+    service, docker, _, _ = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=18789,
+        cpu="1",
+        memory="2g",
+    )
+
+    service.stop_instance("writer", timeout=42)
+
+    assert ("stop", "clawcu-openclaw-writer", 42) in docker.commands
+
+
 def test_start_instance_recreates_when_container_is_missing(temp_clawcu_home, tmp_path) -> None:
     service, docker, _, store = make_service(temp_clawcu_home)
     service.create_openclaw(

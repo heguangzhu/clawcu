@@ -884,14 +884,33 @@ class ClawCUService:
         self.store.append_log(f"start instance name={record.name}")
         return self._persist_live_status(record)
 
-    def stop_instance(self, name: str) -> InstanceRecord:
+    def stop_instance(self, name: str, *, timeout: int | None = None) -> InstanceRecord:
         record = self.store.load_record(name)
-        self.docker.stop_container(record.container_name)
-        self.store.append_log(f"stop instance name={record.name}")
+        self.docker.stop_container(record.container_name, timeout=timeout)
+        suffix = f" timeout={timeout}" if timeout is not None else ""
+        self.store.append_log(f"stop instance name={record.name}{suffix}")
         return self._persist_live_status(record)
 
-    def restart_instance(self, name: str) -> InstanceRecord:
+    def restart_instance(
+        self,
+        name: str,
+        *,
+        recreate_if_config_changed: bool = False,
+    ) -> InstanceRecord:
         record = self.store.load_record(name)
+        if recreate_if_config_changed:
+            adapter = self.adapter_for_record(record)
+            inspection = self.docker.inspect_container(record.container_name)
+            if inspection is None:
+                self.reporter(
+                    f"Instance '{record.name}' has no live container; promoting restart to recreate."
+                )
+                return self.recreate_instance(name, prepare_artifact=False)
+            if not adapter.container_env_matches(self, record, inspection):
+                self.reporter(
+                    f"Detected env drift for instance '{record.name}'; promoting restart to recreate so the new env file takes effect."
+                )
+                return self.recreate_instance(name, prepare_artifact=False)
         self.docker.restart_container(record.container_name)
         self.store.append_log(f"restart instance name={record.name}")
         return self._persist_live_status(record)

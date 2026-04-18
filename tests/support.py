@@ -78,8 +78,11 @@ class FakeDockerManager:
             raise RuntimeError("port is already allocated")
         self.status_map[container_name] = "running"
 
-    def stop_container(self, container_name: str) -> None:
-        self.commands.append(("stop", container_name))
+    def stop_container(self, container_name: str, *, timeout: int | None = None) -> None:
+        if timeout is None:
+            self.commands.append(("stop", container_name))
+        else:
+            self.commands.append(("stop", container_name, timeout))
         self.status_map[container_name] = "exited"
 
     def restart_container(self, container_name: str) -> None:

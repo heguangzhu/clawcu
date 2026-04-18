@@ -423,12 +423,21 @@ class FakeService:
         self._record("start_instance", name=name)
         return self._instance(name=name)
 
-    def stop_instance(self, name: str) -> InstanceRecord:
-        self._record("stop_instance", name=name)
+    def stop_instance(self, name: str, *, timeout: int | None = None) -> InstanceRecord:
+        self._record("stop_instance", name=name, timeout=timeout)
         return self._instance(name=name)
 
-    def restart_instance(self, name: str) -> InstanceRecord:
-        self._record("restart_instance", name=name)
+    def restart_instance(
+        self,
+        name: str,
+        *,
+        recreate_if_config_changed: bool = False,
+    ) -> InstanceRecord:
+        self._record(
+            "restart_instance",
+            name=name,
+            recreate_if_config_changed=recreate_if_config_changed,
+        )
         return self._instance(name=name)
 
     def retry_instance(self, name: str) -> InstanceRecord:
@@ -2058,19 +2067,71 @@ def test_lifecycle_commands_accept_instance_name(monkeypatch) -> None:
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
 
     cases = [
-        (["start", "writer"], "start_instance"),
-        (["stop", "writer"], "stop_instance"),
-        (["restart", "writer"], "restart_instance"),
-        (["rollback", "writer", "--yes"], "rollback_instance"),
+        (["start", "writer"], "start_instance", {"name": "writer"}),
+        (["stop", "writer"], "stop_instance", {"name": "writer", "timeout": None}),
+        (
+            ["restart", "writer"],
+            "restart_instance",
+            {"name": "writer", "recreate_if_config_changed": False},
+        ),
+        (["rollback", "writer", "--yes"], "rollback_instance", {"name": "writer"}),
     ]
 
-    for argv, expected_call in cases:
+    for argv, expected_call, expected_kwargs in cases:
         service.calls.clear()
         result = runner.invoke(app, argv)
         assert result.exit_code == 0
-        assert service.calls[0] == (expected_call, (), {"name": "writer"})
+        assert service.calls[0] == (expected_call, (), expected_kwargs)
         if expected_call in {"start_instance", "restart_instance", "rollback_instance"}:
             assert service.calls[-1] == ("dashboard_url", (), {"name": "writer"})
+
+
+def test_stop_command_passes_time_to_service(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["stop", "writer", "--time", "60"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Stopped instance:" in result.stdout
+    assert "grace 60s" in result.stdout
+    assert service.calls[0] == ("stop_instance", (), {"name": "writer", "timeout": 60})
+
+
+def test_stop_command_short_flag_t_is_accepted(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["stop", "writer", "-t", "15"])
+
+    assert result.exit_code == 0, result.stdout
+    assert service.calls[0] == ("stop_instance", (), {"name": "writer", "timeout": 15})
+
+
+def test_stop_command_rejects_negative_time(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["stop", "writer", "--time", "-1"])
+
+    assert result.exit_code != 0
+    assert not any(call[0] == "stop_instance" for call in service.calls)
+
+
+def test_restart_command_recreate_if_config_changed_flag(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app, ["restart", "writer", "--recreate-if-config-changed"]
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert service.calls[0] == (
+        "restart_instance",
+        (),
+        {"name": "writer", "recreate_if_config_changed": True},
+    )
 
 
 def test_upgrade_command_accepts_version_option(monkeypatch) -> None:

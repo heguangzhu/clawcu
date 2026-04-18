@@ -267,6 +267,29 @@ def test_stop_and_restart_container_use_short_timeout() -> None:
     assert restart_options["timeout_seconds"] == DockerManager.RESTART_TIMEOUT_SECONDS
 
 
+def test_stop_container_honors_custom_timeout() -> None:
+    runner = RecordingRunner()
+    manager = DockerManager(runner=runner)
+
+    manager.stop_container("clawcu-openclaw-writer", timeout=60)
+
+    command, _, options = runner.calls[0]
+    assert command == ["docker", "stop", "--time", "60", "clawcu-openclaw-writer"]
+    # The outer process budget must cover the grace window + overhead,
+    # not just the short STOP_TIMEOUT_SECONDS default.
+    assert options["timeout_seconds"] >= 60 + 10
+
+
+def test_stop_container_timeout_zero_is_allowed() -> None:
+    runner = RecordingRunner()
+    manager = DockerManager(runner=runner)
+
+    manager.stop_container("clawcu-openclaw-writer", timeout=0)
+
+    command, _, _ = runner.calls[0]
+    assert command == ["docker", "stop", "--time", "0", "clawcu-openclaw-writer"]
+
+
 def test_stop_container_ignores_missing_container() -> None:
     def runner(command: list[str], **_kwargs):
         raise CommandError(command, 1, "", "Error response from daemon: No such container: clawcu-openclaw-writer")

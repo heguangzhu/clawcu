@@ -161,11 +161,24 @@ class DockerManager:
             timeout_seconds=self.START_TIMEOUT_SECONDS,
         )
 
-    def stop_container(self, container_name: str) -> None:
+    def stop_container(self, container_name: str, *, timeout: int | None = None) -> None:
+        """Stop a container.
+
+        ``timeout`` is the grace period in seconds passed to ``docker stop
+        --time``. When ``None``, uses the short default (5s) tuned for
+        quick managed-instance cycling. Longer values give a running
+        OpenClaw/Hermes task time to finish its in-flight work before
+        SIGKILL fires.
+        """
+        grace_seconds = 5 if timeout is None else max(0, int(timeout))
+        # The outer process timeout must cover the grace window plus
+        # docker's own overhead, otherwise a well-behaved --time 60 gets
+        # killed externally at our STOP_TIMEOUT_SECONDS budget.
+        process_timeout = max(self.STOP_TIMEOUT_SECONDS, grace_seconds + 10)
         try:
             self.runner(
-                ["docker", "stop", "--time", "5", container_name],
-                timeout_seconds=self.STOP_TIMEOUT_SECONDS,
+                ["docker", "stop", "--time", str(grace_seconds), container_name],
+                timeout_seconds=process_timeout,
             )
         except CommandError as exc:
             details = f"{exc.stderr}\n{exc.stdout}".lower()

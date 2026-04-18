@@ -1740,26 +1740,56 @@ def start_instance(
 def stop_instance(
     ctx: typer.Context,
     name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
+    time: Annotated[
+        int | None,
+        typer.Option(
+            "--time",
+            "-t",
+            help=(
+                "Graceful shutdown window in seconds (passed to `docker stop --time`). "
+                "Default is 5s; raise it to let long OpenClaw/Hermes tasks finish before SIGKILL."
+            ),
+            min=0,
+        ),
+    ] = None,
 ) -> None:
     if not name:
         _show_help_and_exit(ctx)
     try:
-        record = get_service().stop_instance(name)
+        record = get_service().stop_instance(name, timeout=time)
     except Exception as exc:
         _exit_with_error(str(exc))
-    console.print(f"[yellow]Stopped instance:[/yellow] {record.name}")
+    suffix = f" (grace {time}s)" if time is not None else ""
+    console.print(f"[yellow]Stopped instance:[/yellow] {record.name}{suffix}")
 
 
 @app.command("restart", help="Restart a managed instance.")
 def restart_instance(
     ctx: typer.Context,
     name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
+    recreate_if_config_changed: Annotated[
+        bool,
+        typer.Option(
+            "--recreate-if-config-changed",
+            help=(
+                "If the container's env/config has drifted from the saved record "
+                "(e.g. after `clawcu setenv` without `--apply`), transparently "
+                "run `recreate` instead of a plain `docker restart` so the new "
+                "env file takes effect."
+            ),
+        ),
+    ] = False,
 ) -> None:
     if not name:
         _show_help_and_exit(ctx)
     service = get_service()
+    if recreate_if_config_changed and hasattr(service, "set_reporter"):
+        service.set_reporter(_print_progress)
     try:
-        record = service.restart_instance(name)
+        record = service.restart_instance(
+            name,
+            recreate_if_config_changed=recreate_if_config_changed,
+        )
     except Exception as exc:
         _exit_with_error(str(exc))
     console.print(f"[green]Restarted instance:[/green] {record.name}")
