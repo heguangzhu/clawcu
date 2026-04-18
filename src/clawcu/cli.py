@@ -98,6 +98,52 @@ def _mask_secret(value: str) -> str:
     return f"{value[:6]}...{value[-4:]}"
 
 
+_SENSITIVE_ENV_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL")
+
+
+def _is_sensitive_env_key(key: str) -> bool:
+    upper = key.upper()
+    return any(marker in upper for marker in _SENSITIVE_ENV_MARKERS)
+
+
+def _mask_env_value(key: str, value: str, *, reveal: bool) -> str:
+    if reveal:
+        return value
+    if not _is_sensitive_env_key(key):
+        return value
+    return _mask_secret(value) if value else value
+
+
+def _strip_token_fragment(url: str) -> str:
+    if not url or "#" not in url:
+        return url
+    base, _, fragment = url.partition("#")
+    if "token=" in fragment.lower():
+        return base
+    return url
+
+
+def _confirm_destructive(summary: str, yes: bool) -> None:
+    """Prompt for confirmation before a destructive action.
+
+    If ``yes`` is True, skip the prompt. If stdin is not a TTY and
+    ``yes`` is not set, abort with a clear error — refusing to silently
+    proceed in non-interactive contexts.
+    """
+    if yes:
+        return
+    if not _is_interactive_stdin():
+        _exit_with_error(
+            f"{summary}\n"
+            "Refusing destructive action in non-interactive shell. "
+            "Re-run with --yes to confirm."
+        )
+    console.print(f"[yellow]{summary}[/yellow]")
+    if not typer.confirm("Proceed?", default=False):
+        console.print("Aborted.")
+        raise typer.Exit(code=1)
+
+
 def _display_version(value: str) -> str:
     raw = str(value or "").strip()
     if not raw:
@@ -108,7 +154,9 @@ def _display_version(value: str) -> str:
     return raw
 
 
-def _redact_provider_payload(value):
+def _redact_provider_payload(value, *, reveal: bool = False):
+    if reveal:
+        return value
     if isinstance(value, str):
         if "\n" in value and any(marker in value for marker in ("_KEY=", "_TOKEN=", "_SECRET=")):
             redacted_lines: list[str] = []
@@ -117,8 +165,7 @@ def _redact_provider_payload(value):
                     redacted_lines.append(raw_line)
                     continue
                 key, item = raw_line.split("=", 1)
-                upper_key = key.strip().upper()
-                if any(token in upper_key for token in ("KEY", "TOKEN", "SECRET")):
+                if _is_sensitive_env_key(key.strip()):
                     redacted_lines.append(f"{key}={_mask_secret(item)}")
                 else:
                     redacted_lines.append(raw_line)
@@ -130,10 +177,10 @@ def _redact_provider_payload(value):
             if key in {"apiKey", "key"} and isinstance(item, str):
                 redacted[key] = _mask_secret(item)
             else:
-                redacted[key] = _redact_provider_payload(item)
+                redacted[key] = _redact_provider_payload(item, reveal=reveal)
         return redacted
     if isinstance(value, list):
-        return [_redact_provider_payload(item) for item in value]
+        return [_redact_provider_payload(item, reveal=reveal) for item in value]
     return value
 
 
@@ -145,33 +192,42 @@ def _print_access_url(service: ClawCUService, name: str) -> None:
     console.print(f"[blue]Open URL:[/blue] {url}")
 
 
-def _print_instance_table(records: list[dict]) -> None:
+def _print_instance_table(records: list[dict], *, wide: bool = False, reveal: bool = False) -> None:
     table = Table(title="ClawCU Instances")
-    table.add_column("SOURCE", no_wrap=True)
+    if wide:
+        table.add_column("SOURCE", no_wrap=True)
     table.add_column("SERVICE", no_wrap=True)
     table.add_column("NAME", no_wrap=True)
-    table.add_column("HOME", overflow="fold")
+    if wide:
+        table.add_column("HOME", overflow="fold")
     table.add_column("VERSION", no_wrap=True)
     table.add_column("PORT", no_wrap=True)
     table.add_column("STATUS", no_wrap=True)
     table.add_column("ACCESS", overflow="fold")
-    table.add_column("PROVIDERS", overflow="fold")
-    table.add_column("MODELS", overflow="fold")
-    table.add_column("SNAPSHOT", overflow="fold")
+    if wide:
+        table.add_column("PROVIDERS", overflow="fold")
+        table.add_column("MODELS", overflow="fold")
+        table.add_column("SNAPSHOT", overflow="fold")
     for record in records:
-        table.add_row(
-            record.get("source", "-"),
-            record.get("service", "-"),
-            record["name"],
-            record.get("home", "-"),
-            _display_version(record["version"]),
-            str(record["port"]),
-            record["status"],
-            record.get("access_url", "-"),
-            record.get("providers", "-"),
-            record.get("models", "-"),
-            record.get("snapshot", "-"),
-        )
+        access_url = record.get("access_url", "-")
+        if not reveal:
+            access_url = _strip_token_fragment(access_url)
+        row: list[str] = []
+        if wide:
+            row.append(record.get("source", "-"))
+        row.append(record.get("service", "-"))
+        row.append(record["name"])
+        if wide:
+            row.append(record.get("home", "-"))
+        row.append(_display_version(record["version"]))
+        row.append(str(record["port"]))
+        row.append(record["status"])
+        row.append(access_url)
+        if wide:
+            row.append(record.get("providers", "-"))
+            row.append(record.get("models", "-"))
+            row.append(record.get("snapshot", "-"))
+        table.add_row(*row)
     console.print(table)
 
 
@@ -197,20 +253,41 @@ def _print_agent_table(records: list[dict]) -> None:
     console.print(table)
 
 
-def _print_provider_table(records: list[dict]) -> None:
+def _print_provider_table(records: list[dict], *, wide: bool = False, reveal: bool = False) -> None:
     table = Table(title="ClawCU Providers")
-    for column in ("SERVICE", "NAME", "PROVIDER", "API_STYLE", "API_KEY", "ENDPOINT", "MODELS"):
-        table.add_column(column)
+    table.add_column("SERVICE", no_wrap=True)
+    table.add_column("NAME", no_wrap=True)
+    if wide:
+        table.add_column("PROVIDER", no_wrap=True)
+    table.add_column("API_STYLE", no_wrap=True)
+    table.add_column("API_KEY", no_wrap=True)
+    if wide:
+        table.add_column("ENDPOINT", overflow="fold")
+    table.add_column("MODELS", overflow="fold")
     for record in records:
-        table.add_row(
-            record.get("service", "-"),
-            record["name"],
-            record.get("provider") or "-",
-            record["api_style"],
-            _mask_secret(str(record.get("api_key") or "")) or "-",
-            record.get("endpoint") or "-",
-            ", ".join(record.get("models", [])) or "-",
-        )
+        raw_key = str(record.get("api_key") or "")
+        if reveal:
+            key_cell = raw_key or "-"
+        elif raw_key:
+            key_cell = "[green]set[/green]" if not wide else (_mask_secret(raw_key) or "-")
+        else:
+            key_cell = "[dim]unset[/dim]"
+        models = record.get("models") or []
+        if wide:
+            models_cell = ", ".join(models) or "-"
+        else:
+            models_cell = f"{len(models)} models" if models else "-"
+        row: list[str] = []
+        row.append(record.get("service", "-"))
+        row.append(record["name"])
+        if wide:
+            row.append(record.get("provider") or "-")
+        row.append(record["api_style"])
+        row.append(key_cell)
+        if wide:
+            row.append(record.get("endpoint") or "-")
+        row.append(models_cell)
+        table.add_row(*row)
     console.print(table)
 
 
@@ -591,7 +668,10 @@ def collect_providers(
 
 
 @provider_app.command("list", help="List all collected provider assets.")
-def list_providers() -> None:
+def list_providers(
+    wide: Annotated[bool, typer.Option("--wide", help="Show all columns (PROVIDER, ENDPOINT, full model list).")] = False,
+    reveal: Annotated[bool, typer.Option("--reveal", help="Show full API keys. Off by default for safety.")] = False,
+) -> None:
     try:
         records = get_service().list_providers()
     except Exception as exc:
@@ -599,13 +679,14 @@ def list_providers() -> None:
     if not records:
         console.print("No providers found.")
         return
-    _print_provider_table(records)
+    _print_provider_table(records, wide=wide, reveal=reveal)
 
 
 @provider_app.command("show", help="Show the collected auth-profiles.json and models.json for a provider.")
 def show_provider(
     ctx: typer.Context,
     name: Annotated[str | None, typer.Argument(help="Provider name.")] = None,
+    reveal: Annotated[bool, typer.Option("--reveal", help="Show unmasked secrets. Off by default for safety.")] = False,
 ) -> None:
     if not name:
         _show_help_and_exit(ctx)
@@ -613,7 +694,7 @@ def show_provider(
         payload = get_service().show_provider(name)
     except Exception as exc:
         _exit_with_error(str(exc))
-    console.print_json(json.dumps(_redact_provider_payload(payload), ensure_ascii=False))
+    console.print_json(json.dumps(_redact_provider_payload(payload, reveal=reveal), ensure_ascii=False))
 
 
 @provider_app.command("apply", help="Apply a collected provider to a managed instance agent.")
@@ -675,9 +756,14 @@ def apply_provider(
 def remove_provider(
     ctx: typer.Context,
     name: Annotated[str | None, typer.Argument(help="Provider name.")] = None,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip the confirmation prompt.")] = False,
 ) -> None:
     if not name:
         _show_help_and_exit(ctx)
+    _confirm_destructive(
+        f"About to delete collected provider '{name}'. Its auth-profiles.json and models.json will be removed.",
+        yes,
+    )
     try:
         get_service().remove_provider(name)
     except Exception as exc:
@@ -708,6 +794,8 @@ def list_instances(
     local: Annotated[bool, typer.Option("--local", help="Show the local ~/.openclaw overview.")] = False,
     managed: Annotated[bool, typer.Option("--managed", help="Show ClawCU-managed instances instead of ~/.openclaw.")] = False,
     all_sources: Annotated[bool, typer.Option("--all", help="Show both local ~/.openclaw and ClawCU-managed entries.")] = False,
+    wide: Annotated[bool, typer.Option("--wide", help="Show all columns (SOURCE, HOME, PROVIDERS, MODELS, SNAPSHOT).")] = False,
+    reveal: Annotated[bool, typer.Option("--reveal", help="Show full dashboard tokens inside ACCESS URLs. Off by default for safety.")] = False,
 ) -> None:
     try:
         service = get_service()
@@ -736,7 +824,7 @@ def list_instances(
     if agents:
         _print_agent_table(records)
     else:
-        _print_instance_table(records)
+        _print_instance_table(records, wide=wide, reveal=reveal)
 
 
 @app.command("inspect", help="Show detailed state for a managed instance.")
@@ -811,6 +899,10 @@ def set_instance_env(
 def get_instance_env(
     ctx: typer.Context,
     name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
+    reveal: Annotated[
+        bool,
+        typer.Option("--reveal", help="Show unmasked values for KEY/TOKEN/SECRET/PASSWORD entries. Off by default."),
+    ] = False,
 ) -> None:
     if not name:
         _show_help_and_exit(ctx)
@@ -822,8 +914,15 @@ def get_instance_env(
     if not isinstance(values, dict) or not values:
         console.print("No environment variables configured.")
         return
+    masked_any = False
     for key in sorted(values):
-        console.print(f"{key}={values[key]}")
+        raw = str(values[key])
+        displayed = _mask_env_value(key, raw, reveal=reveal)
+        if displayed != raw:
+            masked_any = True
+        console.print(f"{key}={displayed}")
+    if masked_any and not reveal:
+        console.print("[dim](sensitive values masked; re-run with --reveal to show)[/dim]")
 
 
 @app.command("unsetenv", help="Remove environment variables configured for a managed instance.")
@@ -1095,9 +1194,14 @@ def upgrade_instance(
 def rollback_instance(
     ctx: typer.Context,
     name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip the confirmation prompt.")] = False,
 ) -> None:
     if not name:
         _show_help_and_exit(ctx)
+    _confirm_destructive(
+        f"About to roll back instance '{name}'. The current data directory will be replaced by the previous snapshot.",
+        yes,
+    )
     service = get_service()
     if hasattr(service, "set_reporter"):
         service.set_reporter(_print_progress)
@@ -1160,9 +1264,16 @@ def remove_instance(
             help="Delete or preserve the instance data directory.",
         ),
     ] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip the confirmation prompt.")] = False,
 ) -> None:
     if not name:
         _show_help_and_exit(ctx)
+    summary = (
+        f"About to remove instance '{name}' and delete its data directory."
+        if delete_data
+        else f"About to remove instance '{name}' (data directory will be kept)."
+    )
+    _confirm_destructive(summary, yes)
     try:
         get_service().remove_instance(name, delete_data=delete_data)
     except Exception as exc:

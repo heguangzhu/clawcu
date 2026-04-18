@@ -3,12 +3,23 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from rich.console import Console
 from typer.testing import CliRunner
 
 from clawcu.cli import _display_version, app
 from clawcu.models import InstanceRecord
 
 runner = CliRunner()
+
+
+def _make_wide_console() -> Console:
+    """Build a Rich console that always renders at a wide terminal width.
+
+    CliRunner runs without a real TTY; Rich's auto-detected width defaults to
+    a narrow value that truncates column headers. Tests that assert on full
+    headers monkeypatch ``clawcu.cli.console`` with this instead.
+    """
+    return Console(width=200, force_terminal=False, no_color=True)
 
 
 def test_display_version_prefers_release_date_format() -> None:
@@ -1064,9 +1075,24 @@ def test_getenv_command_lists_instance_environment(monkeypatch) -> None:
     result = runner.invoke(app, ["getenv", "writer"])
 
     assert result.exit_code == 0
+    # Sensitive keys must be masked by default
+    assert "OPENAI_API_KEY=sk-test\n" not in result.stdout
+    assert "OPENAI_API_KEY=" in result.stdout
+    # Non-sensitive values stay readable
+    assert "OPENAI_BASE_URL=https://api.example.com/v1" in result.stdout
+    assert "--reveal" in result.stdout
+    assert service.calls[0] == ("get_instance_env", (), {"name": "writer"})
+
+
+def test_getenv_command_reveal_shows_raw_values(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["getenv", "writer", "--reveal"])
+
+    assert result.exit_code == 0
     assert "OPENAI_API_KEY=sk-test" in result.stdout
     assert "OPENAI_BASE_URL=https://api.example.com/v1" in result.stdout
-    assert service.calls[0] == ("get_instance_env", (), {"name": "writer"})
 
 
 def test_unsetenv_command_removes_instance_environment(monkeypatch) -> None:
@@ -1111,8 +1137,36 @@ def test_provider_list_command_shows_providers(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "openai" in result.stdout
     assert "API_KEY" in result.stdout
-    assert "sk-tes" in result.stdout
+    # Narrow default: key column shows status only, never any key bytes
+    assert "set" in result.stdout
+    assert "sk-tes" not in result.stdout
+    assert "sk-test-1234567890" not in result.stdout
     assert service.calls[0] == ("list_providers", (), {})
+
+
+def test_provider_list_wide_masks_key_by_default(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+    # Force Rich to render at a width wide enough to keep column headers
+    monkeypatch.setattr("clawcu.cli.console", _make_wide_console())
+
+    result = runner.invoke(app, ["provider", "list", "--wide"])
+
+    assert result.exit_code == 0
+    # --wide adds PROVIDER and ENDPOINT columns, API key still masked
+    assert "ENDPOINT" in result.stdout
+    assert "sk-tes" in result.stdout  # masked form starts with first 6 chars
+    assert "sk-test-1234567890" not in result.stdout  # full key not shown
+
+
+def test_provider_list_reveal_shows_full_key(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["provider", "list", "--wide", "--reveal"])
+
+    assert result.exit_code == 0
+    assert "sk-test-1234567890" in result.stdout
 
 
 def test_provider_show_command_returns_json(monkeypatch) -> None:
@@ -1217,11 +1271,23 @@ def test_provider_remove_command_forwards_name(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
 
-    result = runner.invoke(app, ["provider", "remove", "openai-main"])
+    result = runner.invoke(app, ["provider", "remove", "openai-main", "--yes"])
 
     assert result.exit_code == 0
     assert "Removed provider:" in result.stdout
     assert service.calls[0] == ("remove_provider", (), {"name": "openai-main"})
+
+
+def test_provider_remove_requires_confirmation_in_non_interactive(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["provider", "remove", "openai-main"])
+
+    assert result.exit_code == 1
+    assert "--yes" in result.stdout
+    # Service call MUST NOT happen without confirmation
+    assert all(call[0] != "remove_provider" for call in service.calls)
 
 
 def test_provider_models_list_command_forwards_arguments(monkeypatch) -> None:
@@ -1539,7 +1605,7 @@ def test_lifecycle_commands_accept_instance_name(monkeypatch) -> None:
         (["start", "writer"], "start_instance"),
         (["stop", "writer"], "stop_instance"),
         (["restart", "writer"], "restart_instance"),
-        (["rollback", "writer"], "rollback_instance"),
+        (["rollback", "writer", "--yes"], "rollback_instance"),
     ]
 
     for argv, expected_call in cases:
@@ -1572,13 +1638,24 @@ def test_rollback_command_prints_progress(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
 
-    result = runner.invoke(app, ["rollback", "writer"])
+    result = runner.invoke(app, ["rollback", "writer", "--yes"])
 
     assert result.exit_code == 0
     assert "Step 1/4: Preparing to roll back" in result.stdout
     assert "Step 4/4: Starting OpenClaw" in result.stdout
     assert service.calls[-2] == ("rollback_instance", (), {"name": "writer"})
     assert service.calls[-1] == ("dashboard_url", (), {"name": "writer"})
+
+
+def test_rollback_command_requires_confirmation_in_non_interactive(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["rollback", "writer"])
+
+    assert result.exit_code == 1
+    assert "--yes" in result.stdout
+    assert all(call[0] != "rollback_instance" for call in service.calls)
 
 
 def test_clone_command_accepts_required_options(monkeypatch) -> None:
@@ -1633,8 +1710,8 @@ def test_remove_delete_data_and_keep_data_flags(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
 
-    delete_result = runner.invoke(app, ["remove", "writer", "--delete-data"])
-    keep_result = runner.invoke(app, ["remove", "writer", "--keep-data"])
+    delete_result = runner.invoke(app, ["remove", "writer", "--delete-data", "--yes"])
+    keep_result = runner.invoke(app, ["remove", "writer", "--keep-data", "--yes"])
 
     assert delete_result.exit_code == 0
     assert keep_result.exit_code == 0
@@ -1648,3 +1725,14 @@ def test_remove_delete_data_and_keep_data_flags(monkeypatch) -> None:
         (),
         {"name": "writer", "delete_data": False},
     )
+
+
+def test_remove_requires_confirmation_in_non_interactive(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["remove", "writer", "--delete-data"])
+
+    assert result.exit_code == 1
+    assert "--yes" in result.stdout
+    assert all(call[0] != "remove_instance" for call in service.calls)
