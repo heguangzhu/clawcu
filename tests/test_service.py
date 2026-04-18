@@ -3292,6 +3292,115 @@ def test_create_hermes_retries_dashboard_port_with_api_port(temp_clawcu_home, tm
     ]
 
 
+def test_clone_instance_with_version_override_switches_version(
+    temp_clawcu_home, tmp_path
+) -> None:
+    # Explicit --version at clone time lets a user "clone then upgrade"
+    # in one step. The clone must run on the new version and the history
+    # entry must record both the source version and the target version
+    # for provenance.
+    service, _, _, store = make_service(temp_clawcu_home)
+    source_dir = tmp_path / "writer"
+    source_dir.mkdir()
+    (source_dir / "memory.txt").write_text("hello", encoding="utf-8")
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(source_dir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+
+    clone = service.clone_instance(
+        "writer",
+        name="writer-exp",
+        datadir=str(tmp_path / "writer-exp"),
+        port=3001,
+        version="2026.4.2",
+    )
+
+    assert clone.version == "2026.4.2"
+    stored = store.load_record("writer-exp")
+    assert stored.version == "2026.4.2"
+    cloned_event = next(e for e in stored.history if e["action"] == "cloned")
+    assert cloned_event["to_version"] == "2026.4.2"
+    assert cloned_event["from_source_version"] == "2026.4.1"
+    # Source is untouched.
+    assert store.load_record("writer").version == "2026.4.1"
+
+
+def test_clone_instance_without_version_override_omits_source_version(
+    temp_clawcu_home, tmp_path
+) -> None:
+    # When the clone inherits the source version, `from_source_version`
+    # must NOT appear in the history event — it is a marker reserved for
+    # clone+upgrade provenance.
+    service, _, _, store = make_service(temp_clawcu_home)
+    source_dir = tmp_path / "writer"
+    source_dir.mkdir()
+    (source_dir / "memory.txt").write_text("hello", encoding="utf-8")
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(source_dir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+
+    service.clone_instance(
+        "writer",
+        name="writer-exp",
+        datadir=str(tmp_path / "writer-exp"),
+        port=3001,
+    )
+
+    stored = store.load_record("writer-exp")
+    cloned_event = next(e for e in stored.history if e["action"] == "cloned")
+    assert cloned_event["to_version"] == "2026.4.1"
+    assert "from_source_version" not in cloned_event
+    assert cloned_event["secrets_included"] is True
+
+
+def test_clone_instance_exclude_secrets_skips_env_copy(
+    temp_clawcu_home, tmp_path
+) -> None:
+    # --exclude-secrets translates to include_secrets=False. The source
+    # env file must not be propagated to the clone even when it exists
+    # at an external path. The history event records the choice.
+    service, _, _, store = make_service(temp_clawcu_home)
+    source_dir = tmp_path / "writer"
+    source_dir.mkdir()
+    (source_dir / "memory.txt").write_text("hello", encoding="utf-8")
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(source_dir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+    store.instance_env_path("writer").write_text(
+        "OPENAI_API_KEY=sk-writer\n", encoding="utf-8"
+    )
+
+    service.clone_instance(
+        "writer",
+        name="writer-exp",
+        datadir=str(tmp_path / "writer-exp"),
+        port=3001,
+        include_secrets=False,
+    )
+
+    # Env file must NOT be present on the clone.
+    assert not store.instance_env_path("writer-exp").exists()
+    # History marks the secrets decision so it is auditable later.
+    stored = store.load_record("writer-exp")
+    cloned_event = next(e for e in stored.history if e["action"] == "cloned")
+    assert cloned_event["secrets_included"] is False
+
+
 def test_clone_instance_rejects_existing_target_container(temp_clawcu_home, tmp_path) -> None:
     service, docker, _, _ = make_service(temp_clawcu_home)
     source_dir = tmp_path / "writer"

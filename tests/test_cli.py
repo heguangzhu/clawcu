@@ -587,6 +587,8 @@ class FakeService:
         name: str,
         datadir: str | None = None,
         port: int | None = None,
+        version: str | None = None,
+        include_secrets: bool = True,
     ) -> InstanceRecord:
         if self.reporter:
             self.reporter("Step 1/5: Validating the source instance")
@@ -597,12 +599,16 @@ class FakeService:
             name=name,
             datadir=datadir,
             port=port,
+            version=version,
+            include_secrets=include_secrets,
         )
         record = self._instance(name=name)
         if datadir is not None:
             record.datadir = datadir
         if port is not None:
             record.port = port
+        if version is not None:
+            record.version = version
         return record
 
     def stream_logs(
@@ -2705,9 +2711,92 @@ def test_clone_command_accepts_required_options(monkeypatch) -> None:
             "name": "writer-exp",
             "datadir": "/tmp/writer-exp",
             "port": 3001,
+            "version": None,
+            "include_secrets": True,
         },
     )
     assert service.calls[-1] == ("dashboard_url", (), {"name": "writer-exp"})
+
+
+def test_clone_command_accepts_version_override(monkeypatch) -> None:
+    # --version switches the clone to a different service version
+    # without touching the source. Useful for "clone then upgrade".
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "clone",
+            "writer",
+            "--name",
+            "writer-exp",
+            "--version",
+            "2026.4.2",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    # Service call carries the requested version, default include_secrets stays True.
+    clone_call = next(c for c in service.calls if c[0] == "clone_instance")
+    assert clone_call[2]["version"] == "2026.4.2"
+    assert clone_call[2]["include_secrets"] is True
+    # Success line mentions the version switch so the user sees it.
+    assert "2026.4.2" in result.stdout
+    assert "switched from source" in result.stdout
+
+
+def test_clone_command_exclude_secrets_forwards_flag(monkeypatch) -> None:
+    # --exclude-secrets flips include_secrets off AND surfaces a
+    # prominent warning so the user knows they need to re-seed env.
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "clone",
+            "writer",
+            "--name",
+            "writer-exp",
+            "--exclude-secrets",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    clone_call = next(c for c in service.calls if c[0] == "clone_instance")
+    assert clone_call[2]["include_secrets"] is False
+    # Post-clone line tells the user env wasn't copied + how to re-seed.
+    assert "NOT copied" in result.stdout
+    assert "setenv" in result.stdout
+
+
+def test_clone_command_include_secrets_is_default(monkeypatch) -> None:
+    # When neither flag is passed, include_secrets defaults to True and
+    # the CLI stays quiet about env (no warning line).
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        ["clone", "writer", "--name", "writer-exp"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    clone_call = next(c for c in service.calls if c[0] == "clone_instance")
+    assert clone_call[2]["include_secrets"] is True
+    assert "NOT copied" not in result.stdout
+
+
+def test_clone_command_help_documents_env_semantics(monkeypatch) -> None:
+    # Design-review requirement: clone help must explicitly state
+    # whether the env file is copied. The description mentions env
+    # copying plus the --exclude-secrets escape hatch.
+    result = runner.invoke(app, ["clone", "--help"])
+
+    assert result.exit_code == 0
+    assert "env file" in result.stdout
+    assert "--exclude-secrets" in result.stdout
 
 
 def test_logs_follow_option_is_forwarded(monkeypatch) -> None:

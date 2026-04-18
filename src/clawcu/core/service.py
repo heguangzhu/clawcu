@@ -1457,14 +1457,34 @@ class ClawCUService:
         name: str,
         datadir: str | None = None,
         port: int | None = None,
+        version: str | None = None,
+        include_secrets: bool = True,
     ) -> InstanceRecord:
+        """Clone an existing instance into a fresh one.
+
+        By default the clone mirrors the source exactly — same version,
+        and the source's env file (which typically holds API keys /
+        tokens) is copied into the clone. Two knobs adjust that:
+
+        - ``version``: switch the clone to a different service version
+          at copy time (handy for "clone, then upgrade" experiments).
+          The clone's history records both the source name and, when
+          the version differs from the source, the source version for
+          provenance.
+        - ``include_secrets`` (default ``True``): when ``False``, the
+          source env file is NOT propagated. The clone boots with an
+          empty env and the user re-authenticates / re-configures it
+          explicitly — safer when the clone is meant for sharing or
+          for a different user / key scope.
+        """
         self.reporter("Step 1/5: Validating the source instance and resolving clone defaults. This should take a second or two.")
         source = self.store.load_record(source_name)
         adapter = self.adapter_for_record(source)
+        target_version = version or source.version
         clone_spec = adapter.build_spec(
             self,
             name=name,
-            version=source.version,
+            version=target_version,
             datadir=datadir,
             port=port,
             cpu=source.cpu,
@@ -1490,7 +1510,22 @@ class ClawCUService:
             )
             self.reporter("Step 2/5: Copying the source data directory into a new experiment directory. This can take a while for larger instances.")
             shutil.copytree(source.datadir, target_dir)
-            if source_env_path.exists() and not self._env_path_within_datadir(source_env_path, Path(source.datadir)):
+            env_external = (
+                source_env_path.exists()
+                and not self._env_path_within_datadir(source_env_path, Path(source.datadir))
+            )
+            if not include_secrets:
+                # Explicit opt-out: never propagate the source env
+                # (API keys / tokens). The clone still boots; the user
+                # re-authenticates with `setenv` or the service's
+                # native config flow.
+                self.reporter(
+                    "Step 3/5: --exclude-secrets specified. Skipping env copy — the "
+                    "clone will start without the source's API keys / tokens. Use "
+                    "`clawcu setenv` or the service's native config flow to seed new "
+                    "credentials."
+                )
+            elif env_external:
                 self.reporter("Step 3/5: Copying the instance environment variables. This usually takes a second or two.")
                 target_env_path.parent.mkdir(parents=True, exist_ok=True)
                 target_env_path.write_text(source_env_path.read_text(encoding="utf-8"), encoding="utf-8")
@@ -1499,16 +1534,21 @@ class ClawCUService:
             self.reporter(f"Step 4/5: Making sure the requested {adapter.display_name} artifact is available.")
             adapter.prepare_artifact(clone_spec.version)
             self.reporter("Step 5/5: Starting the cloned Docker container and checking health. This usually takes a few seconds.")
+            history_event: dict = {
+                "action": "cloned",
+                "timestamp": utc_now_iso(),
+                "from_instance": source.name,
+                "to_version": target_version,
+                "secrets_included": bool(include_secrets),
+            }
+            # When the clone switches version at copy time, record the
+            # source version too so `history` reflects clone+upgrade
+            # provenance rather than looking like a plain clone.
+            if target_version != source.version:
+                history_event["from_source_version"] = source.version
             record = self._start_new_instance(
                 clone_spec,
-                history=[
-                    {
-                        "action": "cloned",
-                        "timestamp": utc_now_iso(),
-                        "from_instance": source.name,
-                        "to_version": source.version,
-                    }
-                ],
+                history=[history_event],
                 auto_port=port is None,
             )
         except Exception:
@@ -1520,7 +1560,9 @@ class ClawCUService:
                 shutil.rmtree(target_dir)
             raise
         self.store.append_log(
-            f"clone instance source={source.name} target={record.name} datadir={record.datadir}"
+            "clone instance "
+            f"source={source.name} target={record.name} datadir={record.datadir} "
+            f"version={record.version} secrets={'yes' if include_secrets else 'no'}"
         )
         return record
 

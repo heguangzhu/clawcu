@@ -2297,13 +2297,50 @@ def rollback_instance(
     _print_access_url(service, record.name)
 
 
-@app.command("clone", help="Clone an existing instance into a separate experiment instance.")
+@app.command(
+    "clone",
+    help=(
+        "Clone an existing instance into a separate experiment instance. "
+        "The source's data directory is always copied. By default the "
+        "source's env file (API keys / tokens) is ALSO copied — pass "
+        "--exclude-secrets to start with an empty env instead. "
+        "Use --version to switch the clone to a different service "
+        "version at copy time, e.g. to preview an upgrade without "
+        "touching the original."
+    ),
+)
 def clone_instance(
     ctx: typer.Context,
     source_name: Annotated[str | None, typer.Argument(help="Source instance name.")] = None,
     name: Annotated[str | None, typer.Option("--name", help="New cloned instance name.")] = None,
     datadir: Annotated[str | None, typer.Option("--datadir", help="Target cloned data directory.")] = None,
     port: Annotated[int | None, typer.Option("--port", help="Target host port.")] = None,
+    version: Annotated[
+        str | None,
+        typer.Option(
+            "--version",
+            help=(
+                "Switch the clone to this service version or tag instead "
+                "of inheriting the source's version. Useful for 'clone "
+                "then upgrade' experiments — the source is untouched."
+            ),
+        ),
+    ] = None,
+    include_secrets: Annotated[
+        bool,
+        typer.Option(
+            "--include-secrets/--exclude-secrets",
+            help=(
+                "Whether to copy the source's env file (API keys, tokens, "
+                "provider secrets) into the clone. Default ON (env IS "
+                "copied) to match pre-v0.2 behavior. Pass --exclude-secrets "
+                "when sharing the clone or using a different credential "
+                "scope — the clone will boot with an empty env and you "
+                "re-seed it via `clawcu setenv` or the service's native "
+                "config flow."
+            ),
+        ),
+    ] = True,
 ) -> None:
     if not source_name or not name:
         _show_help_and_exit(ctx)
@@ -2316,10 +2353,26 @@ def clone_instance(
             name=name,
             datadir=datadir,
             port=port,
+            version=version,
+            include_secrets=include_secrets,
         )
     except Exception as exc:
         _exit_with_error(str(exc))
     console.print(f"[green]Cloned instance:[/green] {source_name} -> {record.name}")
+    if version and version != record.version:
+        # Defensive: if the service resolved a different version than
+        # requested (normalization, etc.), surface it so the user sees
+        # what actually got built.
+        console.print(
+            f"[dim]  requested version: {version}, resolved: {record.version}[/dim]"
+        )
+    elif version:
+        console.print(f"[dim]  version: {record.version} (switched from source)[/dim]")
+    if not include_secrets:
+        console.print(
+            "[yellow]  env file was NOT copied (--exclude-secrets).[/yellow] "
+            "[dim]Seed credentials with `clawcu setenv` before using the clone.[/dim]"
+        )
     _print_access_url(service, record.name)
 
 
