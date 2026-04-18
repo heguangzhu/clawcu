@@ -1583,17 +1583,88 @@ def test_list_local_option_filters_to_local(monkeypatch) -> None:
     assert service.calls == [("list_local_instance_summaries", (), {})]
 
 
-def test_inspect_command_accepts_instance_name(monkeypatch) -> None:
+def test_inspect_command_renders_human_view_by_default(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+    monkeypatch.setattr("clawcu.cli.console", _make_wide_console())
+
+    result = runner.invoke(app, ["inspect", "writer"])
+
+    assert result.exit_code == 0
+    # Compact human view instead of raw JSON dump.
+    assert "Instance: writer" in result.stdout
+    assert "Service" in result.stdout
+    assert "openclaw" in result.stdout
+    assert "Snapshots" in result.stdout
+    assert "latest_upgrade_snapshot" in result.stdout
+    # Should NOT dump the full JSON by default.
+    assert '"container"' not in result.stdout
+    assert service.calls[-1] == ("inspect_instance", (), {"name": "writer"})
+
+
+def test_inspect_command_json_mode_preserves_raw_payload(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
 
-    result = runner.invoke(app, ["inspect", "writer"])
+    result = runner.invoke(app, ["--json", "inspect", "writer"])
 
     assert result.exit_code == 0
     assert '"Name": "writer"' in result.stdout
     assert '"snapshots"' in result.stdout
     assert '"latest_upgrade_snapshot"' in result.stdout
-    assert service.calls[-1] == ("inspect_instance", (), {"name": "writer"})
+
+
+def test_inspect_command_folds_history_by_default(monkeypatch) -> None:
+    service = FakeService()
+
+    original_inspect = service.inspect_instance
+
+    def with_history(name: str) -> dict:
+        payload = original_inspect(name)
+        payload["instance"]["history"] = [
+            {"action": "create", "timestamp": "2026-04-13T09:00:00+00:00"},
+            {"action": "upgrade", "timestamp": "2026-04-14T00:00:00+00:00", "to_version": "2026.4.5"},
+        ]
+        return payload
+
+    service.inspect_instance = with_history  # type: ignore[assignment]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+    monkeypatch.setattr("clawcu.cli.console", _make_wide_console())
+
+    result = runner.invoke(app, ["inspect", "writer"])
+
+    assert result.exit_code == 0
+    assert "History" in result.stdout
+    assert "2 event(s)" in result.stdout
+    # Folded: the first (creation) event's timestamp is not shown; only the
+    # latest is referenced in the summary line.
+    assert "2026-04-13T09:00:00+00:00" not in result.stdout
+    assert "pass --show-history to expand" in result.stdout
+
+
+def test_inspect_command_show_history_expands_events(monkeypatch) -> None:
+    service = FakeService()
+
+    original_inspect = service.inspect_instance
+
+    def with_history(name: str) -> dict:
+        payload = original_inspect(name)
+        payload["instance"]["history"] = [
+            {"action": "create", "timestamp": "2026-04-13T09:00:00+00:00"},
+            {"action": "upgrade", "timestamp": "2026-04-14T00:00:00+00:00", "to_version": "2026.4.5"},
+        ]
+        return payload
+
+    service.inspect_instance = with_history  # type: ignore[assignment]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+    monkeypatch.setattr("clawcu.cli.console", _make_wide_console())
+
+    result = runner.invoke(app, ["inspect", "writer", "--show-history"])
+
+    assert result.exit_code == 0
+    assert "2026-04-13T09:00:00+00:00" in result.stdout
+    assert "2026-04-14T00:00:00+00:00" in result.stdout
+    assert "to_version=2026.4.5" in result.stdout
 
 
 def test_approve_command_uses_latest_request_by_default(monkeypatch) -> None:

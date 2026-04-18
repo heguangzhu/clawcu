@@ -30,7 +30,7 @@
 | 命令 | 说明 |
 |------|------|
 | `clawcu list [--source managed\|local\|all] [--service X] [--status X] [--running] [--agents] [--wide] [--reveal]` | 查看实例摘要或 agent 级视图。默认 `--source managed`，仅显示由 ClawCU 托管的实例；加 `--source local` 或 `--source all` 才包含 ~/.openclaw / ~/.hermes 下的伪实例。默认窄表 6 列（NAME / SERVICE / VERSION / PORT / STATUS / ACCESS host:port），`--wide` 追加 SOURCE / HOME / PROVIDERS / MODELS / SNAPSHOT 并显示完整 URL。`--reveal` 会打印 dashboard token 片段。 |
-| `clawcu inspect <name>` | 查看实例详细状态，包括 Docker 容器信息、访问摘要、历史和快照摘要。 |
+| `clawcu inspect <name> [--show-history] [--reveal]` | 以紧凑可读视图查看实例详细状态（摘要 / 访问 / 快照 / 容器 / 历史）。默认会把 history 折叠，只显示最新一条；需要完整历史请加 `--show-history`，需要原始 JSON 载荷请用 `clawcu --json inspect <name>`。`--reveal` 会显示未打码的 dashboard token。 |
 | `clawcu start <name>` | 启动一个已停止的托管实例。 |
 | `clawcu stop <name>` | 停止一个正在运行的托管实例。 |
 | `clawcu restart <name>` | 重启一个托管实例。 |

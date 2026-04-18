@@ -1026,10 +1026,146 @@ def list_instances(
         _print_instance_table(records, wide=wide, reveal=reveal)
 
 
-@app.command("inspect", help="Show detailed state for a managed instance.")
+def _print_inspect_human(payload: dict, *, reveal: bool, show_history: bool) -> None:
+    """Render the inspect payload as a compact human view.
+
+    History is folded by default (the review's chief complaint about
+    the old default was that dumping 100+ lines of JSON at someone was
+    a lazy developer-first design). Pass ``--show-history`` or
+    ``--json`` to see the full record.
+    """
+    instance = payload.get("instance") or {}
+    name = instance.get("name", "-")
+    console.print(f"[bold]Instance:[/bold] {name}")
+
+    # --- Summary ---
+    summary = Table(show_header=False, box=None, pad_edge=False)
+    summary.add_column("key", style="cyan", no_wrap=True)
+    summary.add_column("value", overflow="fold")
+    for key, label in [
+        ("service", "Service"),
+        ("version", "Version"),
+        ("status", "Status"),
+        ("port", "Port"),
+        ("dashboard_port", "Dashboard port"),
+        ("cpu", "CPU"),
+        ("memory", "Memory"),
+        ("datadir", "Data dir"),
+        ("image_tag", "Image"),
+        ("container_name", "Container"),
+        ("auth_mode", "Auth mode"),
+        ("created_at", "Created"),
+        ("updated_at", "Updated"),
+    ]:
+        value = instance.get(key)
+        if value is None or value == "":
+            continue
+        summary.add_row(label, str(value))
+    last_error = instance.get("last_error")
+    if last_error:
+        summary.add_row("Last error", f"[red]{last_error}[/red]")
+    console.print(summary)
+
+    # --- Access ---
+    access = payload.get("access") or {}
+    if any(access.get(k) for k in ("base_url", "readiness_label", "auth_hint", "token")):
+        console.print()
+        console.print("[bold]Access[/bold]")
+        base_url = access.get("base_url") or "-"
+        if not reveal:
+            base_url = _strip_token_fragment(base_url)
+        access_table = Table(show_header=False, box=None, pad_edge=False)
+        access_table.add_column("key", style="cyan", no_wrap=True)
+        access_table.add_column("value", overflow="fold")
+        access_table.add_row("URL", base_url)
+        readiness = access.get("readiness_label")
+        if readiness:
+            access_table.add_row("Readiness", str(readiness))
+        auth_hint = access.get("auth_hint")
+        if auth_hint:
+            access_table.add_row("Auth hint", str(auth_hint))
+        raw_token = access.get("token") or ""
+        if raw_token:
+            access_table.add_row("Token", raw_token if reveal else _mask_secret(raw_token))
+        console.print(access_table)
+
+    # --- Snapshots ---
+    snapshots = payload.get("snapshots") or {}
+    snapshot_items = [(k, v) for k, v in snapshots.items() if v]
+    if snapshot_items:
+        console.print()
+        console.print("[bold]Snapshots[/bold]")
+        snap_table = Table(show_header=False, box=None, pad_edge=False)
+        snap_table.add_column("key", style="cyan", no_wrap=True)
+        snap_table.add_column("value", overflow="fold")
+        for key, value in snapshot_items:
+            snap_table.add_row(key, str(value))
+        console.print(snap_table)
+
+    # --- Container (compact) ---
+    container = payload.get("container")
+    if container:
+        state = container.get("State") or {}
+        image = container.get("Config", {}).get("Image") or container.get("Image") or "-"
+        restart = container.get("HostConfig", {}).get("RestartPolicy", {}).get("Name") or "-"
+        status = state.get("Status") or container.get("Status") or "-"
+        health = (state.get("Health") or {}).get("Status") or "-"
+        started_at = state.get("StartedAt") or "-"
+        console.print()
+        console.print("[bold]Container[/bold]")
+        c_table = Table(show_header=False, box=None, pad_edge=False)
+        c_table.add_column("key", style="cyan", no_wrap=True)
+        c_table.add_column("value", overflow="fold")
+        c_table.add_row("Docker status", str(status))
+        c_table.add_row("Health", str(health))
+        c_table.add_row("Image", str(image))
+        c_table.add_row("Restart policy", str(restart))
+        c_table.add_row("Started at", str(started_at))
+        console.print(c_table)
+
+    # --- History ---
+    history = instance.get("history") or []
+    if history:
+        console.print()
+        console.print(f"[bold]History[/bold] ({len(history)} event(s))")
+        if show_history:
+            hist_table = Table(box=None, pad_edge=False)
+            hist_table.add_column("TIMESTAMP", no_wrap=True, style="cyan")
+            hist_table.add_column("ACTION", no_wrap=True)
+            hist_table.add_column("DETAILS", overflow="fold")
+            for event in history:
+                timestamp = str(event.get("timestamp", "-"))
+                action = str(event.get("action", "-"))
+                details = ", ".join(
+                    f"{k}={v}"
+                    for k, v in event.items()
+                    if k not in {"timestamp", "action"}
+                )
+                hist_table.add_row(timestamp, action, details or "-")
+            console.print(hist_table)
+        else:
+            latest = history[-1]
+            console.print(
+                f"  latest: [cyan]{latest.get('action', '-')}[/cyan] at {latest.get('timestamp', '-')}"
+            )
+            console.print("  (pass --show-history to expand, or --json for the full payload)")
+
+
+@app.command(
+    "inspect",
+    help="Show detailed state for a managed instance. Default is a compact readable view; pass --json for the full payload.",
+)
 def inspect_instance(
     ctx: typer.Context,
     name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
+    show_history: Annotated[
+        bool,
+        typer.Option("--show-history", help="Expand the full history timeline (folded by default)."),
+    ] = False,
+    reveal: Annotated[
+        bool,
+        typer.Option("--reveal", help="Show full dashboard tokens and access URLs. Off by default for safety."),
+    ] = False,
 ) -> None:
     if not name:
         _show_help_and_exit(ctx)
@@ -1037,7 +1173,10 @@ def inspect_instance(
         payload = get_service().inspect_instance(name)
     except Exception as exc:
         _exit_with_error(str(exc))
-    console.print_json(json.dumps(payload, ensure_ascii=False))
+    if _json_mode():
+        console.print_json(json.dumps(payload, ensure_ascii=False))
+        return
+    _print_inspect_human(payload, reveal=reveal, show_history=show_history)
 
 
 @app.command("token", help="Print the dashboard token for a managed instance.")
