@@ -52,7 +52,7 @@ HERMES_MODEL_ENV_ALLOWLIST = {
     "GH_TOKEN",
 }
 
-HERMES_EXECUTABLE = "/opt/hermes/.venv/bin/hermes"
+HERMES_EXECUTABLE = "hermes"
 HERMES_EXEC_PATH = f"/opt/hermes/.venv/bin:/opt/hermes:{os.environ.get('PATH', '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin')}"
 
 
