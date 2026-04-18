@@ -5,7 +5,7 @@ import re
 from typing import Callable
 
 from clawcu.core.docker import DockerManager
-from clawcu.core.registry import RemoteTagResult, fetch_remote_tags
+from clawcu.core.registry import RemoteTagResult, fetch_remote_tags, semver_sort_key
 from clawcu.core.storage import StateStore
 from clawcu.core.subprocess_utils import CommandError, run_command
 from clawcu.core.validation import normalize_version
@@ -106,7 +106,8 @@ class OpenClawManager:
                 tag.lstrip("v")
                 for tag in (raw.tags or [])
                 if _is_openclaw_release_tag(tag)
-            }
+            },
+            key=semver_sort_key,
         )
         return RemoteTagResult(
             repo=raw.repo,

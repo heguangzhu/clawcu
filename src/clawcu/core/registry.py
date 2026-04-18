@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -36,6 +37,36 @@ from typing import Callable
 from clawcu import __version__ as clawcu_version
 
 _LOG = logging.getLogger(__name__)
+
+
+_SEMVER_SORT_KEY_RE = re.compile(
+    r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$"
+)
+
+# Stable releases should sort AFTER all prereleases of the same (X, Y, Z) per
+# SemVer; tuples compare element-wise, so a larger sentinel for stable (1) and
+# a smaller one for prerelease (0) achieves that with tuples alone.
+_PRERELEASE_WEIGHT = 0
+_STABLE_WEIGHT = 1
+
+
+def semver_sort_key(tag: str) -> tuple:
+    """Sort key for version-like tags that puts newest releases last.
+
+    Accepts ``X.Y.Z`` or ``X.Y.Z-pre`` (with leading ``v`` tolerated).
+    Unrecognized tags fall back to a low-sort bucket so they don't
+    masquerade as "most recent".
+    """
+    value = tag.lstrip("v")
+    match = _SEMVER_SORT_KEY_RE.match(value)
+    if not match:
+        # Unknown shape: sort before everything, preserve relative order
+        # with a lexicographic fallback.
+        return (-1, 0, 0, 0, _PRERELEASE_WEIGHT, value)
+    major, minor, patch, pre = match.groups()
+    weight = _STABLE_WEIGHT if pre is None else _PRERELEASE_WEIGHT
+    pre_key = "" if pre is None else pre
+    return (int(major), int(minor), int(patch), weight, pre_key)
 
 DEFAULT_TIMEOUT_SECONDS = 4
 DEFAULT_PAGE_SIZE = 100

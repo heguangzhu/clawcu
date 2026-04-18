@@ -26,12 +26,24 @@ app = typer.Typer(
     add_completion=False,
 )
 pull_app = typer.Typer(
-    help="Pull and build managed services.",
+    help=(
+        "Pull and build managed services.\n\n"
+        "Examples:\n"
+        "  clawcu pull openclaw --version 2026.4.15\n"
+        "  clawcu pull hermes --version 1.0.0\n"
+        "  clawcu pull --service openclaw --version 2026.4.15  # alt form"
+    ),
     subcommand_metavar="SERVICE",
     add_completion=False,
 )
 create_app = typer.Typer(
-    help="Create managed services.",
+    help=(
+        "Create managed services.\n\n"
+        "Examples:\n"
+        "  clawcu create openclaw --name demo --version 2026.4.15\n"
+        "  clawcu create hermes --name agent --version 1.0.0\n"
+        "  clawcu create --service openclaw --name demo --version 2026.4.15  # alt form"
+    ),
     subcommand_metavar="SERVICE",
     add_completion=False,
 )
@@ -320,6 +332,24 @@ _WIDE_INSTANCE_MIN_COLS = 120
 _NARROW_INSTANCE_MIN_COLS = 72
 
 
+def _compress_home_path(path: str) -> str:
+    """Render an absolute path with ``$HOME`` collapsed to ``~``.
+
+    The wide table's HOME column repeats the same ``/Users/<name>/``
+    prefix on every row, which eats ~18 columns and forces the column
+    to fold onto multiple lines even at 140 cols. Compressing to ``~``
+    keeps the useful suffix readable without losing any information.
+    """
+    if not path or path == "-":
+        return path or "-"
+    home = os.path.expanduser("~")
+    if home and home != "/" and path == home:
+        return "~"
+    if home and home != "/" and path.startswith(home + os.sep):
+        return "~" + path[len(home):]
+    return path
+
+
 def _print_instance_stacked(records: list[dict], *, reveal: bool) -> None:
     """Key/value layout used when the terminal is too narrow for the
     6-column table (e.g. tmux split-pane, SSH). Each instance prints as
@@ -385,7 +415,7 @@ def _print_instance_table(records: list[dict], *, wide: bool = False, reveal: bo
         row.append(record["name"])
         row.append(record.get("service", "-"))
         if effective_wide:
-            row.append(record.get("home", "-"))
+            row.append(_compress_home_path(record.get("home", "-")))
         row.append(_display_version(record["version"]))
         row.append(str(record["port"]))
         row.append(record["status"])
@@ -412,7 +442,7 @@ def _print_agent_table(records: list[dict]) -> None:
             record.get("source", "-"),
             record.get("service", "-"),
             record["instance"],
-            record.get("home", "-"),
+            _compress_home_path(record.get("home", "-")),
             record["agent"],
             record.get("primary", "-"),
             record.get("fallbacks", "-"),
@@ -424,13 +454,33 @@ _WIDE_PROVIDER_MIN_COLS = 110
 _API_KEY_ENV_REF = re.compile(r"^\$\{[^}]+\}$|^\$[A-Z_][A-Z0-9_]*$")
 
 
-def _provider_api_key_cell(raw_key: str, *, reveal: bool, wide: bool) -> str:
-    """Classify provider api_key cell so users can tell apart unset
-    (truly empty), env-ref (placeholder like ``${OPENAI_API_KEY}`` —
+def _provider_api_key_cell(
+    raw_key: str,
+    *,
+    reveal: bool,
+    wide: bool,
+    state: str | None = None,
+) -> str:
+    """Classify provider api_key cell so users can tell apart four
+    distinct states: ``set`` (literal key present, rendered masked or
+    as ``set``), ``env-ref`` (placeholder like ``${OPENAI_API_KEY}`` —
     normal when collected from an instance that sources keys from env),
-    and set (literal key present)."""
+    ``empty`` (source had the field but it was blank — a template that
+    still needs a value), and ``missing`` (no apiKey field anywhere in
+    the source). ``state`` is the service-layer classification; if not
+    provided, we fall back to inspecting ``raw_key`` alone (coarser)."""
     if reveal:
         return raw_key or "-"
+    if state == "env-ref":
+        return "[cyan]env-ref[/cyan]"
+    if state == "empty":
+        return "[yellow]empty[/yellow]"
+    if state == "missing":
+        return "[dim]unset[/dim]"
+    if state == "set":
+        return "[green]set[/green]" if not wide else (_mask_secret(raw_key) or "-")
+    # Fallback: derive from raw_key alone (used by tests that predate
+    # the state field and by any caller that doesn't pass it through).
     if not raw_key:
         return "[dim]unset[/dim]"
     if _API_KEY_ENV_REF.match(raw_key.strip()):
@@ -460,7 +510,10 @@ def _print_provider_table(records: list[dict], *, wide: bool = False, reveal: bo
     table.add_column("MODELS", overflow="fold")
     for record in records:
         raw_key = str(record.get("api_key") or "")
-        key_cell = _provider_api_key_cell(raw_key, reveal=reveal, wide=effective_wide)
+        state = record.get("api_key_state")
+        key_cell = _provider_api_key_cell(
+            raw_key, reveal=reveal, wide=effective_wide, state=state if isinstance(state, str) else None
+        )
         models = record.get("models") or []
         if effective_wide:
             models_cell = ", ".join(models) or "-"
@@ -2504,9 +2557,9 @@ def _print_upgradable_versions(payload: dict, *, show_all: bool = False) -> None
             display = remote
             truncated = False
         header_suffix = (
-            f" (showing {len(display)} of {total} release tags, most recent)"
+            f" (showing {len(display)} of {total} release tags, newest by semver)"
             if truncated
-            else f" ({total} release tags)"
+            else f" ({total} release tags, oldest → newest)"
         )
         console.print(
             f"[bold]Remote{registry_hint}{header_suffix}:[/bold]"
@@ -2690,6 +2743,35 @@ def _print_rollback_plan(plan: dict) -> None:
     console.print(table)
 
 
+_ROLLBACK_TARGETS_MIN_COLS = 120
+
+
+def _print_rollback_targets_stacked(targets: list[dict]) -> None:
+    """Key/value layout for `rollback --list` in narrow terminals.
+
+    The Snapshot column holds absolute paths that typically don't fit
+    alongside timestamp + version columns under 120 cols; printing the
+    path on its own line keeps it copy-pasteable.
+    """
+    for idx, entry in enumerate(targets):
+        snapshot = entry.get("snapshot_dir") or "-"
+        exists = entry.get("snapshot_exists")
+        exists_marker = (
+            "[green]present[/green]" if exists else "[red]missing[/red]"
+        )
+        console.print(
+            f"[bold]#{idx}[/bold]  action: {entry.get('action') or '-'}  "
+            f"restores to: [bold green]{entry.get('restores_to') or '-'}[/bold green]"
+        )
+        console.print(
+            f"    from -> to: {entry.get('from_version') or '-'} -> {entry.get('to_version') or '-'}"
+        )
+        console.print(f"    when:       {entry.get('timestamp') or '-'}")
+        console.print(f"    snapshot:   {snapshot}  {exists_marker}")
+        if idx != len(targets) - 1:
+            console.print()
+
+
 def _print_rollback_targets(payload: dict) -> None:
     """Render list_rollback_targets output as a small table."""
     console.print(
@@ -2706,13 +2788,21 @@ def _print_rollback_targets(payload: dict) -> None:
             "to produce a snapshot first.[/dim]"
         )
         return
+    width = console.size.width
+    if width < _ROLLBACK_TARGETS_MIN_COLS:
+        _print_rollback_targets_stacked(targets)
+        console.print(
+            "[dim]rollback --to <version> restores the most recent event whose "
+            "'restores to' matches. omit --to to pick the newest entry.[/dim]"
+        )
+        return
     table = Table(show_header=True, box=None, pad_edge=False)
     table.add_column("#", style="bold")
     table.add_column("Action")
     table.add_column("Restores to", style="bold green")
     table.add_column("From -> To")
     table.add_column("When")
-    table.add_column("Snapshot")
+    table.add_column("Snapshot", overflow="fold")
     for idx, entry in enumerate(targets):
         snapshot = entry.get("snapshot_dir") or "-"
         exists = entry.get("snapshot_exists")
@@ -2846,7 +2936,9 @@ def rollback_instance(
         "--exclude-secrets to start with an empty env instead. "
         "Use --version to switch the clone to a different service "
         "version at copy time, e.g. to preview an upgrade without "
-        "touching the original."
+        "touching the original. Clone always creates a new instance "
+        "and never overwrites the source; no --yes confirmation is "
+        "needed (clone will refuse if --name already exists)."
     ),
     rich_help_panel=_PANEL_LIFECYCLE,
 )
@@ -2911,6 +3003,19 @@ def clone_instance(
             "[yellow]  env file was NOT copied (--exclude-secrets).[/yellow] "
             "[dim]Seed credentials with `clawcu setenv` before using the clone.[/dim]"
         )
+        try:
+            providers = [
+                entry for entry in service.list_providers()
+                if entry.get("service") == record.service
+            ]
+        except Exception:
+            providers = []
+        if providers:
+            names = ", ".join(sorted(entry.get("name", "?") for entry in providers))
+            console.print(
+                f"[dim]  collected providers for {record.service}: {names}. "
+                f"Apply one with `clawcu provider apply <name> {record.name}`.[/dim]"
+            )
     _print_access_url(service, record.name)
 
 

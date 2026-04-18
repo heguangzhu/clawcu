@@ -246,6 +246,7 @@ class ClawCUService:
                     "provider": metadata.get("provider") if isinstance(metadata, dict) else name,
                     "api_style": metadata.get("api_style") if isinstance(metadata, dict) else "openai",
                     "api_key": self._provider_bundle_api_key(bundle),
+                    "api_key_state": self._provider_bundle_api_key_state(bundle),
                     "endpoint": endpoint if isinstance(endpoint, str) else None,
                     "models": self.adapter_for_service(service_name).provider_models(self, bundle),
                 }
@@ -2331,6 +2332,48 @@ class ClawCUService:
             if isinstance(value, str) and value.strip():
                 return value.strip()
         return None
+
+    def _provider_bundle_api_key_state(
+        self, bundle: dict[str, object]
+    ) -> str:
+        """Classify the api_key source so the list view can distinguish
+        ``set`` (literal key present), ``env-ref`` (placeholder like
+        ``${OPENAI_API_KEY}``), ``empty`` (field present but blank — a
+        captured template), and ``missing`` (no source at all).
+        """
+        key = self._provider_bundle_api_key(bundle)
+        if isinstance(key, str) and key.strip():
+            stripped = key.strip()
+            if stripped.startswith("${") and stripped.endswith("}"):
+                return "env-ref"
+            if stripped.startswith("$") and not stripped.startswith("$$"):
+                return "env-ref"
+            return "set"
+        # No usable key value came back. Tell apart "the source had the
+        # field but it was blank" (captured empty) from "no apiKey field
+        # anywhere in the source" (missing).
+        service_name = str(bundle.get("service") or "")
+        if service_name == "openclaw":
+            models_payload = bundle.get("models", {})
+            if isinstance(models_payload, dict):
+                _, provider_payload = self._single_provider_entry(models_payload)
+                if isinstance(provider_payload, dict) and "apiKey" in provider_payload:
+                    return "empty"
+            auth_payload = bundle.get("auth_profiles", {})
+            if isinstance(auth_payload, dict):
+                profiles = auth_payload.get("profiles") or {}
+                if isinstance(profiles, dict):
+                    for profile in profiles.values():
+                        if not isinstance(profile, dict):
+                            continue
+                        if "key" in profile or "apiKey" in profile:
+                            return "empty"
+            return "missing"
+        env_values = self._load_env_text(str(bundle.get("env") or ""))
+        if env_values:
+            # env file had entries but none yielded a usable key value
+            return "empty"
+        return "missing"
 
     def _merge_provider_bundles(self, existing: dict, incoming: dict) -> tuple[dict, dict]:
         merged_auth = copy.deepcopy(existing["auth_profiles"])
