@@ -2025,6 +2025,66 @@ def test_create_command_accepts_explicit_resource_options(monkeypatch) -> None:
     assert service.calls[0][2]["memory"] == "4g"
 
 
+def test_create_command_applies_provider_after_create(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "create",
+            "openclaw",
+            "--name",
+            "writer",
+            "--version",
+            "2026.4.1",
+            "--apply-provider",
+            "openai-main",
+            "--apply-agent",
+            "reviewer",
+            "--apply-persist",
+        ],
+    )
+
+    assert result.exit_code == 0
+    apply_calls = [c for c in service.calls if c[0] == "apply_provider"]
+    assert len(apply_calls) == 1
+    assert apply_calls[0][2]["provider"] == "openai-main"
+    assert apply_calls[0][2]["instance"] == "writer"
+    assert apply_calls[0][2]["agent"] == "reviewer"
+    assert apply_calls[0][2]["persist"] is True
+    assert "Applied provider:" in result.stdout
+
+
+def test_create_command_surfaces_apply_provider_failure_without_aborting(monkeypatch) -> None:
+    class FlakyService(FakeService):
+        def apply_provider(self, provider, instance, agent="main", *, persist=False, **kwargs):  # type: ignore[override]
+            self._record("apply_provider", provider=provider, instance=instance, agent=agent, persist=persist)
+            raise RuntimeError("collected bundle is invalid")
+
+    service = FlakyService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "create",
+            "openclaw",
+            "--name",
+            "writer",
+            "--version",
+            "2026.4.1",
+            "--apply-provider",
+            "openai-main",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Created instance:" in result.stdout
+    assert "--apply-provider failed" in result.stdout
+    assert "clawcu provider apply openai-main writer" in result.stdout
+
+
 def test_list_running_option_is_forwarded(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)

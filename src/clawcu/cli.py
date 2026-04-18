@@ -746,6 +746,9 @@ def _do_create(
     port: int | None,
     cpu: str,
     memory: str,
+    apply_provider: str | None = None,
+    apply_agent: str = "main",
+    apply_persist: bool = False,
 ) -> None:
     if service_name not in _KNOWN_SERVICES:
         _exit_with_error(
@@ -768,6 +771,23 @@ def _do_create(
     console.print(
         f"[green]Created instance:[/green] {record.name} ({record.version}) on port {record.port} (status: {record.status})"
     )
+    if apply_provider:
+        try:
+            service.apply_provider(
+                apply_provider,
+                record.name,
+                agent=apply_agent,
+                persist=apply_persist,
+            )
+        except Exception as exc:
+            console.print(
+                f"[yellow]Instance created but --apply-provider failed:[/yellow] {exc}\n"
+                f"[dim]Run `clawcu provider apply {apply_provider} {record.name}` to retry.[/dim]"
+            )
+        else:
+            console.print(
+                f"[green]Applied provider:[/green] {apply_provider} -> {record.name}/{apply_agent}"
+            )
     _print_access_url(service, record.name)
 
 
@@ -793,6 +813,27 @@ def pull_callback(
     _show_help_and_exit(ctx)
 
 
+_APPLY_PROVIDER_OPTION = typer.Option(
+    "--apply-provider",
+    help=(
+        "Apply a collected provider to the new instance's default agent immediately "
+        "after creation. The create succeeds even if apply fails; the error is surfaced "
+        "and a retry command is printed."
+    ),
+)
+_APPLY_AGENT_OPTION = typer.Option(
+    "--apply-agent",
+    help="Target agent name for --apply-provider. Defaults to main.",
+)
+_APPLY_PERSIST_OPTION = typer.Option(
+    "--apply-persist",
+    help=(
+        "When set with --apply-provider, also persist the provider secret into the "
+        "instance env file (matches `provider apply --persist`)."
+    ),
+)
+
+
 @create_app.callback(invoke_without_command=True)
 def create_callback(
     ctx: typer.Context,
@@ -809,6 +850,9 @@ def create_callback(
     port: Annotated[int | None, typer.Option("--port", help="Host port exposed for the instance.")] = None,
     cpu: Annotated[str, typer.Option("--cpu", help="Docker CPU limit.")] = "1",
     memory: Annotated[str, typer.Option("--memory", help="Docker memory limit.")] = "2g",
+    apply_provider: Annotated[str | None, _APPLY_PROVIDER_OPTION] = None,
+    apply_agent: Annotated[str, _APPLY_AGENT_OPTION] = "main",
+    apply_persist: Annotated[bool, _APPLY_PERSIST_OPTION] = False,
 ) -> None:
     if ctx.invoked_subcommand is not None:
         return
@@ -816,7 +860,16 @@ def create_callback(
         if not name or not version:
             _exit_with_error("--service requires --name and --version.")
         _do_create(
-            service, name=name, version=version, datadir=datadir, port=port, cpu=cpu, memory=memory,
+            service,
+            name=name,
+            version=version,
+            datadir=datadir,
+            port=port,
+            cpu=cpu,
+            memory=memory,
+            apply_provider=apply_provider,
+            apply_agent=apply_agent,
+            apply_persist=apply_persist,
         )
         return
     _show_help_and_exit(ctx)
@@ -859,8 +912,22 @@ def create_openclaw(
     ] = None,
     cpu: Annotated[str, typer.Option("--cpu", help="Docker CPU limit.")] = "1",
     memory: Annotated[str, typer.Option("--memory", help="Docker memory limit.")] = "2g",
+    apply_provider: Annotated[str | None, _APPLY_PROVIDER_OPTION] = None,
+    apply_agent: Annotated[str, _APPLY_AGENT_OPTION] = "main",
+    apply_persist: Annotated[bool, _APPLY_PERSIST_OPTION] = False,
 ) -> None:
-    _do_create("openclaw", name=name, version=version, datadir=datadir, port=port, cpu=cpu, memory=memory)
+    _do_create(
+        "openclaw",
+        name=name,
+        version=version,
+        datadir=datadir,
+        port=port,
+        cpu=cpu,
+        memory=memory,
+        apply_provider=apply_provider,
+        apply_agent=apply_agent,
+        apply_persist=apply_persist,
+    )
 
 
 @create_app.command("hermes", rich_help_panel=_PANEL_LIFECYCLE)
@@ -880,8 +947,22 @@ def create_hermes(
     ] = None,
     cpu: Annotated[str, typer.Option("--cpu", help="Docker CPU limit.")] = "1",
     memory: Annotated[str, typer.Option("--memory", help="Docker memory limit.")] = "2g",
+    apply_provider: Annotated[str | None, _APPLY_PROVIDER_OPTION] = None,
+    apply_agent: Annotated[str, _APPLY_AGENT_OPTION] = "main",
+    apply_persist: Annotated[bool, _APPLY_PERSIST_OPTION] = False,
 ) -> None:
-    _do_create("hermes", name=name, version=version, datadir=datadir, port=port, cpu=cpu, memory=memory)
+    _do_create(
+        "hermes",
+        name=name,
+        version=version,
+        datadir=datadir,
+        port=port,
+        cpu=cpu,
+        memory=memory,
+        apply_provider=apply_provider,
+        apply_agent=apply_agent,
+        apply_persist=apply_persist,
+    )
 
 
 @provider_app.command(
