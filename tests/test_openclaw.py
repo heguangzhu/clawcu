@@ -198,6 +198,43 @@ def test_run_container_supports_additional_port_bindings() -> None:
     assert options["timeout_seconds"] == DockerManager.RUN_TIMEOUT_SECONDS
 
 
+def test_run_container_supports_additional_mount_bindings() -> None:
+    runner = RecordingRunner()
+    manager = DockerManager(runner=runner)
+    record = InstanceRecord(
+        service="hermes",
+        name="javis",
+        version="v2026.4.13",
+        upstream_ref="v2026.4.13",
+        image_tag="clawcu/hermes-agent:v2026.4.13",
+        container_name="clawcu-hermes-javis",
+        datadir="/tmp/javis",
+        port=8652,
+        dashboard_port=9129,
+        cpu="1",
+        memory="2g",
+        auth_mode="native",
+        status="creating",
+        created_at="2026-04-11T00:00:00+00:00",
+        updated_at="2026-04-11T00:00:00+00:00",
+        history=[],
+    )
+
+    manager.run_container(
+        record,
+        ContainerRunSpec(
+            internal_port=8642,
+            mount_target="/opt/data",
+            additional_mounts=[("/tmp/javis/.hermes", "/root/.hermes")],
+        ),
+    )
+
+    command, _, options = runner.calls[0]
+    assert "/tmp/javis:/opt/data" in command
+    assert "/tmp/javis/.hermes:/root/.hermes" in command
+    assert options["timeout_seconds"] == DockerManager.RUN_TIMEOUT_SECONDS
+
+
 def test_run_container_appends_explicit_container_command() -> None:
     runner = RecordingRunner()
     manager = DockerManager(runner=runner)

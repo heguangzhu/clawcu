@@ -80,3 +80,4 @@ class ContainerRunSpec:
     extra_env: dict[str, str] = field(default_factory=dict)
     command: list[str] | None = None
     additional_ports: list[tuple[int, int]] = field(default_factory=list)
+    additional_mounts: list[tuple[str, str]] = field(default_factory=list)

@@ -141,6 +141,7 @@ def test_create_hermes_saves_record_and_writes_native_home(temp_clawcu_home, tmp
     env_path = datadir / ".env"
     assert env_path.exists()
     assert "API_SERVER_KEY=" in env_path.read_text(encoding="utf-8")
+    assert (datadir / ".hermes").is_dir()
     assert stat.S_IMODE(datadir.stat().st_mode) == 0o777
     assert stat.S_IMODE(config_path.stat().st_mode) == 0o666
     assert stat.S_IMODE(env_path.stat().st_mode) == 0o666
@@ -186,6 +187,9 @@ def test_hermes_run_spec_respects_image_entrypoint(temp_clawcu_home, tmp_path) -
     assert run_spec.extra_env["API_SERVER_HOST"] == "0.0.0.0"
     assert run_spec.extra_env["API_SERVER_KEY"]
     assert run_spec.additional_ports == [(9129, 9119)]
+    assert run_spec.additional_mounts == [
+        (str(tmp_path / "hermes-home" / ".hermes"), "/root/.hermes")
+    ]
 
 
 def test_hermes_access_info_points_to_dashboard(temp_clawcu_home, tmp_path) -> None:

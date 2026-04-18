@@ -104,9 +104,17 @@ class HermesAdapter(ServiceAdapter):
             datadir = record.datadir
         return Path(datadir) / ".env"
 
+    def profile_home_path(self, service, record: InstanceRecord | str) -> Path:
+        if isinstance(record, str):
+            datadir = self.default_datadir(service, record)
+        else:
+            datadir = record.datadir
+        return Path(datadir) / ".hermes"
+
     def run_spec(self, service, record: InstanceRecord) -> ContainerRunSpec:
         env_path = self.env_path(service, record)
         env_values = service._load_env_file(env_path)
+        profile_home = self.profile_home_path(service, record)
         return ContainerRunSpec(
             internal_port=self.internal_port,
             mount_target="/opt/data",
@@ -125,11 +133,14 @@ class HermesAdapter(ServiceAdapter):
             ]
             if record.dashboard_port is not None
             else [],
+            additional_mounts=[(str(profile_home), "/root/.hermes")],
         )
 
     def configure_before_run(self, service, record: InstanceRecord) -> None:
         datadir = Path(record.datadir)
         datadir.mkdir(parents=True, exist_ok=True)
+        profile_home = self.profile_home_path(service, record)
+        profile_home.mkdir(parents=True, exist_ok=True)
         config_path = datadir / "config.yaml"
         if not config_path.exists():
             payload = {

@@ -109,6 +109,8 @@ class DockerManager:
             "--label",
             f"com.clawcu.instance={record.name}",
         ]
+        for source_path, target_path in spec.additional_mounts:
+            command.extend(["-v", f"{source_path}:{target_path}"])
         for host_port, internal_port in spec.additional_ports:
             command.extend(["-p", f"{host_port}:{internal_port}"])
         if spec.env_file:
