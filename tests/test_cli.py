@@ -277,8 +277,13 @@ class FakeService:
             "fallbacks": ", ".join(fallbacks) if fallbacks else "-",
         }
 
-    def remove_provider(self, name: str) -> None:
-        self._record("remove_provider", name=name)
+    def remove_provider(self, name: str, *, force: bool = False) -> list[dict[str, str]]:
+        self._record("remove_provider", name=name, force=force)
+        return []
+
+    def find_instances_using_provider(self, name: str) -> list[dict[str, str]]:
+        self._record("find_instances_using_provider", name=name)
+        return list(getattr(self, "provider_usage", {}).get(name, []))
 
     def list_provider_models(self, name: str) -> list[str]:
         self._record("list_provider_models", name=name)
@@ -1760,7 +1765,8 @@ def test_provider_remove_command_forwards_name(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert "Removed provider:" in result.stdout
-    assert service.calls[0] == ("remove_provider", (), {"name": "openai-main"})
+    remove_calls = [c for c in service.calls if c[0] == "remove_provider"]
+    assert remove_calls == [("remove_provider", (), {"name": "openai-main", "force": False})]
 
 
 def test_provider_remove_requires_confirmation_in_non_interactive(monkeypatch) -> None:
@@ -1773,6 +1779,35 @@ def test_provider_remove_requires_confirmation_in_non_interactive(monkeypatch) -
     assert "--yes" in result.stdout
     # Service call MUST NOT happen without confirmation
     assert all(call[0] != "remove_provider" for call in service.calls)
+
+
+def test_provider_remove_warns_when_instances_reference_provider(monkeypatch) -> None:
+    service = FakeService()
+    service.provider_usage = {
+        "openai-main": [{"instance": "writer", "agent": "main", "service": "openclaw"}]
+    }
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["provider", "remove", "openai-main", "--yes"])
+
+    assert result.exit_code != 0
+    assert "writer/main" in result.stdout
+    assert "--force" in result.stdout
+    assert all(call[0] != "remove_provider" for call in service.calls)
+
+
+def test_provider_remove_force_deletes_even_when_in_use(monkeypatch) -> None:
+    service = FakeService()
+    service.provider_usage = {
+        "openai-main": [{"instance": "writer", "agent": "main", "service": "openclaw"}]
+    }
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["provider", "remove", "openai-main", "--force", "--yes"])
+
+    assert result.exit_code == 0
+    remove_calls = [c for c in service.calls if c[0] == "remove_provider"]
+    assert remove_calls == [("remove_provider", (), {"name": "openai-main", "force": True})]
 
 
 def test_provider_models_list_command_forwards_arguments(monkeypatch) -> None:

@@ -1126,14 +1126,36 @@ def _print_apply_provider_plan(plan: dict) -> None:
 @provider_app.command("remove", help="Remove a collected provider directory.")
 def remove_provider(
     name: Annotated[str, typer.Argument(help="Provider name.")],
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="Remove even if managed instances still reference this provider.",
+        ),
+    ] = False,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip the confirmation prompt.")] = False,
 ) -> None:
-    _confirm_destructive(
-        f"About to delete collected provider '{name}'. Its auth-profiles.json and models.json will be removed.",
-        yes,
-    )
+    service = get_service()
     try:
-        get_service().remove_provider(name)
+        in_use = service.find_instances_using_provider(name)
+    except Exception as exc:
+        _exit_with_error(str(exc))
+    summary = (
+        f"About to delete collected provider '{name}'. Its auth-profiles.json and models.json will be removed."
+    )
+    if in_use:
+        refs = ", ".join(f"{row['instance']}/{row['agent']}" for row in in_use)
+        if not force:
+            _exit_with_error(
+                f"Provider '{name}' is in use by: {refs}.\n"
+                "Re-run with --force to delete the bundle anyway "
+                "(the referenced instances will keep their existing env values "
+                "but will lose access to the collected models.json)."
+            )
+        summary += f"\n[bold red]Warning:[/bold red] in use by {refs}."
+    _confirm_destructive(summary, yes)
+    try:
+        service.remove_provider(name, force=force)
     except Exception as exc:
         _exit_with_error(str(exc))
     console.print(f"[yellow]Removed provider:[/yellow] {name}")

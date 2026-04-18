@@ -276,11 +276,55 @@ class ClawCUService:
         bundle = self.store.load_provider_bundle(service_name, provider_name)
         return bundle
 
-    def remove_provider(self, name: str) -> None:
+    def find_instances_using_provider(self, name: str) -> list[dict[str, str]]:
+        """Return managed instance/agent pairs referencing this provider.
+
+        Scans the agent-level provider summary for every managed instance
+        and returns an entry whenever the provider's ``providers`` column
+        lists the requested name. Used by ``provider remove`` to warn
+        before deleting a bundle that some instance is still pointing at.
+        """
+        service_name, provider_name = self._resolve_provider_ref(name)
+        hits: list[dict[str, str]] = []
+        for row in self.list_agent_summaries():
+            if row.get("service") and service_name != "any" and row.get("service") != service_name:
+                continue
+            providers_field = str(row.get("providers") or "")
+            for candidate in self._split_summary_values(providers_field):
+                if candidate == provider_name:
+                    hits.append(
+                        {
+                            "instance": str(row.get("instance") or ""),
+                            "agent": str(row.get("agent") or ""),
+                            "service": str(row.get("service") or ""),
+                        }
+                    )
+                    break
+        return hits
+
+    def remove_provider(self, name: str, *, force: bool = False) -> list[dict[str, str]]:
+        """Delete a collected provider bundle.
+
+        Returns the list of instances currently referencing the provider
+        (empty when safe). When ``force=False`` and at least one
+        reference is found, raises ``ValueError`` instead of deleting —
+        the CLI layer catches this to surface the warning; callers that
+        have already confirmed pass ``force=True``.
+        """
         service_name, provider_name = self._resolve_provider_ref(name)
         self.store.load_provider_bundle(service_name, provider_name)
+        in_use = self.find_instances_using_provider(name)
+        if in_use and not force:
+            refs = ", ".join(f"{row['instance']}/{row['agent']}" for row in in_use)
+            raise ValueError(
+                f"Provider '{provider_name}' is in use by: {refs}. "
+                "Re-run with --force to remove anyway."
+            )
         self.store.delete_provider(service_name, provider_name)
-        self.store.append_log(f"provider remove service={service_name} name={provider_name}")
+        self.store.append_log(
+            f"provider remove service={service_name} name={provider_name} force={force} in_use={len(in_use)}"
+        )
+        return in_use
 
     def apply_provider(
         self,
