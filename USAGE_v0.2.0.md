@@ -53,7 +53,7 @@ It describes the shared command surface, the service-specific differences betwee
 
 | Command | Description |
 |------|------|
-| `clawcu token <name>` | Print the OpenClaw dashboard token. This is currently OpenClaw-only. Hermes instances fail with a clear unsupported message. |
+| `clawcu token <name> [--copy] [--url-only\|--token-only] [--json]` | Print the OpenClaw dashboard token. Default shows both the token and the access URL with the `#token=…` anchor. `--copy` pushes the token into the system clipboard (pbcopy/xclip/wl-copy/clip). `--url-only`/`--token-only` are scripting-friendly shortcuts. Hermes instances fail with a hint directing you to `clawcu config <name>` (native auth). |
 | `clawcu approve <name> [requestId]` | Approve a pending OpenClaw browser pairing request. This is currently OpenClaw-only. Hermes instances fail with a clear unsupported message. |
 
 ## 6. Environment Variable Management

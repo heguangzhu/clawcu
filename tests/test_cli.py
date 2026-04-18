@@ -1032,8 +1032,93 @@ def test_token_command_prints_instance_token(monkeypatch) -> None:
     result = runner.invoke(app, ["token", "writer"])
 
     assert result.exit_code == 0
+    # Default output now labels both pieces.
+    assert "Token:" in result.stdout
     assert "token-writer" in result.stdout
+    assert "URL:" in result.stdout
+    assert "#token=token-writer" in result.stdout
     assert service.calls[0] == ("token", (), {"name": "writer"})
+
+
+def test_token_command_token_only_omits_url_and_label(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["token", "writer", "--token-only"])
+
+    assert result.exit_code == 0
+    assert result.stdout.strip() == "token-writer"
+
+
+def test_token_command_url_only_prints_access_url(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["token", "writer", "--url-only"])
+
+    assert result.exit_code == 0
+    assert result.stdout.strip() == "http://127.0.0.1:3000/#token=token-writer"
+
+
+def test_token_command_rejects_url_and_token_only_together(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["token", "writer", "--url-only", "--token-only"])
+
+    assert result.exit_code == 1
+    assert "mutually exclusive" in result.stdout
+
+
+def test_token_command_copy_flag_invokes_clipboard(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+    calls: list[tuple[str, str]] = []
+
+    def fake_copy(value: str) -> tuple[bool, str]:
+        calls.append(("copy", value))
+        return True, "pbcopy"
+
+    monkeypatch.setattr("clawcu.cli._copy_to_clipboard", fake_copy)
+
+    result = runner.invoke(app, ["token", "writer", "--copy"])
+
+    assert result.exit_code == 0
+    assert calls == [("copy", "token-writer")]
+    assert "Copied token to clipboard (pbcopy)" in result.stdout
+
+
+def test_token_command_copy_flag_warns_when_backend_missing(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+    monkeypatch.setattr(
+        "clawcu.cli._copy_to_clipboard",
+        lambda value: (False, "no clipboard backend found"),
+    )
+
+    result = runner.invoke(app, ["token", "writer", "--copy"])
+
+    assert result.exit_code == 0
+    assert "Could not copy to clipboard" in result.stdout
+
+
+def test_token_command_hints_hermes_native_auth(monkeypatch) -> None:
+    service = FakeService()
+
+    def not_supported(name: str) -> str:
+        raise ValueError(
+            "`clawcu token` is not supported for Hermes instances."
+        )
+
+    service.token = not_supported  # type: ignore[assignment]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["token", "javis"])
+
+    assert result.exit_code == 1
+    assert "not supported" in result.stdout
+    assert "Hermes uses native auth" in result.stdout
+    assert "clawcu config javis" in result.stdout
 
 
 def test_provider_apply_command_supports_persist(monkeypatch) -> None:

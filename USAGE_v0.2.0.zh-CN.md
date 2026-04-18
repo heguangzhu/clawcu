@@ -53,7 +53,7 @@
 
 | 命令 | 说明 |
 |------|------|
-| `clawcu token <name>` | 输出 OpenClaw dashboard token。当前仅支持 OpenClaw。对 Hermes 会给出明确的“不支持”提示。 |
+| `clawcu token <name> [--copy] [--url-only\|--token-only] [--json]` | 输出 OpenClaw dashboard token。默认同时打印 token 和带 `#token=…` 锚点的完整访问 URL。`--copy` 会把 token 塞进系统剪贴板（pbcopy/xclip/wl-copy/clip）。`--url-only` / `--token-only` 适合脚本。Hermes 实例会返回"不支持"错误，并提示运行 `clawcu config <name>` 走 native auth 流程。 |
 | `clawcu approve <name> [requestId]` | 审批 OpenClaw 的浏览器 pairing 请求。当前仅支持 OpenClaw。对 Hermes 会给出明确的“不支持”提示。 |
 
 ## 6. 环境变量管理

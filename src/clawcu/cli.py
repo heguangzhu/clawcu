@@ -1212,31 +1212,104 @@ def inspect_instance(
     _print_inspect_human(payload, reveal=reveal, show_history=show_history)
 
 
-@app.command("token", help="Print the dashboard token for a managed instance.")
+def _copy_to_clipboard(value: str) -> tuple[bool, str]:
+    """Best-effort clipboard copy.
+
+    Returns (ok, backend_name_or_error). Tries pbcopy / xclip / xsel /
+    wl-copy / clip in order. Short-circuits if none are found so the
+    caller can fall back to printing.
+    """
+    import shutil
+    import subprocess
+
+    candidates: list[tuple[str, list[str]]] = [
+        ("pbcopy", ["pbcopy"]),
+        ("wl-copy", ["wl-copy"]),
+        ("xclip", ["xclip", "-selection", "clipboard"]),
+        ("xsel", ["xsel", "--clipboard", "--input"]),
+        ("clip", ["clip"]),
+    ]
+    for label, cmd in candidates:
+        if shutil.which(cmd[0]) is None:
+            continue
+        try:
+            subprocess.run(cmd, input=value, text=True, check=True, timeout=5)
+        except Exception as exc:
+            return False, f"{label} failed: {exc}"
+        return True, label
+    return False, "no clipboard backend found (tried pbcopy, wl-copy, xclip, xsel, clip)"
+
+
+@app.command(
+    "token",
+    help=(
+        "Print the dashboard token for a managed instance. "
+        "Default shows both the token and the access URL with the `#token=…` anchor."
+    ),
+)
 def token_for_instance(
     ctx: typer.Context,
     name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
+    copy: Annotated[
+        bool,
+        typer.Option("--copy", "-c", help="Copy the token to the system clipboard (pbcopy/xclip/wl-copy/clip)."),
+    ] = False,
+    url_only: Annotated[
+        bool,
+        typer.Option("--url-only", help="Print only the access URL (with #token=… anchor). Scripting-friendly."),
+    ] = False,
+    token_only: Annotated[
+        bool,
+        typer.Option("--token-only", help="Print only the token, no labels. Scripting-friendly."),
+    ] = False,
     json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
     _set_json_mode(json_output)
     if not name:
         _show_help_and_exit(ctx)
+    if url_only and token_only:
+        _exit_with_error("--url-only and --token-only are mutually exclusive.")
     service = get_service()
     try:
         token = service.token(name)
     except Exception as exc:
-        _exit_with_error(str(exc))
+        message = str(exc)
+        if "not supported" in message.lower():
+            _exit_with_error(
+                f"{message}\n"
+                "Hint: Hermes uses native auth — run "
+                f"`clawcu config {name}` to configure it, or "
+                f"`clawcu exec {name} hermes auth` for the service-native flow."
+            )
+        _exit_with_error(message)
     dashboard_url: str | None = None
     try:
         dashboard_url = service.dashboard_url(name)
     except Exception:
         dashboard_url = None
+
     if _json_mode():
         _print_json({"name": name, "token": token, "url": dashboard_url})
         return
-    console.print(token)
-    if dashboard_url:
-        console.print(f"[blue]URL:[/blue] {dashboard_url}")
+    if url_only:
+        if not dashboard_url:
+            _exit_with_error(f"Instance '{name}' does not expose a dashboard URL.")
+        console.print(dashboard_url)
+    elif token_only:
+        console.print(token)
+    else:
+        console.print(f"[bold]Token:[/bold] {token}")
+        if dashboard_url:
+            console.print(f"[blue]URL:[/blue]   {dashboard_url}")
+
+    if copy:
+        ok, backend = _copy_to_clipboard(token)
+        if ok:
+            console.print(f"[green]Copied token to clipboard ({backend}).[/green]")
+        else:
+            console.print(
+                f"[yellow]Could not copy to clipboard:[/yellow] {backend}"
+            )
 
 
 @app.command("setenv", help="Set environment variables for a managed instance.")
