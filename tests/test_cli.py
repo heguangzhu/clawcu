@@ -2409,6 +2409,108 @@ def test_upgrade_list_versions_renders_remote_failure_warning(monkeypatch) -> No
     assert "timeout" in result.stdout
 
 
+def _make_truncating_service(remote_tags: list[str]) -> FakeService:
+    """Build a FakeService whose list_upgradable_versions returns ``remote_tags``.
+
+    Used to exercise the CLI truncation branch around 10+ remote versions.
+    """
+    service = FakeService()
+
+    def _with_many(name, *, include_remote=True):
+        service._record(
+            "list_upgradable_versions", name=name, include_remote=include_remote
+        )
+        return {
+            "instance": name,
+            "service": "openclaw",
+            "image_repo": "ghcr.io/openclaw/openclaw",
+            "current_version": "2026.4.1",
+            "history": ["2026.4.1"],
+            "local_images": ["2026.4.1"],
+            "remote_versions": list(remote_tags) if include_remote else None,
+            "remote_error": None,
+            "remote_registry": "ghcr.io" if include_remote else None,
+            "remote_requested": include_remote,
+        }
+
+    service.list_upgradable_versions = _with_many  # type: ignore[method-assign]
+    return service
+
+
+def test_upgrade_list_versions_truncates_remote_to_last_ten(monkeypatch) -> None:
+    # 15 tags in ascending order — default render should only show the
+    # 10 most recent (tail) and mention the hidden ones. Two distinct
+    # year buckets keep "hidden" tags from being substring-matched
+    # inside "shown" tags (e.g. 2020.1.1 is not a prefix of 2026.5.10).
+    hidden_tags = [f"2020.1.{i}" for i in range(1, 6)]
+    shown_tags = [f"2026.5.{i}" for i in range(1, 11)]
+    remote_tags = hidden_tags + shown_tags
+    service = _make_truncating_service(remote_tags)
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["upgrade", "writer", "--list-versions"])
+
+    assert result.exit_code == 0, result.stdout
+    # Tail (most recent 10) is shown...
+    for recent in shown_tags:
+        assert recent in result.stdout
+    # ...and the earliest hidden tags are NOT shown.
+    for hidden in hidden_tags:
+        assert hidden not in result.stdout
+    # Truncation summary communicates the hidden count + how to see all.
+    assert "showing 10 of 15" in result.stdout
+    assert "--all-versions" in result.stdout
+
+
+def test_upgrade_list_versions_all_versions_shows_full_remote(monkeypatch) -> None:
+    remote_tags = [f"2026.5.{i}" for i in range(1, 16)]
+    service = _make_truncating_service(remote_tags)
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app, ["upgrade", "writer", "--list-versions", "--all-versions"]
+    )
+
+    assert result.exit_code == 0, result.stdout
+    # Every tag is rendered — no truncation.
+    for tag in remote_tags:
+        assert tag in result.stdout
+    # Header shows the full count without the "showing N of M" hint.
+    assert "15 release tags" in result.stdout
+    assert "showing 10 of" not in result.stdout
+
+
+def test_upgrade_list_versions_does_not_truncate_below_threshold(monkeypatch) -> None:
+    # At exactly 10 remote tags, truncation must NOT kick in — the list
+    # is already at the preview limit.
+    remote_tags = [f"2026.5.{i}" for i in range(1, 11)]
+    service = _make_truncating_service(remote_tags)
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["upgrade", "writer", "--list-versions"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "10 release tags" in result.stdout
+    assert "showing" not in result.stdout
+    assert "--all-versions to see" not in result.stdout
+
+
+def test_upgrade_list_versions_json_payload_is_not_truncated(monkeypatch) -> None:
+    # JSON consumers must always get the full list; truncation is
+    # presentational only.
+    remote_tags = [f"2026.5.{i}" for i in range(1, 16)]
+    service = _make_truncating_service(remote_tags)
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app, ["upgrade", "writer", "--list-versions", "--json"]
+    )
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["remote_versions"] == remote_tags
+
+
 def test_upgrade_command_dry_run_shows_plan_without_executing(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)

@@ -1877,8 +1877,19 @@ def _print_upgrade_plan(plan: dict) -> None:
     console.print(table)
 
 
-def _print_upgradable_versions(payload: dict) -> None:
-    """Render list_upgradable_versions output as a small report."""
+_REMOTE_VERSION_PREVIEW_LIMIT = 10
+
+
+def _print_upgradable_versions(payload: dict, *, show_all: bool = False) -> None:
+    """Render list_upgradable_versions output as a small report.
+
+    When the remote registry returns more than
+    ``_REMOTE_VERSION_PREVIEW_LIMIT`` tags, only the most recent batch is
+    shown; pass ``show_all=True`` (wired to ``--all-versions`` in the CLI)
+    to render the complete list. The service-layer payload is always
+    complete — truncation is presentational only, so ``--json`` consumers
+    still see every tag.
+    """
     console.print(
         f"[bold]Instance:[/bold] {payload.get('instance', '-')}  "
         f"([dim]{payload.get('service', '-')}[/dim])"
@@ -1940,10 +1951,25 @@ def _print_upgradable_versions(payload: dict) -> None:
         )
     else:
         registry_hint = f" on {remote_registry}" if remote_registry else ""
-        console.print(
-            f"[bold]Remote{registry_hint} ({len(remote)} release tags):[/bold]"
+        total = len(remote)
+        # remote_versions is sorted ascending; the tail is the newest
+        # batch of releases. Truncate to keep the default view scannable
+        # and point power users at --all-versions for the full list.
+        if not show_all and total > _REMOTE_VERSION_PREVIEW_LIMIT:
+            display = remote[-_REMOTE_VERSION_PREVIEW_LIMIT:]
+            truncated = True
+        else:
+            display = remote
+            truncated = False
+        header_suffix = (
+            f" (showing {len(display)} of {total} release tags, most recent)"
+            if truncated
+            else f" ({total} release tags)"
         )
-        for tag in remote:
+        console.print(
+            f"[bold]Remote{registry_hint}{header_suffix}:[/bold]"
+        )
+        for tag in display:
             markers: list[str] = []
             if tag == current:
                 markers.append("current")
@@ -1951,6 +1977,10 @@ def _print_upgradable_versions(payload: dict) -> None:
                 markers.append("local")
             suffix = f" [dim]({', '.join(markers)})[/dim]" if markers else ""
             console.print(f"  - {tag}{suffix}")
+        if truncated:
+            console.print(
+                "[dim]  ... pass --all-versions to see the full list[/dim]"
+            )
 
 
 @app.command(
@@ -1984,6 +2014,18 @@ def upgrade_instance(
             ),
         ),
     ] = True,
+    all_versions: Annotated[
+        bool,
+        typer.Option(
+            "--all-versions",
+            help=(
+                "Show every remote release tag returned by the registry. "
+                "By default --list-versions truncates the remote section "
+                "to the 10 most recent releases to keep the output "
+                "scannable."
+            ),
+        ),
+    ] = False,
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -2020,7 +2062,7 @@ def upgrade_instance(
         if _json_mode():
             _print_json(payload)
             return
-        _print_upgradable_versions(payload)
+        _print_upgradable_versions(payload, show_all=all_versions)
         return
 
     if not version:
