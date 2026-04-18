@@ -114,6 +114,76 @@ def _mask_env_value(key: str, value: str, *, reveal: bool) -> str:
     return _mask_secret(value) if value else value
 
 
+def _parse_env_file(path: Path) -> list[tuple[str, str]]:
+    """Parse a .env-style file into an ordered list of (key, value) pairs.
+
+    Rules: skip blank lines and ``#`` comments; lines without ``=`` are
+    ignored. Leading/trailing whitespace around keys is stripped. Values
+    are kept verbatim (trailing whitespace preserved is a user choice we
+    do not second-guess). Duplicate keys follow last-write-wins.
+    """
+    if not path.exists():
+        raise typer.BadParameter(f"env file not found: {path}")
+    if path.is_dir():
+        raise typer.BadParameter(f"env file is a directory: {path}")
+    text = path.read_text(encoding="utf-8")
+    pairs: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in raw_line:
+            continue
+        key, value = raw_line.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        pairs[key] = value
+    return list(pairs.items())
+
+
+def _render_env_diff(
+    before: dict[str, str],
+    after: dict[str, str],
+    *,
+    reveal: bool,
+) -> None:
+    """Print a colored before/after diff for env changes.
+
+    ``after`` is the projected state (post-apply). Keys present in
+    ``before`` but not ``after`` are treated as removals.
+    """
+    before_keys = set(before)
+    after_keys = set(after)
+    added = sorted(after_keys - before_keys)
+    removed = sorted(before_keys - after_keys)
+    kept = sorted(after_keys & before_keys)
+
+    updated: list[str] = []
+    unchanged: list[str] = []
+    for key in kept:
+        if before[key] != after[key]:
+            updated.append(key)
+        else:
+            unchanged.append(key)
+
+    if not (added or removed or updated):
+        console.print("[dim]No changes.[/dim]")
+        return
+
+    for key in added:
+        value = _mask_env_value(key, after[key], reveal=reveal)
+        console.print(f"[green]+ {key}={value}[/green]")
+    for key in updated:
+        old_value = _mask_env_value(key, before[key], reveal=reveal)
+        new_value = _mask_env_value(key, after[key], reveal=reveal)
+        console.print(f"[yellow]~ {key}: {old_value} -> {new_value}[/yellow]")
+    for key in removed:
+        value = _mask_env_value(key, before[key], reveal=reveal)
+        console.print(f"[red]- {key}={value}[/red]")
+
+    if unchanged:
+        console.print(f"[dim]({len(unchanged)} unchanged)[/dim]")
+
+
 def _strip_token_fragment(url: str) -> str:
     if not url or "#" not in url:
         return url
@@ -1317,18 +1387,80 @@ def set_instance_env(
     ctx: typer.Context,
     name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
     assignments: Annotated[list[str] | None, typer.Argument(help="One or more KEY=VALUE assignments.")] = None,
+    from_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--from-file",
+            "-f",
+            help="Load KEY=VALUE pairs from a .env-style file. Mutually exclusive with inline assignments.",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Show a colored diff of env changes without writing the file or recreating.",
+        ),
+    ] = False,
+    reveal: Annotated[
+        bool,
+        typer.Option(
+            "--reveal",
+            help="Show unmasked values in --dry-run output for KEY/TOKEN/SECRET/PASSWORD entries.",
+        ),
+    ] = False,
     apply_now: Annotated[
         bool,
         typer.Option("--apply", help="Recreate the instance immediately so the new env takes effect now."),
     ] = False,
 ) -> None:
-    if not name or not assignments:
+    if not name:
         _show_help_and_exit(ctx)
+    if from_file is not None and assignments:
+        _exit_with_error("Use either inline KEY=VALUE arguments or --from-file, not both.")
+    if from_file is None and not assignments:
+        _show_help_and_exit(ctx)
+    if dry_run and apply_now:
+        _exit_with_error("--dry-run and --apply are mutually exclusive.")
+
+    effective_assignments: list[str]
+    if from_file is not None:
+        try:
+            pairs = _parse_env_file(from_file)
+        except typer.BadParameter as exc:
+            _exit_with_error(str(exc))
+        if not pairs:
+            _exit_with_error(f"No KEY=VALUE entries found in {from_file}.")
+        effective_assignments = [f"{key}={value}" for key, value in pairs]
+    else:
+        effective_assignments = list(assignments or [])
+
     service = get_service()
+
+    if dry_run:
+        try:
+            current = service.get_instance_env(name)
+        except Exception as exc:
+            _exit_with_error(str(exc))
+        before = dict(current.get("values") or {})
+        after = dict(before)
+        for assignment in effective_assignments:
+            if "=" not in assignment:
+                _exit_with_error(f"Invalid assignment '{assignment}'. Use KEY=VALUE.")
+            key, value = assignment.split("=", 1)
+            key = key.strip()
+            if not key:
+                _exit_with_error(f"Invalid assignment '{assignment}'. Empty key.")
+            after[key] = value
+        console.print(f"[cyan]Dry run:[/cyan] would update {current.get('path')}")
+        _render_env_diff(before, after, reveal=reveal)
+        console.print("[dim](no changes written; re-run without --dry-run to apply)[/dim]")
+        return
+
     if apply_now and hasattr(service, "set_reporter"):
         service.set_reporter(_print_progress)
     try:
-        result = service.set_instance_env(name, list(assignments))
+        result = service.set_instance_env(name, effective_assignments)
     except Exception as exc:
         _exit_with_error(str(exc))
     console.print(
@@ -1397,6 +1529,20 @@ def unset_instance_env(
     ctx: typer.Context,
     name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
     keys: Annotated[list[str] | None, typer.Argument(help="One or more environment variable names.")] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Show which keys would be removed without writing the file or recreating.",
+        ),
+    ] = False,
+    reveal: Annotated[
+        bool,
+        typer.Option(
+            "--reveal",
+            help="Show unmasked values in --dry-run output for KEY/TOKEN/SECRET/PASSWORD entries.",
+        ),
+    ] = False,
     apply_now: Annotated[
         bool,
         typer.Option("--apply", help="Recreate the instance immediately so the env change takes effect now."),
@@ -1404,7 +1550,35 @@ def unset_instance_env(
 ) -> None:
     if not name or not keys:
         _show_help_and_exit(ctx)
+    if dry_run and apply_now:
+        _exit_with_error("--dry-run and --apply are mutually exclusive.")
     service = get_service()
+
+    if dry_run:
+        try:
+            current = service.get_instance_env(name)
+        except Exception as exc:
+            _exit_with_error(str(exc))
+        before = dict(current.get("values") or {})
+        after = dict(before)
+        present: list[str] = []
+        missing: list[str] = []
+        for raw_key in keys:
+            key = raw_key.strip()
+            if key in after:
+                after.pop(key, None)
+                present.append(key)
+            else:
+                missing.append(key)
+        console.print(f"[cyan]Dry run:[/cyan] would update {current.get('path')}")
+        _render_env_diff(before, after, reveal=reveal)
+        if missing:
+            console.print(
+                f"[dim]Not present (no-op): {', '.join(sorted(missing))}[/dim]"
+            )
+        console.print("[dim](no changes written; re-run without --dry-run to apply)[/dim]")
+        return
+
     if apply_now and hasattr(service, "set_reporter"):
         service.set_reporter(_print_progress)
     try:

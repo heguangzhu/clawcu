@@ -60,9 +60,9 @@
 
 | 命令 | 说明 |
 |------|------|
-| `clawcu setenv <name> KEY=VALUE [KEY=VALUE ...] [--apply]` | 写入实例 env 文件。`--apply` 会立即执行 `recreate`，让 Docker 重新加载 env。 |
-| `clawcu getenv <name>` | 输出当前实例配置的环境变量。 |
-| `clawcu unsetenv <name> KEY [KEY ...] [--apply]` | 从实例 env 文件中删除环境变量。`--apply` 会立即执行 `recreate`。 |
+| `clawcu setenv <name> KEY=VALUE [KEY=VALUE ...] [--from-file <path>] [--dry-run] [--reveal] [--apply]` | 写入实例 env 文件。内联 `KEY=VALUE` 参数和 `--from-file <path>`（`.env` 风格，按 `KEY=VALUE` 逐行读入，`#` 注释和空行会被忽略）是互斥的。`--dry-run` 会以 `+/-/~` 彩色 diff 的形式打印与当前 env 的差异，不实际写入；敏感 key（`KEY`/`TOKEN`/`SECRET`/`PASSWORD`）会打码，加 `--reveal` 可显示原值。`--apply` 会立即执行 `recreate` 让 Docker 重新加载 env（不能与 `--dry-run` 同时使用）。 |
+| `clawcu getenv <name> [--reveal] [--json]` | 输出当前实例配置的环境变量。敏感 key 默认会打码，加 `--reveal` 可显示原值。 |
+| `clawcu unsetenv <name> KEY [KEY ...] [--dry-run] [--reveal] [--apply]` | 从实例 env 文件中删除环境变量。`--dry-run` 会预览将要删除的 key，并把不存在的 key 作为 no-op 单独列出，不实际写入。`--apply` 会立即执行 `recreate`（不能与 `--dry-run` 同时使用）。 |
 
 ## 7. 模型配置收集与复用
 

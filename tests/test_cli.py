@@ -1268,6 +1268,172 @@ def test_unsetenv_command_can_recreate_instance_immediately(monkeypatch) -> None
     assert service.calls[1] == ("recreate_instance", (), {"name": "writer"})
 
 
+def test_setenv_command_from_file_loads_assignments(monkeypatch, tmp_path) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    env_file = tmp_path / "bundle.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "# a comment",
+                "",
+                "OPENAI_API_KEY=sk-file",
+                "OPENAI_BASE_URL=https://file.example.com/v1",
+                "   NOT_A_PAIR_LINE   ",  # no '=' -> ignored
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["setenv", "writer", "--from-file", str(env_file)])
+
+    assert result.exit_code == 0, result.stdout
+    assert "/tmp/writer.env" in result.stdout
+    assert service.calls[0] == (
+        "set_instance_env",
+        (),
+        {
+            "name": "writer",
+            "assignments": [
+                "OPENAI_API_KEY=sk-file",
+                "OPENAI_BASE_URL=https://file.example.com/v1",
+            ],
+        },
+    )
+
+
+def test_setenv_command_from_file_and_inline_are_exclusive(monkeypatch, tmp_path) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    env_file = tmp_path / "bundle.env"
+    env_file.write_text("KEY=val\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        ["setenv", "writer", "FOO=bar", "--from-file", str(env_file)],
+    )
+
+    assert result.exit_code != 0
+    assert "not both" in result.stdout.lower() or "not both" in (result.stderr or "").lower()
+    # service was never asked to write
+    assert not any(call[0] == "set_instance_env" for call in service.calls)
+
+
+def test_setenv_command_from_file_missing_file_errors(monkeypatch, tmp_path) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    missing = tmp_path / "nope.env"
+    result = runner.invoke(app, ["setenv", "writer", "--from-file", str(missing)])
+
+    assert result.exit_code != 0
+    assert "not found" in result.stdout.lower() or "not found" in (result.stderr or "").lower()
+    assert not any(call[0] == "set_instance_env" for call in service.calls)
+
+
+def test_setenv_dry_run_shows_diff_without_writing(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    # FakeService.get_instance_env returns:
+    #   OPENAI_API_KEY=sk-test, OPENAI_BASE_URL=https://api.example.com/v1
+    result = runner.invoke(
+        app,
+        [
+            "setenv",
+            "writer",
+            "OPENAI_API_KEY=sk-new",  # updated (sensitive; masked)
+            "NEW_FLAG=1",  # added (not sensitive)
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "Dry run" in result.stdout
+    # Added key visible in plain text (not sensitive)
+    assert "+ NEW_FLAG=1" in result.stdout
+    # Updated sensitive key uses masking, not the raw token
+    assert "~ OPENAI_API_KEY" in result.stdout
+    assert "sk-new" not in result.stdout
+    assert "sk-test" not in result.stdout
+    # No write / no recreate was attempted
+    assert not any(call[0] == "set_instance_env" for call in service.calls)
+    assert not any(call[0] == "recreate_instance" for call in service.calls)
+    # But we did need to read current state
+    assert any(call[0] == "get_instance_env" for call in service.calls)
+
+
+def test_setenv_dry_run_reveal_shows_raw_values(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        ["setenv", "writer", "OPENAI_API_KEY=sk-new", "--dry-run", "--reveal"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "sk-new" in result.stdout
+    assert not any(call[0] == "set_instance_env" for call in service.calls)
+
+
+def test_setenv_dry_run_and_apply_are_mutually_exclusive(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        ["setenv", "writer", "FOO=bar", "--dry-run", "--apply"],
+    )
+
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.stdout.lower() or "mutually exclusive" in (result.stderr or "").lower()
+    assert not any(call[0] == "set_instance_env" for call in service.calls)
+
+
+def test_unsetenv_dry_run_previews_removals(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "unsetenv",
+            "writer",
+            "OPENAI_BASE_URL",  # present
+            "MISSING_KEY",  # not present -> no-op
+            "--dry-run",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "Dry run" in result.stdout
+    # Removal of the present key is shown (OPENAI_BASE_URL is not sensitive)
+    assert "- OPENAI_BASE_URL=https://api.example.com/v1" in result.stdout
+    # Missing key is listed under no-op footer
+    assert "MISSING_KEY" in result.stdout
+    # No write / no recreate
+    assert not any(call[0] == "unset_instance_env" for call in service.calls)
+    assert not any(call[0] == "recreate_instance" for call in service.calls)
+
+
+def test_unsetenv_dry_run_and_apply_are_mutually_exclusive(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        ["unsetenv", "writer", "OPENAI_API_KEY", "--dry-run", "--apply"],
+    )
+
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.stdout.lower() or "mutually exclusive" in (result.stderr or "").lower()
+    assert not any(call[0] == "unset_instance_env" for call in service.calls)
+
+
 def test_provider_list_command_shows_providers(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)

@@ -60,9 +60,9 @@ It describes the shared command surface, the service-specific differences betwee
 
 | Command | Description |
 |------|------|
-| `clawcu setenv <name> KEY=VALUE [KEY=VALUE ...] [--apply]` | Write environment variables into the instance env file. `--apply` immediately recreates the instance so Docker reloads the env file. |
-| `clawcu getenv <name>` | Print the current environment variables configured for the instance. |
-| `clawcu unsetenv <name> KEY [KEY ...] [--apply]` | Remove environment variables from the instance env file. `--apply` immediately recreates the instance. |
+| `clawcu setenv <name> KEY=VALUE [KEY=VALUE ...] [--from-file <path>] [--dry-run] [--reveal] [--apply]` | Write environment variables into the instance env file. Inline `KEY=VALUE` args and `--from-file <path>` (a `.env`-style file with `KEY=VALUE` lines; `#` comments and blanks are skipped) are mutually exclusive. `--dry-run` prints a colored `+/-/~` diff against the current env without writing — sensitive values (`KEY`/`TOKEN`/`SECRET`/`PASSWORD`) are masked unless `--reveal` is passed. `--apply` immediately recreates the instance so Docker reloads the env file (cannot be combined with `--dry-run`). |
+| `clawcu getenv <name> [--reveal] [--json]` | Print the current environment variables configured for the instance. Sensitive values are masked unless `--reveal` is passed. |
+| `clawcu unsetenv <name> KEY [KEY ...] [--dry-run] [--reveal] [--apply]` | Remove environment variables from the instance env file. `--dry-run` previews which keys would be removed (and lists keys not present as no-ops) without writing. `--apply` immediately recreates the instance (cannot be combined with `--dry-run`). |
 
 ## 7. Model Configuration Collection and Reuse
 
