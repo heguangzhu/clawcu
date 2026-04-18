@@ -1031,32 +1031,77 @@ def test_empty_service_groups_show_help_instead_of_error() -> None:
     assert "Missing command" not in pull_result.stdout
 
 
-def test_empty_argument_commands_show_help_instead_of_error() -> None:
-    commands = [
-        ("inspect", "inspect [OPTIONS] [NAME]"),
-        ("token", "token [OPTIONS] [NAME]"),
-        ("provider collect", "provider collect [OPTIONS]"),
-        ("provider show", "provider show [OPTIONS] [NAME]"),
-        ("provider apply", "provider apply [OPTIONS] [PROVIDER] [INSTANCE]"),
-        ("provider remove", "provider remove [OPTIONS] [NAME]"),
-        ("provider models list", "provider models list [OPTIONS] [NAME]"),
-        ("exec", "exec [OPTIONS] [NAME] COMMAND [ARGS]..."),
-        ("start", "start [OPTIONS] [NAME]"),
-        ("stop", "stop [OPTIONS] [NAME]"),
-        ("restart", "restart [OPTIONS] [NAME]"),
-        ("recreate", "recreate [OPTIONS] [NAME]"),
-        ("upgrade", "upgrade [OPTIONS] [NAME]"),
-        ("rollback", "rollback [OPTIONS] [NAME]"),
-        ("clone", "clone [OPTIONS] [SOURCE_NAME]"),
-        ("logs", "logs [OPTIONS] [NAME]"),
-        ("remove", "remove [OPTIONS] [NAME]"),
-    ]
+def test_missing_required_arguments_exit_with_posix_error() -> None:
+    """Commands with required positional args / options error cleanly.
 
-    for command, usage in commands:
+    Post v0.2, ClawCU uses Typer's native required-option enforcement
+    instead of the old "show help, exit 0 on no args" behavior. That
+    makes `--help` output distinguish required from optional via the
+    `*` gutter marker, at the cost of switching missing-arg behavior
+    from "print help" to "print error + exit 2" — standard POSIX CLI.
+    """
+    commands_missing_name = [
+        "inspect",
+        "token",
+        "provider show",
+        "provider remove",
+        "provider models list",
+        "start",
+        "stop",
+        "restart",
+        "recreate",
+        "upgrade",
+        "rollback",
+        "logs",
+        "remove",
+        "approve",
+        "tui",
+        "getenv",
+        "setenv",
+        "unsetenv",
+    ]
+    for command in commands_missing_name:
         result = runner.invoke(app, command.split())
-        assert result.exit_code == 0
-        assert usage in result.stdout
-        assert "Missing argument" not in result.stdout
+        assert result.exit_code == 2, (
+            f"{command!r} should exit 2 on missing required arg, got "
+            f"{result.exit_code}: {result.stdout}"
+        )
+        # Typer's standard "Missing argument 'NAME'" error. Ensures the
+        # user sees WHICH arg is missing, not a wall of help text.
+        assert "Missing argument" in result.output or "Missing option" in result.output, (
+            f"{command!r} should surface a 'Missing' error: {result.output}"
+        )
+
+    # provider apply has two positional args; both should be surfaced.
+    result = runner.invoke(app, ["provider", "apply"])
+    assert result.exit_code == 2
+
+    # provider collect has three mutually-exclusive scope flags; a clean
+    # error is preferable to an exit-2 help dump.
+    result = runner.invoke(app, ["provider", "collect"])
+    assert result.exit_code == 1
+    assert "--all" in result.output and "--instance" in result.output
+
+    # clone has --name as a required OPTION; missing it should also
+    # surface via Typer's standard missing-option error.
+    result = runner.invoke(app, ["clone", "writer"])
+    assert result.exit_code == 2
+    assert "Missing option" in result.output
+
+
+def test_required_options_render_in_help_with_asterisk() -> None:
+    """--help for a command with a required option shows the `*` marker.
+
+    This is the user-facing outcome of switching from manual
+    `_show_help_and_exit` checks to Typer `required=True` — you can
+    now tell at a glance which options are mandatory.
+    """
+    result = runner.invoke(app, ["create", "openclaw", "--help"])
+    assert result.exit_code == 0
+    # Required options carry a `*` in the left gutter AND a [required]
+    # suffix in the Rich panel. We assert on the stable "required"
+    # marker rather than the cosmetic asterisk.
+    assert "required" in result.output.lower()
 
 
 def test_list_command_defaults_to_managed_source(monkeypatch) -> None:

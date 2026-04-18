@@ -736,29 +736,22 @@ def provider_models_callback(ctx: typer.Context) -> None:
 
 @pull_app.command("openclaw")
 def pull_openclaw(
-    ctx: typer.Context,
-    version: Annotated[str | None, typer.Option("--version", help="OpenClaw version to pull.")] = None,
+    version: Annotated[str, typer.Option("--version", help="OpenClaw version to pull.")],
 ) -> None:
-    if not version:
-        _show_help_and_exit(ctx)
     _do_pull("openclaw", version)
 
 
 @pull_app.command("hermes")
 def pull_hermes(
-    ctx: typer.Context,
-    version: Annotated[str | None, typer.Option("--version", help="Hermes git ref to pull and build.")] = None,
+    version: Annotated[str, typer.Option("--version", help="Hermes git ref to pull and build.")],
 ) -> None:
-    if not version:
-        _show_help_and_exit(ctx)
     _do_pull("hermes", version)
 
 
 @create_app.command("openclaw")
 def create_openclaw(
-    ctx: typer.Context,
-    name: Annotated[str | None, typer.Option("--name", help="Managed instance name.")] = None,
-    version: Annotated[str | None, typer.Option("--version", help="OpenClaw version to run.")] = None,
+    name: Annotated[str, typer.Option("--name", help="Managed instance name.")],
+    version: Annotated[str, typer.Option("--version", help="OpenClaw version to run.")],
     datadir: Annotated[
         str | None,
         typer.Option("--datadir", help="Host data directory. Defaults to ~/.clawcu/{name}."),
@@ -773,16 +766,13 @@ def create_openclaw(
     cpu: Annotated[str, typer.Option("--cpu", help="Docker CPU limit.")] = "1",
     memory: Annotated[str, typer.Option("--memory", help="Docker memory limit.")] = "2g",
 ) -> None:
-    if not name or not version:
-        _show_help_and_exit(ctx)
     _do_create("openclaw", name=name, version=version, datadir=datadir, port=port, cpu=cpu, memory=memory)
 
 
 @create_app.command("hermes")
 def create_hermes(
-    ctx: typer.Context,
-    name: Annotated[str | None, typer.Option("--name", help="Managed instance name.")] = None,
-    version: Annotated[str | None, typer.Option("--version", help="Hermes git ref to run.")] = None,
+    name: Annotated[str, typer.Option("--name", help="Managed instance name.")],
+    version: Annotated[str, typer.Option("--version", help="Hermes git ref to run.")],
     datadir: Annotated[
         str | None,
         typer.Option("--datadir", help="Host data directory. Defaults to ~/.clawcu/{name}."),
@@ -797,14 +787,11 @@ def create_hermes(
     cpu: Annotated[str, typer.Option("--cpu", help="Docker CPU limit.")] = "1",
     memory: Annotated[str, typer.Option("--memory", help="Docker memory limit.")] = "2g",
 ) -> None:
-    if not name or not version:
-        _show_help_and_exit(ctx)
     _do_create("hermes", name=name, version=version, datadir=datadir, port=port, cpu=cpu, memory=memory)
 
 
 @provider_app.command("collect", help="Collect model configuration assets from managed instances or local agent homes.")
 def collect_providers(
-    ctx: typer.Context,
     all_instances: Annotated[
         bool,
         typer.Option("--all", help="Collect model configs from all ClawCU-managed instances plus local ~/.openclaw and ~/.hermes when present."),
@@ -819,7 +806,9 @@ def collect_providers(
     ] = None,
 ) -> None:
     if not all_instances and not instance and not path:
-        _show_help_and_exit(ctx)
+        _exit_with_error(
+            "provider collect needs a target scope: pass one of --all, --instance <name>, or --path <home>."
+        )
     try:
         result = get_service().collect_providers(
             all_instances=all_instances,
@@ -881,12 +870,9 @@ def list_providers(
 
 @provider_app.command("show", help="Show the collected auth-profiles.json and models.json for a provider.")
 def show_provider(
-    ctx: typer.Context,
-    name: Annotated[str | None, typer.Argument(help="Provider name.")] = None,
+    name: Annotated[str, typer.Argument(help="Provider name.")],
     reveal: Annotated[bool, typer.Option("--reveal", help="Show unmasked secrets. Off by default for safety.")] = False,
 ) -> None:
-    if not name:
-        _show_help_and_exit(ctx)
     try:
         payload = get_service().show_provider(name)
     except Exception as exc:
@@ -896,9 +882,8 @@ def show_provider(
 
 @provider_app.command("apply", help="Apply a collected provider to a managed instance agent.")
 def apply_provider(
-    ctx: typer.Context,
-    provider: Annotated[str | None, typer.Argument(help="Collected provider name.")] = None,
-    instance: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
+    provider: Annotated[str, typer.Argument(help="Collected provider name.")],
+    instance: Annotated[str, typer.Argument(help="Managed instance name.")],
     agent: Annotated[str, typer.Option("--agent", help="Target agent name. Defaults to main.")] = "main",
     persist: Annotated[
         bool,
@@ -913,8 +898,6 @@ def apply_provider(
         typer.Option("--fallbacks", help="Comma-separated fallback model list for the agent."),
     ] = None,
 ) -> None:
-    if not provider or not instance:
-        _show_help_and_exit(ctx)
     fallback_list = None
     if fallbacks is not None:
         fallback_list = [item.strip() for item in fallbacks.split(",") if item.strip()]
@@ -951,12 +934,9 @@ def apply_provider(
 
 @provider_app.command("remove", help="Remove a collected provider directory.")
 def remove_provider(
-    ctx: typer.Context,
-    name: Annotated[str | None, typer.Argument(help="Provider name.")] = None,
+    name: Annotated[str, typer.Argument(help="Provider name.")],
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip the confirmation prompt.")] = False,
 ) -> None:
-    if not name:
-        _show_help_and_exit(ctx)
     _confirm_destructive(
         f"About to delete collected provider '{name}'. Its auth-profiles.json and models.json will be removed.",
         yes,
@@ -970,13 +950,10 @@ def remove_provider(
 
 @provider_models_app.command("list", help="List the models stored in a collected provider.")
 def list_provider_models(
-    ctx: typer.Context,
-    name: Annotated[str | None, typer.Argument(help="Provider name.")] = None,
+    name: Annotated[str, typer.Argument(help="Provider name.")],
     json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
     _set_json_mode(json_output)
-    if not name:
-        _show_help_and_exit(ctx)
     try:
         models = get_service().list_provider_models(name)
     except Exception as exc:
@@ -1257,8 +1234,7 @@ def _print_inspect_human(payload: dict, *, reveal: bool, show_history: bool) -> 
     help="Show detailed state for a managed instance. Default is a compact readable view; pass --json for the full payload.",
 )
 def inspect_instance(
-    ctx: typer.Context,
-    name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
+    name: Annotated[str, typer.Argument(help="Managed instance name.")],
     show_history: Annotated[
         bool,
         typer.Option("--show-history", help="Expand the full history timeline (folded by default)."),
@@ -1270,8 +1246,6 @@ def inspect_instance(
     json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
     _set_json_mode(json_output)
-    if not name:
-        _show_help_and_exit(ctx)
     try:
         payload = get_service().inspect_instance(name)
     except Exception as exc:
@@ -1318,8 +1292,7 @@ def _copy_to_clipboard(value: str) -> tuple[bool, str]:
     ),
 )
 def token_for_instance(
-    ctx: typer.Context,
-    name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
+    name: Annotated[str, typer.Argument(help="Managed instance name.")],
     copy: Annotated[
         bool,
         typer.Option("--copy", "-c", help="Copy the token to the system clipboard (pbcopy/xclip/wl-copy/clip)."),
@@ -1335,8 +1308,6 @@ def token_for_instance(
     json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
     _set_json_mode(json_output)
-    if not name:
-        _show_help_and_exit(ctx)
     if url_only and token_only:
         _exit_with_error("--url-only and --token-only are mutually exclusive.")
     service = get_service()
@@ -1384,8 +1355,7 @@ def token_for_instance(
 
 @app.command("setenv", help="Set environment variables for a managed instance.")
 def set_instance_env(
-    ctx: typer.Context,
-    name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
+    name: Annotated[str, typer.Argument(help="Managed instance name.")],
     assignments: Annotated[list[str] | None, typer.Argument(help="One or more KEY=VALUE assignments.")] = None,
     from_file: Annotated[
         Path | None,
@@ -1414,12 +1384,12 @@ def set_instance_env(
         typer.Option("--apply", help="Recreate the instance immediately so the new env takes effect now."),
     ] = False,
 ) -> None:
-    if not name:
-        _show_help_and_exit(ctx)
     if from_file is not None and assignments:
         _exit_with_error("Use either inline KEY=VALUE arguments or --from-file, not both.")
     if from_file is None and not assignments:
-        _show_help_and_exit(ctx)
+        _exit_with_error(
+            "setenv needs env input: pass one or more KEY=VALUE assignments, or use --from-file <path>."
+        )
     if dry_run and apply_now:
         _exit_with_error("--dry-run and --apply are mutually exclusive.")
 
@@ -1486,8 +1456,7 @@ def set_instance_env(
 
 @app.command("getenv", help="List environment variables configured for a managed instance.")
 def get_instance_env(
-    ctx: typer.Context,
-    name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
+    name: Annotated[str, typer.Argument(help="Managed instance name.")],
     reveal: Annotated[
         bool,
         typer.Option("--reveal", help="Show unmasked values for KEY/TOKEN/SECRET/PASSWORD entries. Off by default."),
@@ -1495,8 +1464,6 @@ def get_instance_env(
     json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
     _set_json_mode(json_output)
-    if not name:
-        _show_help_and_exit(ctx)
     try:
         result = get_service().get_instance_env(name)
     except Exception as exc:
@@ -1526,9 +1493,8 @@ def get_instance_env(
 
 @app.command("unsetenv", help="Remove environment variables configured for a managed instance.")
 def unset_instance_env(
-    ctx: typer.Context,
-    name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
-    keys: Annotated[list[str] | None, typer.Argument(help="One or more environment variable names.")] = None,
+    name: Annotated[str, typer.Argument(help="Managed instance name.")],
+    keys: Annotated[list[str], typer.Argument(help="One or more environment variable names.")],
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -1548,8 +1514,6 @@ def unset_instance_env(
         typer.Option("--apply", help="Recreate the instance immediately so the env change takes effect now."),
     ] = False,
 ) -> None:
-    if not name or not keys:
-        _show_help_and_exit(ctx)
     if dry_run and apply_now:
         _exit_with_error("--dry-run and --apply are mutually exclusive.")
     service = get_service()
@@ -1612,12 +1576,9 @@ def unset_instance_env(
 
 @app.command("approve", help="Approve a pending browser pairing request for an instance.")
 def approve_pairing(
-    ctx: typer.Context,
-    name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
+    name: Annotated[str, typer.Argument(help="Managed instance name.")],
     request_id: Annotated[str | None, typer.Argument(help="Specific pairing request id to approve.")] = None,
 ) -> None:
-    if not name:
-        _show_help_and_exit(ctx)
     service = get_service()
     if hasattr(service, "set_reporter"):
         service.set_reporter(_print_progress)
@@ -1702,15 +1663,12 @@ def exec_instance(
     help="Launch the native interactive TUI or chat flow for a managed instance.",
 )
 def tui_instance(
-    ctx: typer.Context,
-    name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
+    name: Annotated[str, typer.Argument(help="Managed instance name.")],
     agent: Annotated[
         str,
         typer.Option("--agent", help="Target agent name. Defaults to main."),
     ] = "main",
 ) -> None:
-    if not name:
-        _show_help_and_exit(ctx)
     service = get_service()
     if hasattr(service, "set_reporter"):
         service.set_reporter(_print_progress)
@@ -1722,11 +1680,8 @@ def tui_instance(
 
 @app.command("start", help="Start a stopped managed instance.")
 def start_instance(
-    ctx: typer.Context,
-    name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
+    name: Annotated[str, typer.Argument(help="Managed instance name.")],
 ) -> None:
-    if not name:
-        _show_help_and_exit(ctx)
     service = get_service()
     if hasattr(service, "set_reporter"):
         service.set_reporter(_print_progress)
@@ -1740,8 +1695,7 @@ def start_instance(
 
 @app.command("stop", help="Stop a running managed instance.")
 def stop_instance(
-    ctx: typer.Context,
-    name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
+    name: Annotated[str, typer.Argument(help="Managed instance name.")],
     time: Annotated[
         int | None,
         typer.Option(
@@ -1755,8 +1709,6 @@ def stop_instance(
         ),
     ] = None,
 ) -> None:
-    if not name:
-        _show_help_and_exit(ctx)
     try:
         record = get_service().stop_instance(name, timeout=time)
     except Exception as exc:
@@ -1767,8 +1719,7 @@ def stop_instance(
 
 @app.command("restart", help="Restart a managed instance.")
 def restart_instance(
-    ctx: typer.Context,
-    name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
+    name: Annotated[str, typer.Argument(help="Managed instance name.")],
     recreate_if_config_changed: Annotated[
         bool,
         typer.Option(
@@ -1785,8 +1736,6 @@ def restart_instance(
         ),
     ] = True,
 ) -> None:
-    if not name:
-        _show_help_and_exit(ctx)
     service = get_service()
     if recreate_if_config_changed and hasattr(service, "set_reporter"):
         service.set_reporter(_print_progress)
@@ -1838,11 +1787,8 @@ def _do_recreate(service: ClawCUService, name: str) -> None:
     help="Recreate an existing instance. Auto-retries instances in create_failed status.",
 )
 def recreate_instance(
-    ctx: typer.Context,
-    name: Annotated[str | None, typer.Argument(help="Instance to recreate.")] = None,
+    name: Annotated[str, typer.Argument(help="Instance to recreate.")],
 ) -> None:
-    if not name:
-        _show_help_and_exit(ctx)
     service = get_service()
     if hasattr(service, "set_reporter"):
         service.set_reporter(_print_progress)
@@ -1988,9 +1934,8 @@ def _print_upgradable_versions(payload: dict, *, show_all: bool = False) -> None
     help="Upgrade an instance to a newer service version with a safety snapshot of its data directory and env file.",
 )
 def upgrade_instance(
-    ctx: typer.Context,
-    name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
-    version: Annotated[str | None, typer.Option("--version", help="Target service version or git ref.")] = None,
+    name: Annotated[str, typer.Argument(help="Managed instance name.")],
+    version: Annotated[str | None, typer.Option("--version", help="Target service version or git ref. Required unless --list-versions is passed.")] = None,
     list_versions: Annotated[
         bool,
         typer.Option(
@@ -2048,8 +1993,6 @@ def upgrade_instance(
     json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
     _set_json_mode(json_output)
-    if not name:
-        _show_help_and_exit(ctx)
     service = get_service()
 
     if list_versions:
@@ -2066,7 +2009,9 @@ def upgrade_instance(
         return
 
     if not version:
-        _show_help_and_exit(ctx)
+        _exit_with_error(
+            "upgrade needs a target version: pass --version <v>, or use --list-versions to see candidates."
+        )
 
     try:
         plan = service.upgrade_plan(name, version=version)
@@ -2197,8 +2142,7 @@ def _print_rollback_targets(payload: dict) -> None:
     help="Roll an instance back to an earlier snapshot. Defaults to the most recent transition; pass --to <version> to target a specific one, or --list to enumerate available targets.",
 )
 def rollback_instance(
-    ctx: typer.Context,
-    name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
+    name: Annotated[str, typer.Argument(help="Managed instance name.")],
     to_version: Annotated[
         str | None,
         typer.Option(
@@ -2243,8 +2187,6 @@ def rollback_instance(
     json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
     _set_json_mode(json_output)
-    if not name:
-        _show_help_and_exit(ctx)
     service = get_service()
 
     if list_targets:
@@ -2310,9 +2252,8 @@ def rollback_instance(
     ),
 )
 def clone_instance(
-    ctx: typer.Context,
-    source_name: Annotated[str | None, typer.Argument(help="Source instance name.")] = None,
-    name: Annotated[str | None, typer.Option("--name", help="New cloned instance name.")] = None,
+    source_name: Annotated[str, typer.Argument(help="Source instance name.")],
+    name: Annotated[str, typer.Option("--name", help="New cloned instance name.")],
     datadir: Annotated[str | None, typer.Option("--datadir", help="Target cloned data directory.")] = None,
     port: Annotated[int | None, typer.Option("--port", help="Target host port.")] = None,
     version: Annotated[
@@ -2342,8 +2283,6 @@ def clone_instance(
         ),
     ] = True,
 ) -> None:
-    if not source_name or not name:
-        _show_help_and_exit(ctx)
     service = get_service()
     if hasattr(service, "set_reporter"):
         service.set_reporter(_print_progress)
@@ -2378,8 +2317,7 @@ def clone_instance(
 
 @app.command("logs", help="Stream or print Docker logs for a managed instance.")
 def logs_instance(
-    ctx: typer.Context,
-    name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
+    name: Annotated[str, typer.Argument(help="Managed instance name.")],
     follow: Annotated[bool, typer.Option("--follow", help="Follow the Docker log stream.")] = False,
     tail: Annotated[
         int,
@@ -2402,8 +2340,6 @@ def logs_instance(
         ),
     ] = None,
 ) -> None:
-    if not name:
-        _show_help_and_exit(ctx)
     effective_tail: int | None = tail if tail > 0 else None
     try:
         service = get_service()
@@ -2418,8 +2354,7 @@ def logs_instance(
 
 @app.command("remove", help="Remove an instance and optionally delete its data directory.")
 def remove_instance(
-    ctx: typer.Context,
-    name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
+    name: Annotated[str, typer.Argument(help="Managed instance name.")],
     delete_data: Annotated[
         bool,
         typer.Option(
@@ -2429,8 +2364,6 @@ def remove_instance(
     ] = False,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip the confirmation prompt.")] = False,
 ) -> None:
-    if not name:
-        _show_help_and_exit(ctx)
     summary = (
         f"About to remove instance '{name}' and delete its data directory."
         if delete_data
