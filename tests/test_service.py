@@ -2760,6 +2760,85 @@ def test_upgrade_rolls_back_when_new_container_fails(temp_clawcu_home, tmp_path)
     assert any("Trying to restore 2026.4.1 from the snapshot." in message for message in messages)
 
 
+def test_upgrade_plan_returns_preview_without_side_effects(temp_clawcu_home, tmp_path) -> None:
+    service, docker, _, store = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=18789,
+        cpu="1",
+        memory="2g",
+    )
+    env_path = store.instance_env_path("writer")
+    env_path.write_text(
+        "OPENAI_API_KEY=sk-test\nOPENAI_BASE_URL=https://api.example.com/v1\n",
+        encoding="utf-8",
+    )
+
+    # Record docker commands before the call so we can prove no new
+    # container lifecycle commands were issued by the plan path.
+    commands_before = list(docker.commands)
+
+    plan = service.upgrade_plan("writer", version="2026.4.2")
+
+    assert plan["instance"] == "writer"
+    assert plan["current_version"] == "2026.4.1"
+    assert plan["target_version"] == "2026.4.2"
+    assert plan["env_exists"] is True
+    assert set(plan["env_keys"]) == {"OPENAI_API_KEY", "OPENAI_BASE_URL"}
+    assert plan["env_carryover"] == "preserved"
+    assert plan["projected_image"] == "ghcr.io/openclaw/openclaw:2026.4.2"
+    assert plan["snapshot_label"] == "upgrade-to-2026.4.2"
+    assert str(plan["snapshot_root"]).endswith("snapshots/writer")
+    # No new docker calls — the plan is pure read.
+    assert docker.commands == commands_before
+
+
+def test_upgrade_plan_rejects_same_version(temp_clawcu_home, tmp_path) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=18789,
+        cpu="1",
+        memory="2g",
+    )
+
+    with pytest.raises(ValueError, match="already on version"):
+        service.upgrade_plan("writer", version="2026.4.1")
+
+
+def test_list_upgradable_versions_merges_history_and_local_images(
+    temp_clawcu_home, tmp_path
+) -> None:
+    service, docker, openclaw, _ = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=18789,
+        cpu="1",
+        memory="2g",
+    )
+    # Pretend we already upgraded once so the history has a prior version.
+    service.upgrade_instance("writer", version="2026.4.2")
+    # Stub the docker layer to report what's locally available.
+    docker.list_local_images = lambda repo: ["2026.4.1", "2026.4.2", "2026.4.3"]  # type: ignore[method-assign]
+
+    payload = service.list_upgradable_versions("writer")
+
+    assert payload["instance"] == "writer"
+    assert payload["image_repo"] == openclaw.image_repo
+    assert payload["current_version"] == "2026.4.2"
+    # History covers both versions (from + to).
+    assert "2026.4.1" in payload["history"]
+    assert "2026.4.2" in payload["history"]
+    # Local images passed through unchanged.
+    assert payload["local_images"] == ["2026.4.1", "2026.4.2", "2026.4.3"]
+
+
 def test_rollback_restores_snapshot_data_and_instance_env(temp_clawcu_home, tmp_path) -> None:
     service, _, _, store = make_service(temp_clawcu_home)
     messages: list[str] = []

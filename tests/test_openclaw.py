@@ -304,6 +304,42 @@ def test_stop_and_restart_container_use_short_timeout() -> None:
     assert restart_options["timeout_seconds"] == DockerManager.RESTART_TIMEOUT_SECONDS
 
 
+def test_list_local_images_returns_sorted_tags_for_repo() -> None:
+    captured: list[list[str]] = []
+
+    def runner(command: list[str], **_kwargs):
+        captured.append(list(command))
+        return type(
+            "Completed",
+            (),
+            {"stdout": "2026.4.2\n2026.4.1\n<none>\n2026.4.2\n", "stderr": "", "returncode": 0},
+        )()
+
+    manager = DockerManager(runner=runner)
+
+    tags = manager.list_local_images("ghcr.io/openclaw/openclaw")
+
+    assert captured[0] == [
+        "docker",
+        "image",
+        "ls",
+        "ghcr.io/openclaw/openclaw",
+        "--format",
+        "{{.Tag}}",
+    ]
+    # Sorted, deduplicated, <none> filtered out.
+    assert tags == ["2026.4.1", "2026.4.2"]
+
+
+def test_list_local_images_swallows_runner_errors() -> None:
+    def runner(command: list[str], **_kwargs):
+        raise CommandError(command, 1, "", "docker daemon is not running")
+
+    manager = DockerManager(runner=runner)
+
+    assert manager.list_local_images("ghcr.io/openclaw/openclaw") == []
+
+
 def test_stop_container_honors_custom_timeout() -> None:
     runner = RecordingRunner()
     manager = DockerManager(runner=runner)

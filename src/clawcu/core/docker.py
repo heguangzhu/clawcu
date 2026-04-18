@@ -32,6 +32,29 @@ class DockerManager:
         except Exception:
             return False
 
+    def list_local_images(self, image_repo: str) -> list[str]:
+        """Return the locally available tags for ``image_repo``.
+
+        Uses ``docker image ls <repo> --format {{.Tag}}``. Returns an
+        empty list on any failure (no such repo, docker daemon
+        unreachable, etc.) — this is a best-effort UX helper, not a
+        correctness primitive, so callers should not treat emptiness as
+        authoritative "repo has no tags".
+        """
+        try:
+            result = self.runner(
+                ["docker", "image", "ls", image_repo, "--format", "{{.Tag}}"],
+                timeout_seconds=self.INSPECT_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            return []
+        stdout = getattr(result, "stdout", "") or ""
+        tags = [line.strip() for line in stdout.splitlines() if line.strip()]
+        # Docker prints "<none>" for dangling/untagged images; filter.
+        tags = [tag for tag in tags if tag != "<none>"]
+        # Stable, deduplicated order.
+        return sorted(set(tags))
+
     def pull_image(self, image_tag: str) -> None:
         self.runner(
             ["docker", "pull", image_tag],

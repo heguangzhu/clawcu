@@ -35,7 +35,7 @@
 | `clawcu stop <name> [--time N / -t N]` | 停止一个正在运行的托管实例。`--time` 是优雅退出窗口（秒），会透传给 `docker stop --time`，默认 5 秒；把值调大可以让 OpenClaw/Hermes 的长任务在收到 SIGKILL 前先自行完成。 |
 | `clawcu restart <name> [--no-recreate-if-config-changed]` | 重启一个托管实例。**默认开启**漂移检测：ClawCU 会先 inspect 容器，如发现 env 漂移（比如 `setenv` 没有 `--apply`）或容器已丢失，就自动把重启升级为完整 `recreate`，让新的 env 文件生效——和 `clawcu start` 现有行为一致。想强制走原生 `docker restart`（即使检测到漂移），加 `--no-recreate-if-config-changed` 关闭即可。 |
 | `clawcu recreate <name>` | 按保存的实例配置重建容器；若实例处于 `create_failed`，会自动走重试路径。 |
-| `clawcu upgrade <name> --version <version-or-tag>` | 将实例升级到新的服务版本或 tag。升级前会自动快照实例 home 和对应的 env 路径。 |
+| `clawcu upgrade <name> [--version <v>] [--list-versions] [--dry-run] [--yes] [--json]` | 将实例升级到新的服务版本或 tag。升级前会自动快照实例 home 和对应的 env 路径，env 文件会在升级过程中保留。`--list-versions` 不需要 `--version`，会列出候选版本（本地 Docker 上存在的对应 image 仓库的 tag，以及该实例的版本历史）。`--dry-run` 会打印升级计划（当前版本 → 目标版本、datadir、env 保留摘要、投射的 image tag、快照路径），不动 Docker 或磁盘。正常路径会先渲染计划然后要求二次确认——加 `--yes` / `-y` 跳过提示（非交互式 shell 里必须加）。`--json` 会把 plan / 版本列表以 JSON 形式输出。 |
 | `clawcu rollback <name>` | 通过恢复匹配的快照和 env 快照，把实例回退到上一次可逆的版本切换。 |
 | `clawcu clone <source> --name <name> [--datadir <path>] [--port <port>]` | 复制源实例，生成新的隔离实验实例。 |
 | `clawcu logs <name> [--follow] [--tail N] [--since DURATION]` | 查看实例日志，默认只显示最后 200 行。`--follow` 会持续跟随输出；`--tail 0` 打印全部日志。 |

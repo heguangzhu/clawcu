@@ -475,6 +475,34 @@ class FakeService:
         record = self._instance(name=name)
         return record
 
+    def upgrade_plan(self, name: str, *, version: str) -> dict:
+        self._record("upgrade_plan", name=name, version=version)
+        return {
+            "instance": name,
+            "service": "openclaw",
+            "current_version": "2026.4.1",
+            "target_version": version,
+            "datadir": f"/tmp/{name}",
+            "env_path": f"/tmp/{name}.env",
+            "env_exists": True,
+            "env_keys": ["OPENAI_API_KEY", "OPENAI_BASE_URL"],
+            "env_carryover": "preserved",
+            "projected_image": f"ghcr.io/openclaw/openclaw:{version}",
+            "snapshot_root": f"/tmp/snapshots/{name}",
+            "snapshot_label": f"upgrade-to-{version}",
+        }
+
+    def list_upgradable_versions(self, name: str) -> dict:
+        self._record("list_upgradable_versions", name=name)
+        return {
+            "instance": name,
+            "service": "openclaw",
+            "image_repo": "ghcr.io/openclaw/openclaw",
+            "current_version": "2026.4.1",
+            "history": ["2026.3.20", "2026.4.1"],
+            "local_images": ["2026.4.1", "2026.4.2"],
+        }
+
     def upgrade_instance(self, name: str, *, version: str) -> InstanceRecord:
         self._record("upgrade_instance", name=name, version=version)
         if self.reporter:
@@ -2188,17 +2216,107 @@ def test_upgrade_command_accepts_version_option(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
 
-    result = runner.invoke(app, ["upgrade", "writer", "--version", "2026.4.2"])
+    result = runner.invoke(
+        app, ["upgrade", "writer", "--version", "2026.4.2", "--yes"]
+    )
 
-    assert result.exit_code == 0
+    assert result.exit_code == 0, result.stdout
+    # Plan was rendered before execution (new safety preview).
+    assert "2026.4.1" in result.stdout and "2026.4.2" in result.stdout
     assert "Step 1/4: Preparing an upgrade plan" in result.stdout
     assert "Step 4/4: Recreating the container" in result.stdout
+    # First call is the plan lookup, last two are upgrade + dashboard.
+    call_names = [call[0] for call in service.calls]
+    assert "upgrade_plan" in call_names
     assert service.calls[-2] == (
         "upgrade_instance",
         (),
         {"name": "writer", "version": "2026.4.2"},
     )
     assert service.calls[-1] == ("dashboard_url", (), {"name": "writer"})
+
+
+def test_upgrade_command_list_versions_prints_history_and_local(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["upgrade", "writer", "--list-versions"])
+
+    assert result.exit_code == 0, result.stdout
+    # Image repo shown
+    assert "ghcr.io/openclaw/openclaw" in result.stdout
+    # Current version marker
+    assert "2026.4.1" in result.stdout
+    # History + local images both rendered
+    assert "2026.3.20" in result.stdout
+    assert "2026.4.2" in result.stdout
+    # No actual upgrade was attempted
+    call_names = [call[0] for call in service.calls]
+    assert "list_upgradable_versions" in call_names
+    assert "upgrade_instance" not in call_names
+    assert "upgrade_plan" not in call_names
+
+
+def test_upgrade_command_list_versions_json(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app, ["upgrade", "writer", "--list-versions", "--json"]
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert '"image_repo"' in result.stdout
+    assert '"local_images"' in result.stdout
+
+
+def test_upgrade_command_dry_run_shows_plan_without_executing(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        ["upgrade", "writer", "--version", "2026.4.2", "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "Dry run" in result.stdout
+    # Plan fields rendered
+    assert "2026.4.1" in result.stdout and "2026.4.2" in result.stdout
+    assert "preserved" in result.stdout.lower() or "key(s)" in result.stdout
+    assert "upgrade-to-2026.4.2" in result.stdout
+    # No upgrade call went through
+    call_names = [call[0] for call in service.calls]
+    assert "upgrade_plan" in call_names
+    assert "upgrade_instance" not in call_names
+
+
+def test_upgrade_command_dry_run_json_emits_plan(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        ["upgrade", "writer", "--version", "2026.4.2", "--dry-run", "--json"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert '"current_version"' in result.stdout
+    assert '"target_version"' in result.stdout
+    assert '"snapshot_label"' in result.stdout
+
+
+def test_upgrade_command_without_yes_refuses_in_non_interactive(monkeypatch) -> None:
+    """In CliRunner (no TTY) and no --yes, the confirm prompt must refuse."""
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["upgrade", "writer", "--version", "2026.4.2"])
+
+    assert result.exit_code != 0
+    # Plan gets rendered first (that's fine), but the upgrade must NOT run.
+    call_names = [call[0] for call in service.calls]
+    assert "upgrade_instance" not in call_names
 
 
 def test_rollback_command_prints_progress(monkeypatch) -> None:

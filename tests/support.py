@@ -27,6 +27,11 @@ class FakeDockerManager:
     def image_exists(self, image_tag: str) -> bool:
         return True
 
+    def list_local_images(self, image_repo: str) -> list[str]:
+        # Tests that care can monkeypatch this; default is empty so the
+        # real upgrade flow is not surprised.
+        return []
+
     def run_container(self, record: InstanceRecord, spec: ContainerRunSpec) -> None:
         self.commands.append(("run", record.container_name))
         self.run_env_files.append(spec.env_file)
@@ -130,6 +135,9 @@ class FakeOpenClawManager:
         self.versions.append(version)
         return f"clawcu/openclaw:{version}"
 
+    def official_image_tag(self, version: str) -> str:
+        return f"{self.image_repo}:{version}"
+
 
 class FakeHermesManager:
     def __init__(self) -> None:
@@ -139,6 +147,9 @@ class FakeHermesManager:
     def ensure_image(self, version: str) -> str:
         self.versions.append(version)
         return f"clawcu/hermes-agent:{version}"
+
+    def official_image_tag(self, version: str) -> str:
+        return f"{self.image_repo}:{version}"
 
 
 def make_service(

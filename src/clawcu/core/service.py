@@ -1026,6 +1026,82 @@ class ClawCUService:
         self.reporter(self._lifecycle_summary("recreated", live_record))
         return live_record
 
+    def _service_manager(self, record: InstanceRecord):
+        """Return the service-native manager (openclaw / hermes) for a record."""
+        return self.openclaw if record.service == "openclaw" else self.hermes
+
+    def upgrade_plan(self, name: str, *, version: str) -> dict:
+        """Return an upgrade preview payload without touching Docker or disk.
+
+        Used by `clawcu upgrade --dry-run` and by the confirmation prompt
+        to show the user exactly what will change: current version →
+        target, env path and whether it will be carried over, data
+        directory, projected docker image tag, and where the safety
+        snapshot will land.
+        """
+        record = self.store.load_record(name)
+        adapter = self.adapter_for_record(record)
+        target_version = normalize_service_version(record.service, version)
+        if target_version == record.version:
+            raise ValueError(
+                f"Instance '{name}' is already on version {target_version}."
+            )
+        env_path = adapter.env_path(self, record)
+        env_values = self._load_env_file(env_path) if env_path.exists() else {}
+        manager = self._service_manager(record)
+        projected_image = (
+            manager.official_image_tag(target_version)
+            if hasattr(manager, "official_image_tag")
+            else f"{record.service}:{target_version}"
+        )
+        snapshot_label = f"upgrade-to-{target_version}"
+        snapshot_root = self.store.paths.snapshots_dir / record.name
+        return {
+            "instance": record.name,
+            "service": record.service,
+            "current_version": record.version,
+            "target_version": target_version,
+            "datadir": str(record.datadir),
+            "env_path": str(env_path),
+            "env_exists": env_path.exists(),
+            "env_keys": sorted(env_values.keys()),
+            "env_carryover": "preserved",
+            "projected_image": projected_image,
+            "snapshot_root": str(snapshot_root),
+            "snapshot_label": snapshot_label,
+        }
+
+    def list_upgradable_versions(self, name: str) -> dict:
+        """Enumerate versions useful for `clawcu upgrade --list-versions`.
+
+        Returns three buckets:
+        - ``history``: every from/to version this instance has observed
+          plus the current version (useful as "roll back candidates");
+        - ``local_images``: tags of the configured image repo present on
+          the local Docker daemon (these upgrades skip a pull);
+        - ``current_version`` for callers to annotate.
+        """
+        record = self.store.load_record(name)
+        manager = self._service_manager(record)
+        repo = getattr(manager, "image_repo", "")
+        history_set: set[str] = {record.version} if record.version else set()
+        for entry in record.history or []:
+            if isinstance(entry, dict):
+                for key in ("from_version", "to_version", "version"):
+                    value = entry.get(key)
+                    if isinstance(value, str) and value:
+                        history_set.add(value)
+        history_set.discard("-")
+        local_images = self.docker.list_local_images(repo) if repo else []
+        return {
+            "instance": record.name,
+            "service": record.service,
+            "image_repo": repo,
+            "current_version": record.version,
+            "history": sorted(history_set),
+            "local_images": local_images,
+        }
+
     def upgrade_instance(self, name: str, *, version: str) -> InstanceRecord:
         record = self.store.load_record(name)
         adapter = self.adapter_for_record(record)

@@ -1849,6 +1849,67 @@ def recreate_instance(
     _do_recreate(service, name)
 
 
+def _print_upgrade_plan(plan: dict) -> None:
+    """Render an upgrade_plan payload as a compact human-readable summary."""
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column(style="bold cyan")
+    table.add_column()
+    table.add_row("Instance", str(plan.get("instance", "-")))
+    table.add_row("Service", str(plan.get("service", "-")))
+    table.add_row(
+        "Version",
+        f"{plan.get('current_version', '-')}  ->  [bold green]{plan.get('target_version', '-')}[/bold green]",
+    )
+    table.add_row("Datadir", str(plan.get("datadir", "-")))
+    env_path = plan.get("env_path", "-")
+    env_exists = bool(plan.get("env_exists"))
+    env_keys = plan.get("env_keys") or []
+    if env_exists:
+        env_line = f"{env_path} (preserved; {len(env_keys)} key(s))"
+    else:
+        env_line = f"{env_path} (does not exist; nothing to preserve)"
+    table.add_row("Env file", env_line)
+    table.add_row("Projected image", str(plan.get("projected_image", "-")))
+    table.add_row(
+        "Safety snapshot",
+        f"{plan.get('snapshot_root', '-')}/<timestamp>-{plan.get('snapshot_label', '-')}",
+    )
+    console.print(table)
+
+
+def _print_upgradable_versions(payload: dict) -> None:
+    """Render list_upgradable_versions output as a small report."""
+    console.print(
+        f"[bold]Instance:[/bold] {payload.get('instance', '-')}  "
+        f"([dim]{payload.get('service', '-')}[/dim])"
+    )
+    console.print(
+        f"[bold]Image repo:[/bold] {payload.get('image_repo', '-') or '-'}"
+    )
+    current = payload.get("current_version", "-")
+    console.print(f"[bold]Current version:[/bold] {current}")
+
+    history = payload.get("history") or []
+    if history:
+        console.print("[bold]History:[/bold]")
+        for version in history:
+            marker = " [dim](current)[/dim]" if version == current else ""
+            console.print(f"  - {version}{marker}")
+    else:
+        console.print("[bold]History:[/bold] [dim]-[/dim]")
+
+    local = payload.get("local_images") or []
+    if local:
+        console.print("[bold]Local images (no pull needed):[/bold]")
+        for tag in local:
+            marker = " [dim](current)[/dim]" if tag == current else ""
+            console.print(f"  - {tag}{marker}")
+    else:
+        console.print(
+            "[bold]Local images:[/bold] [dim]none found for this repo; Docker will pull on upgrade[/dim]"
+        )
+
+
 @app.command(
     "upgrade",
     help="Upgrade an instance to a newer service version with a safety snapshot of its data directory and env file.",
@@ -1857,10 +1918,86 @@ def upgrade_instance(
     ctx: typer.Context,
     name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
     version: Annotated[str | None, typer.Option("--version", help="Target service version or git ref.")] = None,
+    list_versions: Annotated[
+        bool,
+        typer.Option(
+            "--list-versions",
+            help=(
+                "List candidate versions (local docker images for the service's "
+                "image repo, plus this instance's version history). Does not "
+                "require --version."
+            ),
+        ),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help=(
+                "Show the upgrade plan (current->target, datadir, env carry-over, "
+                "projected image, snapshot path) and exit without touching Docker "
+                "or the data directory."
+            ),
+        ),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Skip the interactive confirmation prompt before starting the upgrade.",
+        ),
+    ] = False,
+    json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
-    if not name or not version:
+    _set_json_mode(json_output)
+    if not name:
         _show_help_and_exit(ctx)
     service = get_service()
+
+    if list_versions:
+        try:
+            payload = service.list_upgradable_versions(name)
+        except Exception as exc:
+            _exit_with_error(str(exc))
+        if _json_mode():
+            _print_json(payload)
+            return
+        _print_upgradable_versions(payload)
+        return
+
+    if not version:
+        _show_help_and_exit(ctx)
+
+    try:
+        plan = service.upgrade_plan(name, version=version)
+    except Exception as exc:
+        _exit_with_error(str(exc))
+
+    if dry_run:
+        if _json_mode():
+            _print_json(plan)
+            return
+        console.print("[cyan]Dry run:[/cyan] no container or snapshot will be created.")
+        _print_upgrade_plan(plan)
+        console.print(
+            "[dim](re-run without --dry-run, and pass --yes to skip the confirm prompt)[/dim]"
+        )
+        return
+
+    # Normal path: show the plan + confirmation prompt (unless --yes).
+    if not _json_mode():
+        _print_upgrade_plan(plan)
+    _confirm_destructive(
+        (
+            f"About to upgrade instance '{plan['instance']}' from "
+            f"{plan['current_version']} to {plan['target_version']}. A safety "
+            f"snapshot will be written under {plan['snapshot_root']}; the env "
+            f"file at {plan['env_path']} will be preserved."
+        ),
+        yes,
+    )
+
     if hasattr(service, "set_reporter"):
         service.set_reporter(_print_progress)
     try:
