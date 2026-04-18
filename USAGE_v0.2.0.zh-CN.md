@@ -33,7 +33,7 @@
 | `clawcu inspect <name> [--show-history] [--reveal]` | 以紧凑可读视图查看实例详细状态（摘要 / 访问 / 快照 / 容器 / 历史）。默认会把 history 折叠，只显示最新一条；需要完整历史请加 `--show-history`，需要原始 JSON 载荷请用 `clawcu --json inspect <name>`。`--reveal` 会显示未打码的 dashboard token。 |
 | `clawcu start <name>` | 启动一个已停止的托管实例。 |
 | `clawcu stop <name> [--time N / -t N]` | 停止一个正在运行的托管实例。`--time` 是优雅退出窗口（秒），会透传给 `docker stop --time`，默认 5 秒；把值调大可以让 OpenClaw/Hermes 的长任务在收到 SIGKILL 前先自行完成。 |
-| `clawcu restart <name> [--recreate-if-config-changed]` | 重启一个托管实例。加 `--recreate-if-config-changed` 后，ClawCU 会先检查在运行容器，如发现 env 漂移（比如之前 `setenv` 没有 `--apply`）或容器已丢失，则自动把重启升级为完整 `recreate`，让新的 env 文件生效。不加这个 flag 就是普通的 `docker restart`。 |
+| `clawcu restart <name> [--no-recreate-if-config-changed]` | 重启一个托管实例。**默认开启**漂移检测：ClawCU 会先 inspect 容器，如发现 env 漂移（比如 `setenv` 没有 `--apply`）或容器已丢失，就自动把重启升级为完整 `recreate`，让新的 env 文件生效——和 `clawcu start` 现有行为一致。想强制走原生 `docker restart`（即使检测到漂移），加 `--no-recreate-if-config-changed` 关闭即可。 |
 | `clawcu recreate <name>` | 按保存的实例配置重建容器；若实例处于 `create_failed`，会自动走重试路径。 |
 | `clawcu upgrade <name> --version <version-or-tag>` | 将实例升级到新的服务版本或 tag。升级前会自动快照实例 home 和对应的 env 路径。 |
 | `clawcu rollback <name>` | 通过恢复匹配的快照和 env 快照，把实例回退到上一次可逆的版本切换。 |

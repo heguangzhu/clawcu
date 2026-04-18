@@ -895,7 +895,7 @@ class ClawCUService:
         self,
         name: str,
         *,
-        recreate_if_config_changed: bool = False,
+        recreate_if_config_changed: bool = True,
     ) -> InstanceRecord:
         record = self.store.load_record(name)
         if recreate_if_config_changed:

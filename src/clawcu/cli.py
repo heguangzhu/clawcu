@@ -1770,15 +1770,18 @@ def restart_instance(
     recreate_if_config_changed: Annotated[
         bool,
         typer.Option(
-            "--recreate-if-config-changed",
+            "--recreate-if-config-changed/--no-recreate-if-config-changed",
             help=(
-                "If the container's env/config has drifted from the saved record "
-                "(e.g. after `clawcu setenv` without `--apply`), transparently "
-                "run `recreate` instead of a plain `docker restart` so the new "
-                "env file takes effect."
+                "Default ON: if the container's env/config has drifted from "
+                "the saved record (e.g. after `clawcu setenv` without `--apply`) "
+                "or the container is missing, ClawCU promotes the restart to a "
+                "full `recreate` so the new env file takes effect — matching "
+                "how `clawcu start` already behaves. Pass "
+                "`--no-recreate-if-config-changed` to force a plain "
+                "`docker restart` even when drift is detected."
             ),
         ),
-    ] = False,
+    ] = True,
 ) -> None:
     if not name:
         _show_help_and_exit(ctx)

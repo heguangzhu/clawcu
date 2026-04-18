@@ -431,7 +431,7 @@ class FakeService:
         self,
         name: str,
         *,
-        recreate_if_config_changed: bool = False,
+        recreate_if_config_changed: bool = True,
     ) -> InstanceRecord:
         self._record(
             "restart_instance",
@@ -2072,7 +2072,10 @@ def test_lifecycle_commands_accept_instance_name(monkeypatch) -> None:
         (
             ["restart", "writer"],
             "restart_instance",
-            {"name": "writer", "recreate_if_config_changed": False},
+            # Default ON: restart now auto-promotes to recreate when
+            # env drift is detected, mirroring start_instance's
+            # pre-existing behavior.
+            {"name": "writer", "recreate_if_config_changed": True},
         ),
         (["rollback", "writer", "--yes"], "rollback_instance", {"name": "writer"}),
     ]
@@ -2118,7 +2121,23 @@ def test_stop_command_rejects_negative_time(monkeypatch) -> None:
     assert not any(call[0] == "stop_instance" for call in service.calls)
 
 
-def test_restart_command_recreate_if_config_changed_flag(monkeypatch) -> None:
+def test_restart_command_default_passes_recreate_if_config_changed_true(monkeypatch) -> None:
+    """`clawcu restart <name>` should default to drift-detecting recreate."""
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["restart", "writer"])
+
+    assert result.exit_code == 0, result.stdout
+    assert service.calls[0] == (
+        "restart_instance",
+        (),
+        {"name": "writer", "recreate_if_config_changed": True},
+    )
+
+
+def test_restart_command_explicit_on_flag_matches_default(monkeypatch) -> None:
+    """Explicit --recreate-if-config-changed behaves same as default."""
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
 
@@ -2131,6 +2150,23 @@ def test_restart_command_recreate_if_config_changed_flag(monkeypatch) -> None:
         "restart_instance",
         (),
         {"name": "writer", "recreate_if_config_changed": True},
+    )
+
+
+def test_restart_command_no_flag_forces_plain_docker_restart(monkeypatch) -> None:
+    """`--no-recreate-if-config-changed` is the opt-out escape hatch."""
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app, ["restart", "writer", "--no-recreate-if-config-changed"]
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert service.calls[0] == (
+        "restart_instance",
+        (),
+        {"name": "writer", "recreate_if_config_changed": False},
     )
 
 
