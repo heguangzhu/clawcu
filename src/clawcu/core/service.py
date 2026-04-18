@@ -853,6 +853,9 @@ class ClawCUService:
     def start_instance(self, name: str) -> InstanceRecord:
         record = self.store.load_record(name)
         adapter = self.adapter_for_record(record)
+        self.reporter(
+            f"Step 1/3: Loading the saved {adapter.display_name} instance record for '{record.name}'."
+        )
         inspection = self.docker.inspect_container(record.container_name)
         if inspection is None:
             self.reporter(
@@ -864,6 +867,9 @@ class ClawCUService:
                 f"Instance '{record.name}' needs a container refresh to pick up the current environment file. Recreating it instead of using docker start."
             )
             return self.recreate_instance(name, prepare_artifact=False)
+        self.reporter(
+            f"Step 2/3: Starting Docker container {record.container_name}. This usually takes a few seconds."
+        )
         try:
             self.docker.start_container(record.container_name)
         except Exception as exc:
@@ -882,7 +888,23 @@ class ClawCUService:
             self.store.save_record(failed)
             raise RuntimeError(f"Failed to start instance '{record.name}': {exc}") from exc
         self.store.append_log(f"start instance name={record.name}")
-        return self._persist_live_status(record)
+        self.reporter("Step 3/3: Refreshing live status after Docker start.")
+        started = self._persist_live_status(record)
+        access = adapter.access_info(self, started)
+        if started.status in {"starting", "created"}:
+            self.reporter(
+                f"{adapter.display_name} is still {started.status} on port {started.port}. "
+                f"Check 'clawcu inspect {started.name}' or 'clawcu logs {started.name}' if it takes too long."
+            )
+        elif access.base_url:
+            self.reporter(
+                f"{adapter.display_name} reported status '{started.status}'. Access URL: {access.base_url}"
+            )
+        else:
+            self.reporter(
+                f"{adapter.display_name} reported status '{started.status}' after Docker start."
+            )
+        return started
 
     def stop_instance(self, name: str, *, timeout: int | None = None) -> InstanceRecord:
         record = self.store.load_record(name)

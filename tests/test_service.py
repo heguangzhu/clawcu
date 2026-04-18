@@ -2141,6 +2141,30 @@ def test_start_instance_clears_start_failed_after_successful_retry(temp_clawcu_h
     assert store.load_record("writer").last_error is None
 
 
+def test_start_instance_reports_progress(temp_clawcu_home, tmp_path) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+    messages: list[str] = []
+    service.set_reporter(messages.append)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=18789,
+        cpu="1",
+        memory="2g",
+    )
+    service.stop_instance("writer")
+    messages.clear()
+
+    started = service.start_instance("writer")
+
+    assert started.status == "running"
+    assert messages[0] == "Step 1/3: Loading the saved OpenClaw instance record for 'writer'."
+    assert messages[1] == "Step 2/3: Starting Docker container clawcu-openclaw-writer. This usually takes a few seconds."
+    assert messages[2] == "Step 3/3: Refreshing live status after Docker start."
+    assert messages[3].startswith("OpenClaw reported status 'running'. Access URL: http://127.0.0.1:18789/")
+
+
 def test_start_instance_recreates_when_container_env_is_stale(temp_clawcu_home, tmp_path) -> None:
     service, docker, _, store = make_service(temp_clawcu_home)
     service.create_openclaw(

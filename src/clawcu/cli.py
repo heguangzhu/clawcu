@@ -1728,6 +1728,8 @@ def start_instance(
     if not name:
         _show_help_and_exit(ctx)
     service = get_service()
+    if hasattr(service, "set_reporter"):
+        service.set_reporter(_print_progress)
     try:
         record = service.start_instance(name)
     except Exception as exc:

@@ -29,6 +29,20 @@ def test_display_version_prefers_release_date_format() -> None:
     assert _display_version("main") == "main"
 
 
+def test_start_command_sets_progress_reporter(monkeypatch) -> None:
+    from clawcu import cli
+
+    service = FakeService()
+    monkeypatch.setattr(cli, "get_service", lambda: service)
+    monkeypatch.setattr(cli, "console", _make_wide_console())
+
+    result = runner.invoke(app, ["start", "writer"])
+
+    assert result.exit_code == 0
+    assert service.reporter is cli._print_progress
+    assert ("start_instance", (), {"name": "writer"}) in service.calls
+
+
 class FakeService:
     def __init__(self) -> None:
         self.pulled_versions: list[str] = []
