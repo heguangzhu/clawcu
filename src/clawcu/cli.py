@@ -192,12 +192,27 @@ def _print_access_url(service: ClawCUService, name: str) -> None:
     console.print(f"[blue]Open URL:[/blue] {url}")
 
 
+_ACCESS_AUTHORITY_RE = re.compile(r"^\w+://([^/#?]+)")
+
+
+def _access_host_port(access_url: str) -> str:
+    """Extract the host:port portion of an access URL for compact display."""
+    if not access_url or access_url == "-":
+        return "-"
+    match = _ACCESS_AUTHORITY_RE.match(access_url)
+    if match:
+        return match.group(1)
+    return access_url
+
+
 def _print_instance_table(records: list[dict], *, wide: bool = False, reveal: bool = False) -> None:
     table = Table(title="ClawCU Instances")
+    # Narrow default: NAME / SERVICE / VERSION / PORT / STATUS / ACCESS (host:port only).
+    # Wide adds SOURCE / HOME / PROVIDERS / MODELS / SNAPSHOT and shows full URL.
     if wide:
         table.add_column("SOURCE", no_wrap=True)
-    table.add_column("SERVICE", no_wrap=True)
     table.add_column("NAME", no_wrap=True)
+    table.add_column("SERVICE", no_wrap=True)
     if wide:
         table.add_column("HOME", overflow="fold")
     table.add_column("VERSION", no_wrap=True)
@@ -212,17 +227,21 @@ def _print_instance_table(records: list[dict], *, wide: bool = False, reveal: bo
         access_url = record.get("access_url", "-")
         if not reveal:
             access_url = _strip_token_fragment(access_url)
+        if not wide:
+            access_cell = _access_host_port(access_url)
+        else:
+            access_cell = access_url
         row: list[str] = []
         if wide:
             row.append(record.get("source", "-"))
-        row.append(record.get("service", "-"))
         row.append(record["name"])
+        row.append(record.get("service", "-"))
         if wide:
             row.append(record.get("home", "-"))
         row.append(_display_version(record["version"]))
         row.append(str(record["port"]))
         row.append(record["status"])
-        row.append(access_url)
+        row.append(access_cell)
         if wide:
             row.append(record.get("providers", "-"))
             row.append(record.get("models", "-"))
@@ -871,34 +890,123 @@ def list_provider_models(
         return
     for model in models:
         console.print(model)
-@app.command("list", help="List all managed instances and their current status.")
+_LIST_SOURCES = ("managed", "local", "all")
+
+
+def _resolve_list_source(
+    source: str | None, *, local_flag: bool, managed_flag: bool, all_flag: bool
+) -> str:
+    """Reconcile the new --source flag with legacy --local/--managed/--all shortcuts.
+
+    Default is ``managed`` so local pseudo-instances under ~/.openclaw /
+    ~/.hermes are hidden unless the user opts in — they are not managed by
+    ClawCU and the mix was causing confusion.
+    """
+    if source is not None:
+        if source not in _LIST_SOURCES:
+            _exit_with_error(
+                f"Unknown --source '{source}'. Expected one of: {', '.join(_LIST_SOURCES)}."
+            )
+        return source
+    if all_flag:
+        return "all"
+    if local_flag and not managed_flag:
+        return "local"
+    # `--managed` or no flag at all → managed (new default).
+    return "managed"
+
+
+def _apply_list_filters(
+    records: list[dict],
+    *,
+    service: str | None,
+    status: str | None,
+) -> list[dict]:
+    filtered = records
+    if service:
+        filtered = [r for r in filtered if str(r.get("service", "")).lower() == service.lower()]
+    if status:
+        filtered = [r for r in filtered if str(r.get("status", "")).lower() == status.lower()]
+    return filtered
+
+
+@app.command(
+    "list",
+    help=(
+        "List managed instances. By default shows ClawCU-managed instances only; "
+        "pass --source local or --source all to include ~/.openclaw / ~/.hermes pseudo-entries."
+    ),
+)
 def list_instances(
-    running: Annotated[bool, typer.Option("--running", help="Only show running instances.")] = False,
+    running: Annotated[
+        bool,
+        typer.Option("--running", help="Shortcut for --status=running."),
+    ] = False,
     agents: Annotated[bool, typer.Option("--agents", help="Expand the list to one row per agent.")] = False,
-    local: Annotated[bool, typer.Option("--local", help="Show the local ~/.openclaw overview.")] = False,
-    managed: Annotated[bool, typer.Option("--managed", help="Show ClawCU-managed instances instead of ~/.openclaw.")] = False,
-    all_sources: Annotated[bool, typer.Option("--all", help="Show both local ~/.openclaw and ClawCU-managed entries.")] = False,
-    wide: Annotated[bool, typer.Option("--wide", help="Show all columns (SOURCE, HOME, PROVIDERS, MODELS, SNAPSHOT).")] = False,
-    reveal: Annotated[bool, typer.Option("--reveal", help="Show full dashboard tokens inside ACCESS URLs. Off by default for safety.")] = False,
+    source: Annotated[
+        str | None,
+        typer.Option(
+            "--source",
+            help="managed | local | all. Default: managed (hides local pseudo-instances).",
+        ),
+    ] = None,
+    local: Annotated[
+        bool,
+        typer.Option("--local", help="Shortcut for --source local."),
+    ] = False,
+    managed: Annotated[
+        bool,
+        typer.Option("--managed", help="Shortcut for --source managed (default)."),
+    ] = False,
+    all_sources: Annotated[
+        bool,
+        typer.Option("--all", help="Shortcut for --source all."),
+    ] = False,
+    service_filter: Annotated[
+        str | None,
+        typer.Option("--service", help="Only show instances of this service (e.g. openclaw, hermes)."),
+    ] = None,
+    status_filter: Annotated[
+        str | None,
+        typer.Option("--status", help="Only show instances in this status (e.g. running, stopped, create_failed)."),
+    ] = None,
+    wide: Annotated[
+        bool,
+        typer.Option("--wide", help="Show all columns (SOURCE, HOME, PROVIDERS, MODELS, SNAPSHOT) and full ACCESS URL."),
+    ] = False,
+    reveal: Annotated[
+        bool,
+        typer.Option("--reveal", help="Show full dashboard tokens inside ACCESS URLs. Off by default for safety."),
+    ] = False,
 ) -> None:
+    resolved_source = _resolve_list_source(
+        source, local_flag=local, managed_flag=managed, all_flag=all_sources
+    )
+    effective_status = status_filter
+    if running and not effective_status:
+        effective_status = "running"
+    elif running and effective_status and effective_status.lower() != "running":
+        _exit_with_error("--running conflicts with --status; use one or the other.")
     try:
         service = get_service()
-        use_all = all_sources or (not local and not managed)
         records: list[dict]
         if agents:
             records = []
-            if use_all or local:
+            if resolved_source in {"local", "all"}:
                 records.extend(service.list_local_agent_summaries())
-            if use_all or managed:
+            if resolved_source in {"managed", "all"}:
                 records.extend(service.list_agent_summaries(running_only=running))
         else:
             records = []
-            if use_all or local:
+            if resolved_source in {"local", "all"}:
                 records.extend(service.list_local_instance_summaries())
-            if use_all or managed:
+            if resolved_source in {"managed", "all"}:
                 records.extend(service.list_instance_summaries(running_only=running))
     except Exception as exc:
         _exit_with_error(str(exc))
+    records = _apply_list_filters(
+        records, service=service_filter, status=effective_status
+    )
     if _json_mode():
         if not reveal and not agents:
             for record in records:

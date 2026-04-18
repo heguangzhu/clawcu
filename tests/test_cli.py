@@ -564,7 +564,7 @@ def test_root_help_lists_descriptions_for_top_level_commands() -> None:
     assert "--install-completion" not in result.stdout
     assert "--show-completion" not in result.stdout
     assert "list" in result.stdout
-    assert "List all managed instances and their current status." in result.stdout
+    assert "List managed instances." in result.stdout
     assert "inspect" in result.stdout
     assert "Show detailed state for a managed instance." in result.stdout
     assert "token" in result.stdout
@@ -937,7 +937,7 @@ def test_empty_argument_commands_show_help_instead_of_error() -> None:
         assert "Missing argument" not in result.stdout
 
 
-def test_list_command_shows_instances(monkeypatch) -> None:
+def test_list_command_defaults_to_managed_source(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
 
@@ -945,10 +945,54 @@ def test_list_command_shows_instances(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert "ClawCU Instances" in result.stdout
+    # Default no longer mixes local pseudo-instances into the table.
+    assert service.calls == [
+        ("list_instance_summaries", (), {"running_only": False}),
+    ]
+
+
+def test_list_command_source_all_includes_local(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["list", "--source", "all"])
+
+    assert result.exit_code == 0
     assert service.calls == [
         ("list_local_instance_summaries", (), {}),
         ("list_instance_summaries", (), {"running_only": False}),
     ]
+
+
+def test_list_command_service_filter_drops_other_services(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    # Fake service returns openclaw rows; hermes filter yields nothing.
+    result = runner.invoke(app, ["list", "--service", "hermes"])
+
+    assert result.exit_code == 0
+    assert "No instances found." in result.stdout
+
+
+def test_list_command_status_filter_drops_other_statuses(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["list", "--status", "stopped"])
+
+    assert result.exit_code == 0
+    assert "No instances found." in result.stdout
+
+
+def test_list_command_rejects_unknown_source(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["list", "--source", "bogus"])
+
+    assert result.exit_code == 1
+    assert "Unknown --source 'bogus'" in result.stdout
 
 
 def test_provider_collect_command_accepts_source_selection(monkeypatch) -> None:
@@ -1493,11 +1537,24 @@ def test_list_agents_option_shows_agent_rows(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
 
+    # Default source is now "managed" so only managed agent summaries are fetched.
     result = runner.invoke(app, ["list", "--agents"])
 
     assert result.exit_code == 0
     assert "ClawCU Agents" in result.stdout
     assert "main" in result.stdout
+    assert service.calls == [
+        ("list_agent_summaries", (), {"running_only": False}),
+    ]
+
+
+def test_list_agents_source_all_includes_local_agents(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["list", "--agents", "--source", "all"])
+
+    assert result.exit_code == 0
     assert service.calls == [
         ("list_local_agent_summaries", (), {}),
         ("list_agent_summaries", (), {"running_only": False}),

@@ -29,7 +29,7 @@ It describes the shared command surface, the service-specific differences betwee
 
 | Command | Description |
 |------|------|
-| `clawcu list [--running] [--managed\|--local\|--all] [--agents]` | List instance summaries or per-agent rows. By default, `list` shows both managed instances and local homes discovered by the adapters. |
+| `clawcu list [--source managed\|local\|all] [--service X] [--status X] [--running] [--agents] [--wide] [--reveal]` | List instance summaries or per-agent rows. Default source is `managed` (local pseudo-entries under ~/.openclaw / ~/.hermes are hidden unless `--source local` or `--source all` is passed). Narrow mode shows 6 columns (NAME / SERVICE / VERSION / PORT / STATUS / ACCESS host:port); `--wide` adds SOURCE / HOME / PROVIDERS / MODELS / SNAPSHOT and full access URLs. `--reveal` prints the dashboard token fragment. |
 | `clawcu inspect <name>` | Show detailed instance state, including Docker container information, access info, history, and snapshot summaries. |
 | `clawcu start <name>` | Start a stopped managed instance. |
 | `clawcu stop <name>` | Stop a running managed instance. |
