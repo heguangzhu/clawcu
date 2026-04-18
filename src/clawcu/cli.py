@@ -2008,26 +2008,190 @@ def upgrade_instance(
     _print_access_url(service, record.name)
 
 
+def _print_rollback_plan(plan: dict) -> None:
+    """Render a rollback_plan payload as a compact human-readable summary."""
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column(style="bold cyan")
+    table.add_column()
+    table.add_row("Instance", str(plan.get("instance", "-")))
+    table.add_row("Service", str(plan.get("service", "-")))
+    table.add_row(
+        "Version",
+        f"{plan.get('current_version', '-')}  ->  [bold green]{plan.get('target_version', '-')}[/bold green]",
+    )
+    table.add_row("Datadir", str(plan.get("datadir", "-")))
+    env_path = plan.get("env_path", "-")
+    env_line = (
+        f"{env_path} (will be restored from snapshot)"
+        if plan.get("restore_snapshot_exists")
+        else f"{env_path} (no env snapshot to restore)"
+    )
+    table.add_row("Env file", env_line)
+    table.add_row("Projected image", str(plan.get("projected_image", "-")))
+    restore = plan.get("restore_snapshot") or "-"
+    exists_tag = (
+        "[green]present[/green]"
+        if plan.get("restore_snapshot_exists")
+        else "[red]missing on disk[/red]"
+    )
+    table.add_row("Restore snapshot", f"{restore}  {exists_tag}")
+    table.add_row(
+        "Safety snapshot",
+        f"{plan.get('snapshot_root', '-')}/<timestamp>-{plan.get('snapshot_label', '-')}",
+    )
+    selected_action = plan.get("selected_action")
+    selected_ts = plan.get("selected_timestamp")
+    if selected_action or selected_ts:
+        table.add_row(
+            "Source event",
+            f"{selected_action or '-'} @ {selected_ts or '-'}",
+        )
+    console.print(table)
+
+
+def _print_rollback_targets(payload: dict) -> None:
+    """Render list_rollback_targets output as a small table."""
+    console.print(
+        f"[bold]Instance:[/bold] {payload.get('instance', '-')}  "
+        f"([dim]{payload.get('service', '-')}[/dim])"
+    )
+    console.print(
+        f"[bold]Current version:[/bold] {payload.get('current_version', '-')}"
+    )
+    targets = payload.get("targets") or []
+    if not targets:
+        console.print(
+            "[dim]No rollback targets recorded yet. Run 'clawcu upgrade' "
+            "to produce a snapshot first.[/dim]"
+        )
+        return
+    table = Table(show_header=True, box=None, pad_edge=False)
+    table.add_column("#", style="bold")
+    table.add_column("Action")
+    table.add_column("Restores to", style="bold green")
+    table.add_column("From -> To")
+    table.add_column("When")
+    table.add_column("Snapshot")
+    for idx, entry in enumerate(targets):
+        snapshot = entry.get("snapshot_dir") or "-"
+        exists = entry.get("snapshot_exists")
+        exists_marker = (
+            "[green]present[/green]" if exists else "[red]missing[/red]"
+        )
+        table.add_row(
+            str(idx),
+            entry.get("action") or "-",
+            entry.get("restores_to") or "-",
+            f"{entry.get('from_version') or '-'} -> {entry.get('to_version') or '-'}",
+            entry.get("timestamp") or "-",
+            f"{snapshot}  {exists_marker}",
+        )
+    console.print(table)
+    console.print(
+        "[dim]rollback --to <version> restores the most recent event whose "
+        "'restores to' matches. omit --to to pick the newest entry.[/dim]"
+    )
+
+
 @app.command(
     "rollback",
-    help="Roll an instance back to its previous version and restore the matching data-directory and env snapshot.",
+    help="Roll an instance back to an earlier snapshot. Defaults to the most recent transition; pass --to <version> to target a specific one, or --list to enumerate available targets.",
 )
 def rollback_instance(
     ctx: typer.Context,
     name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
-    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip the confirmation prompt.")] = False,
+    to_version: Annotated[
+        str | None,
+        typer.Option(
+            "--to",
+            help=(
+                "Target version to restore. Matches the most recent history "
+                "event whose 'restores to' equals this value. Omit to use the "
+                "latest reversible transition."
+            ),
+        ),
+    ] = None,
+    list_targets: Annotated[
+        bool,
+        typer.Option(
+            "--list",
+            help=(
+                "List every snapshot target recorded for this instance "
+                "(action, restore version, snapshot path, whether the "
+                "snapshot still exists on disk). Does not touch Docker."
+            ),
+        ),
+    ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help=(
+                "Show the rollback plan (current->target, env restore, "
+                "snapshot source, safety snapshot path) and exit without "
+                "touching Docker or the data directory."
+            ),
+        ),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Skip the interactive confirmation prompt before starting the rollback.",
+        ),
+    ] = False,
+    json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
+    _set_json_mode(json_output)
     if not name:
         _show_help_and_exit(ctx)
+    service = get_service()
+
+    if list_targets:
+        try:
+            payload = service.list_rollback_targets(name)
+        except Exception as exc:
+            _exit_with_error(str(exc))
+        if _json_mode():
+            _print_json(payload)
+            return
+        _print_rollback_targets(payload)
+        return
+
+    try:
+        plan = service.rollback_plan(name, to_version=to_version)
+    except Exception as exc:
+        _exit_with_error(str(exc))
+
+    if dry_run:
+        if _json_mode():
+            _print_json(plan)
+            return
+        console.print("[cyan]Dry run:[/cyan] no container or snapshot will be touched.")
+        _print_rollback_plan(plan)
+        console.print(
+            "[dim](re-run without --dry-run, and pass --yes to skip the confirm prompt)[/dim]"
+        )
+        return
+
+    if not _json_mode():
+        _print_rollback_plan(plan)
     _confirm_destructive(
-        f"About to roll back instance '{name}'. The current data directory will be replaced by the previous snapshot.",
+        (
+            f"About to roll back instance '{plan['instance']}' from "
+            f"{plan['current_version']} to {plan['target_version']}. The current "
+            f"data directory will be replaced by the snapshot at "
+            f"{plan.get('restore_snapshot') or '-'}; a fresh safety snapshot "
+            f"will be written under {plan['snapshot_root']}."
+        ),
         yes,
     )
-    service = get_service()
+
     if hasattr(service, "set_reporter"):
         service.set_reporter(_print_progress)
     try:
-        record = service.rollback_instance(name)
+        record = service.rollback_instance(name, to_version=to_version)
     except Exception as exc:
         _exit_with_error(str(exc))
     console.print(f"[green]Rolled back instance:[/green] {record.name} -> {record.version}")

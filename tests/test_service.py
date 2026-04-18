@@ -2874,6 +2874,149 @@ def test_rollback_restores_snapshot_data_and_instance_env(temp_clawcu_home, tmp_
     assert any("Rollback safety snapshot retained at" in message for message in messages)
 
 
+def test_rollback_plan_returns_preview_without_side_effects(
+    temp_clawcu_home, tmp_path
+) -> None:
+    service, docker, _, store = make_service(temp_clawcu_home)
+    datadir = tmp_path / "writer"
+    datadir.mkdir()
+    (datadir / "state.txt").write_text("v1", encoding="utf-8")
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=18789,
+        cpu="1",
+        memory="2g",
+    )
+    env_path = store.instance_env_path("writer")
+    env_path.write_text("OPENAI_API_KEY=v1\n", encoding="utf-8")
+    service.upgrade_instance("writer", version="2026.4.2")
+
+    commands_before = list(docker.commands)
+
+    plan = service.rollback_plan("writer")
+
+    # Plan must not run any new docker commands.
+    assert docker.commands == commands_before
+    assert plan["instance"] == "writer"
+    assert plan["current_version"] == "2026.4.2"
+    assert plan["target_version"] == "2026.4.1"
+    assert plan["restore_snapshot"] is not None
+    assert plan["restore_snapshot_exists"] is True
+    assert plan["selected_action"] == "upgrade"
+    assert plan["snapshot_label"] == "rollback-from-2026.4.2"
+    assert plan["projected_image"] == "ghcr.io/openclaw/openclaw:2026.4.1"
+
+
+def test_rollback_plan_with_to_version_targets_specific_event(
+    temp_clawcu_home, tmp_path
+) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+    datadir = tmp_path / "writer"
+    datadir.mkdir()
+    (datadir / "state.txt").write_text("v1", encoding="utf-8")
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=18789,
+        cpu="1",
+        memory="2g",
+    )
+    service.upgrade_instance("writer", version="2026.4.2")
+    service.upgrade_instance("writer", version="2026.4.3")
+
+    plan = service.rollback_plan("writer", to_version="2026.4.1")
+
+    assert plan["current_version"] == "2026.4.3"
+    assert plan["target_version"] == "2026.4.1"
+    assert plan["selected_action"] == "upgrade"
+
+
+def test_rollback_plan_unknown_target_raises(temp_clawcu_home, tmp_path) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+    datadir = tmp_path / "writer"
+    datadir.mkdir()
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=18789,
+        cpu="1",
+        memory="2g",
+    )
+    service.upgrade_instance("writer", version="2026.4.2")
+
+    with pytest.raises(ValueError, match="no rollback snapshot"):
+        service.rollback_plan("writer", to_version="2020.1.1")
+
+
+def test_list_rollback_targets_returns_history_snapshots(
+    temp_clawcu_home, tmp_path
+) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+    datadir = tmp_path / "writer"
+    datadir.mkdir()
+    (datadir / "state.txt").write_text("v1", encoding="utf-8")
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=18789,
+        cpu="1",
+        memory="2g",
+    )
+    # No upgrades yet -> empty target list.
+    empty = service.list_rollback_targets("writer")
+    assert empty["targets"] == []
+
+    service.upgrade_instance("writer", version="2026.4.2")
+    service.upgrade_instance("writer", version="2026.4.3")
+
+    payload = service.list_rollback_targets("writer")
+    assert payload["current_version"] == "2026.4.3"
+    assert len(payload["targets"]) == 2
+    assert payload["targets"][0]["action"] == "upgrade"
+    assert payload["targets"][0]["restores_to"] == "2026.4.1"
+    assert payload["targets"][1]["restores_to"] == "2026.4.2"
+    # Snapshots we just produced should exist on disk.
+    assert payload["targets"][0]["snapshot_exists"] is True
+    assert payload["targets"][1]["snapshot_exists"] is True
+
+
+def test_rollback_instance_with_to_version_targets_specific_event(
+    temp_clawcu_home, tmp_path
+) -> None:
+    service, _, _, store = make_service(temp_clawcu_home)
+    datadir = tmp_path / "writer"
+    datadir.mkdir()
+    (datadir / "state.txt").write_text("v1", encoding="utf-8")
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=18789,
+        cpu="1",
+        memory="2g",
+    )
+    env_path = store.instance_env_path("writer")
+    env_path.write_text("OPENAI_API_KEY=v1\n", encoding="utf-8")
+
+    service.upgrade_instance("writer", version="2026.4.2")
+    (datadir / "state.txt").write_text("v2", encoding="utf-8")
+    env_path.write_text("OPENAI_API_KEY=v2\n", encoding="utf-8")
+
+    service.upgrade_instance("writer", version="2026.4.3")
+    (datadir / "state.txt").write_text("v3", encoding="utf-8")
+    env_path.write_text("OPENAI_API_KEY=v3\n", encoding="utf-8")
+
+    rolled = service.rollback_instance("writer", to_version="2026.4.1")
+    assert rolled.version == "2026.4.1"
+    assert (datadir / "state.txt").read_text(encoding="utf-8") == "v1"
+    assert env_path.read_text(encoding="utf-8") == "OPENAI_API_KEY=v1\n"
+
+
 def test_clone_instance_copies_data_and_starts_new_instance(temp_clawcu_home, tmp_path) -> None:
     service, _, _, store = make_service(temp_clawcu_home)
     source_dir = tmp_path / "writer"

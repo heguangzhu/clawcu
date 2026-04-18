@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -510,12 +511,64 @@ class FakeService:
             self.reporter("Step 4/4: Recreating the container")
         return self._instance(name=name, version=version)
 
-    def rollback_instance(self, name: str) -> InstanceRecord:
-        self._record("rollback_instance", name=name)
+    def rollback_plan(self, name: str, *, to_version: str | None = None) -> dict:
+        self._record("rollback_plan", name=name, to_version=to_version)
+        target = to_version or "2026.4.0"
+        return {
+            "instance": name,
+            "service": "openclaw",
+            "current_version": "2026.4.1",
+            "target_version": target,
+            "datadir": f"/tmp/{name}",
+            "env_path": f"/tmp/{name}.env",
+            "env_exists": True,
+            "restore_snapshot": f"/tmp/snapshots/{name}/20260101-upgrade-to-2026.4.1",
+            "restore_snapshot_exists": True,
+            "selected_action": "upgrade",
+            "selected_timestamp": "2026-01-01T00:00:00Z",
+            "projected_image": f"ghcr.io/openclaw/openclaw:{target}",
+            "snapshot_root": f"/tmp/snapshots/{name}",
+            "snapshot_label": "rollback-from-2026.4.1",
+        }
+
+    def list_rollback_targets(self, name: str) -> dict:
+        self._record("list_rollback_targets", name=name)
+        return {
+            "instance": name,
+            "service": "openclaw",
+            "current_version": "2026.4.1",
+            "targets": [
+                {
+                    "index": 0,
+                    "action": "upgrade",
+                    "timestamp": "2026-01-01T00:00:00Z",
+                    "from_version": "2026.3.20",
+                    "to_version": "2026.4.0",
+                    "snapshot_dir": f"/tmp/snapshots/{name}/20260101-upgrade-to-2026.4.0",
+                    "snapshot_exists": True,
+                    "restores_to": "2026.3.20",
+                },
+                {
+                    "index": 1,
+                    "action": "upgrade",
+                    "timestamp": "2026-02-01T00:00:00Z",
+                    "from_version": "2026.4.0",
+                    "to_version": "2026.4.1",
+                    "snapshot_dir": f"/tmp/snapshots/{name}/20260201-upgrade-to-2026.4.1",
+                    "snapshot_exists": True,
+                    "restores_to": "2026.4.0",
+                },
+            ],
+        }
+
+    def rollback_instance(
+        self, name: str, *, to_version: str | None = None
+    ) -> InstanceRecord:
+        self._record("rollback_instance", name=name, to_version=to_version)
         if self.reporter:
             self.reporter("Step 1/4: Preparing to roll back")
             self.reporter("Step 4/4: Starting OpenClaw")
-        return self._instance(name=name, version="2026.4.0")
+        return self._instance(name=name, version=to_version or "2026.4.0")
 
     def clone_instance(
         self,
@@ -643,7 +696,7 @@ def test_root_help_lists_descriptions_for_top_level_commands() -> None:
     assert "upgrade" in result.stdout
     assert "Upgrade an instance to a newer service version" in result.stdout
     assert "rollback" in result.stdout
-    assert "data-directory and env snapshot" in result.stdout
+    assert "Roll an instance back to an earlier snapshot." in result.stdout
     assert "clone" in result.stdout
     assert "Clone an existing instance into a separate experiment instance." in result.stdout
     assert "logs" in result.stdout
@@ -666,7 +719,9 @@ def test_upgrade_and_rollback_help_mentions_env_snapshots() -> None:
     assert upgrade_result.exit_code == 0
     assert "data directory and env file" in upgrade_result.stdout
     assert rollback_result.exit_code == 0
-    assert "data-directory and env snapshot" in rollback_result.stdout
+    # Rollback help now documents the --to / --list surface.
+    assert "--to" in rollback_result.stdout
+    assert "--list" in rollback_result.stdout
 
 
 def test_provider_help_lists_subcommands() -> None:
@@ -2119,14 +2174,18 @@ def test_lifecycle_commands_accept_instance_name(monkeypatch) -> None:
             # pre-existing behavior.
             {"name": "writer", "recreate_if_config_changed": True},
         ),
-        (["rollback", "writer", "--yes"], "rollback_instance", {"name": "writer"}),
+        (
+            ["rollback", "writer", "--yes"],
+            "rollback_instance",
+            {"name": "writer", "to_version": None},
+        ),
     ]
 
     for argv, expected_call, expected_kwargs in cases:
         service.calls.clear()
         result = runner.invoke(app, argv)
         assert result.exit_code == 0
-        assert service.calls[0] == (expected_call, (), expected_kwargs)
+        assert (expected_call, (), expected_kwargs) in service.calls
         if expected_call in {"start_instance", "restart_instance", "rollback_instance"}:
             assert service.calls[-1] == ("dashboard_url", (), {"name": "writer"})
 
@@ -2328,7 +2387,14 @@ def test_rollback_command_prints_progress(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "Step 1/4: Preparing to roll back" in result.stdout
     assert "Step 4/4: Starting OpenClaw" in result.stdout
-    assert service.calls[-2] == ("rollback_instance", (), {"name": "writer"})
+    # Rollback now always renders a plan (via rollback_plan) before executing.
+    call_names = [call[0] for call in service.calls]
+    assert call_names.index("rollback_plan") < call_names.index("rollback_instance")
+    assert (
+        "rollback_instance",
+        (),
+        {"name": "writer", "to_version": None},
+    ) in service.calls
     assert service.calls[-1] == ("dashboard_url", (), {"name": "writer"})
 
 
@@ -2341,6 +2407,91 @@ def test_rollback_command_requires_confirmation_in_non_interactive(monkeypatch) 
     assert result.exit_code == 1
     assert "--yes" in result.stdout
     assert all(call[0] != "rollback_instance" for call in service.calls)
+
+
+def test_rollback_command_accepts_to_version_option(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        ["rollback", "writer", "--to", "2026.3.20", "--yes"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    # Plan is previewed with the requested target version first.
+    assert (
+        "rollback_plan",
+        (),
+        {"name": "writer", "to_version": "2026.3.20"},
+    ) in service.calls
+    # Then the instance rollback is invoked with the same target.
+    assert (
+        "rollback_instance",
+        (),
+        {"name": "writer", "to_version": "2026.3.20"},
+    ) in service.calls
+
+
+def test_rollback_command_list_renders_targets(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["rollback", "writer", "--list"])
+
+    assert result.exit_code == 0, result.stdout
+    # --list is pure-read; it must not execute a rollback.
+    assert ("list_rollback_targets", (), {"name": "writer"}) in service.calls
+    call_names = [call[0] for call in service.calls]
+    assert "rollback_instance" not in call_names
+    assert "2026.3.20" in result.stdout
+    assert "2026.4.0" in result.stdout
+
+
+def test_rollback_command_list_json_emits_payload(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["rollback", "writer", "--list", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["instance"] == "writer"
+    assert len(payload["targets"]) == 2
+    assert payload["targets"][0]["restores_to"] == "2026.3.20"
+
+
+def test_rollback_command_dry_run_skips_execution(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        ["rollback", "writer", "--to", "2026.4.0", "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert "Dry run" in result.stdout
+    # rollback_plan must be called; rollback_instance must NOT run.
+    call_names = [call[0] for call in service.calls]
+    assert "rollback_plan" in call_names
+    assert "rollback_instance" not in call_names
+
+
+def test_rollback_command_dry_run_json_emits_plan(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        ["rollback", "writer", "--to", "2026.4.0", "--dry-run", "--json"],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["current_version"] == "2026.4.1"
+    assert payload["target_version"] == "2026.4.0"
+    assert "restore_snapshot" in payload
 
 
 def test_clone_command_accepts_required_options(monkeypatch) -> None:

@@ -1102,6 +1102,118 @@ class ClawCUService:
             "local_images": local_images,
         }
 
+    def list_rollback_targets(self, name: str) -> dict:
+        """Enumerate snapshot targets usable by `clawcu rollback --list`.
+
+        Each reversible lifecycle transition (an ``upgrade`` or prior
+        ``rollback`` event) in the instance history produced a safety
+        snapshot of the data directory and env file. Restoring one of
+        those snapshots restores the corresponding ``from_version``, so
+        every entry surfaces both the action that produced the snapshot
+        and the version it restores to.
+
+        The returned list is ordered oldest -> newest so the UI can
+        show the most recent restore point last (mirroring a shell
+        history).
+        """
+        record = self.store.load_record(name)
+        targets: list[dict] = []
+        for index, event in enumerate(record.history or []):
+            if not isinstance(event, dict):
+                continue
+            action = event.get("action")
+            if action not in {"upgrade", "rollback"}:
+                continue
+            snapshot_dir = event.get("snapshot_dir")
+            exists = bool(snapshot_dir) and Path(snapshot_dir).exists()
+            targets.append(
+                {
+                    "index": index,
+                    "action": action,
+                    "timestamp": event.get("timestamp"),
+                    "from_version": event.get("from_version"),
+                    "to_version": event.get("to_version"),
+                    "snapshot_dir": snapshot_dir,
+                    "snapshot_exists": exists,
+                    # Rolling back restores the state captured *before* the
+                    # transition, which is recorded as ``from_version``.
+                    "restores_to": event.get("from_version"),
+                }
+            )
+        return {
+            "instance": record.name,
+            "service": record.service,
+            "current_version": record.version,
+            "targets": targets,
+        }
+
+    def rollback_plan(self, name: str, *, to_version: str | None = None) -> dict:
+        """Return a rollback preview payload without touching Docker or disk.
+
+        Mirrors ``upgrade_plan`` in shape so the CLI can render it with
+        the same table. If ``to_version`` is omitted, the most recent
+        reversible transition is selected (matching the default
+        ``rollback_instance`` behavior).
+        """
+        record = self.store.load_record(name)
+        adapter = self.adapter_for_record(record)
+        transition = self._resolve_rollback_target(record, to_version=to_version)
+        previous_version = normalize_service_version(
+            record.service, transition["from_version"]
+        )
+        restore_from = transition.get("snapshot_dir")
+        env_path = adapter.env_path(self, record)
+        snapshot_label = f"rollback-from-{record.version}"
+        snapshot_root = self.store.paths.snapshots_dir / record.name
+        manager = self._service_manager(record)
+        projected_image = (
+            manager.official_image_tag(previous_version)
+            if hasattr(manager, "official_image_tag")
+            else f"{record.service}:{previous_version}"
+        )
+        return {
+            "instance": record.name,
+            "service": record.service,
+            "current_version": record.version,
+            "target_version": previous_version,
+            "datadir": str(record.datadir),
+            "env_path": str(env_path),
+            "env_exists": env_path.exists(),
+            "restore_snapshot": str(restore_from) if restore_from else None,
+            "restore_snapshot_exists": bool(restore_from) and Path(restore_from).exists(),
+            "selected_action": transition.get("action"),
+            "selected_timestamp": transition.get("timestamp"),
+            "projected_image": projected_image,
+            "snapshot_root": str(snapshot_root),
+            "snapshot_label": snapshot_label,
+        }
+
+    def _resolve_rollback_target(
+        self, record: InstanceRecord, *, to_version: str | None
+    ) -> dict:
+        """Pick the history event that defines which snapshot we restore.
+
+        Without ``to_version`` this behaves exactly like
+        ``_latest_transition``. With ``to_version`` supplied, it scans
+        history newest-first for the most recent event whose
+        ``from_version`` (the pre-transition state) matches the
+        requested version.
+        """
+        if to_version is None:
+            return self._latest_transition(record)
+        normalized = normalize_service_version(record.service, to_version)
+        for event in reversed(record.history or []):
+            if not isinstance(event, dict):
+                continue
+            if event.get("action") not in {"upgrade", "rollback"}:
+                continue
+            if event.get("from_version") == normalized:
+                return event
+        raise ValueError(
+            f"Instance '{record.name}' has no rollback snapshot for version {normalized}. "
+            "Run 'clawcu rollback <name> --list' to see available targets."
+        )
+
     def upgrade_instance(self, name: str, *, version: str) -> InstanceRecord:
         record = self.store.load_record(name)
         adapter = self.adapter_for_record(record)
@@ -1229,10 +1341,12 @@ class ClawCUService:
         self.reporter(self._lifecycle_summary("upgraded", upgraded))
         return upgraded
 
-    def rollback_instance(self, name: str) -> InstanceRecord:
+    def rollback_instance(
+        self, name: str, *, to_version: str | None = None
+    ) -> InstanceRecord:
         record = self.store.load_record(name)
         adapter = self.adapter_for_record(record)
-        transition = self._latest_transition(record)
+        transition = self._resolve_rollback_target(record, to_version=to_version)
         previous_version = normalize_service_version(record.service, transition["from_version"])
         restore_from = transition.get("snapshot_dir")
 
