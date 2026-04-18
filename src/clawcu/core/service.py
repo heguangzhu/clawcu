@@ -1727,7 +1727,11 @@ class ClawCUService:
             else:
                 self.reporter("Step 3/5: No instance environment file was found on the source instance. Skipping env copy.")
             self.reporter(f"Step 4/5: Making sure the requested {adapter.display_name} artifact is available.")
-            adapter.prepare_artifact(clone_spec.version)
+            prepared_image = adapter.prepare_artifact(clone_spec.version)
+            # Re-resolve image_tag from current image_repo config rather than
+            # inheriting the source record's tag, which may point at a repo
+            # the user has since migrated away from.
+            clone_spec = replace(clone_spec, image_tag_override=prepared_image)
             self.reporter("Step 5/5: Starting the cloned Docker container and checking health. This usually takes a few seconds.")
             history_event: dict = {
                 "action": "cloned",
@@ -1736,9 +1740,6 @@ class ClawCUService:
                 "to_version": target_version,
                 "secrets_included": bool(include_secrets),
             }
-            # When the clone switches version at copy time, record the
-            # source version too so `history` reflects clone+upgrade
-            # provenance rather than looking like a plain clone.
             if target_version != source.version:
                 history_event["from_source_version"] = source.version
             record = self._start_new_instance(

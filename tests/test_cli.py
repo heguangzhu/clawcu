@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from rich.console import Console
 from typer.testing import CliRunner
 
-from clawcu.cli import _display_version, app
+from clawcu.cli import _actionable_hint_for, _display_version, app
 from clawcu.models import InstanceRecord
 
 runner = CliRunner()
@@ -28,6 +28,38 @@ def test_display_version_prefers_release_date_format() -> None:
     assert _display_version("v2026.4.8") == "2026.4.8"
     assert _display_version("v0.9.0 (2026.4.16)") == "2026.4.16"
     assert _display_version("main") == "main"
+
+
+def test_actionable_hint_matches_canonical_service_errors() -> None:
+    assert _actionable_hint_for("Instance 'foo' was not found.") == (
+        "Run `clawcu list` to see managed instances."
+    )
+    assert _actionable_hint_for("Provider 'bar' was not found.") == (
+        "Run `clawcu provider list` to see collected providers."
+    )
+    assert _actionable_hint_for(
+        "Provider bundle 'openclaw:baz' was not found."
+    ) == (
+        "Run `clawcu provider list` to see collected providers, "
+        "or `clawcu provider collect` to import new ones."
+    )
+    assert _actionable_hint_for(
+        "Instance 'writer' has no rollback snapshot for version 2026.4.1."
+    ) == "Run `clawcu rollback <name> --list` to see available rollback targets."
+
+
+def test_actionable_hint_ignores_unrelated_docker_stderr() -> None:
+    # Regression guard for product_review-2.md P0#2: substring matching
+    # on "instance"/"image"/"does not exist" fired on arbitrary Docker
+    # errors (e.g. "pull access denied") and produced misleading hints.
+    docker_pull_failure = (
+        "Failed to create instance 'scratch-clone': Unable to find image "
+        "'clawcu/openclaw:2026.4.15' locally\n"
+        "docker: Error response from daemon: pull access denied for "
+        "clawcu/openclaw, repository does not exist or may require "
+        "'docker login'"
+    )
+    assert _actionable_hint_for(docker_pull_failure) is None
 
 
 def test_start_command_sets_progress_reporter(monkeypatch) -> None:

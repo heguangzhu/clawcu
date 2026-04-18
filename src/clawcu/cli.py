@@ -50,13 +50,27 @@ def get_service() -> ClawCUService:
     return ClawCUService()
 
 
-_NOT_FOUND_HINTS: tuple[tuple[str, str], ...] = (
-    # Ordered most-specific first — matching is substring-based.
-    ("provider bundle", "Run `clawcu provider list` to see collected providers, or `clawcu provider collect` to import new ones."),
-    ("provider ", "Run `clawcu provider list` to see collected providers."),
-    ("instance ", "Run `clawcu list` to see managed instances."),
-    ("snapshot", "Run `clawcu rollback <name> --list` to see available rollback targets."),
-    ("image", "Run `clawcu pull --service <svc> --version <ver>` to pull the image first."),
+_HINT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    # Anchored to the specific error shapes raised by the service layer.
+    # Substring matching was too loose — docker stderr routinely mentions
+    # "image" or embeds the word "instance" in unrelated failure text,
+    # triggering misleading "Run clawcu list" hints.
+    (
+        re.compile(r"[Pp]rovider bundle '[^']+' was not found"),
+        "Run `clawcu provider list` to see collected providers, or `clawcu provider collect` to import new ones.",
+    ),
+    (
+        re.compile(r"[Pp]rovider '[^']+' was not found"),
+        "Run `clawcu provider list` to see collected providers.",
+    ),
+    (
+        re.compile(r"[Ii]nstance '[^']+' was not found"),
+        "Run `clawcu list` to see managed instances.",
+    ),
+    (
+        re.compile(r"has no rollback snapshot"),
+        "Run `clawcu rollback <name> --list` to see available rollback targets.",
+    ),
 )
 
 
@@ -65,15 +79,13 @@ def _actionable_hint_for(message: str) -> str | None:
 
     The runtime raises naked ``ValueError`` / ``RuntimeError`` messages
     like ``Instance 'foo' was not found.`` which are readable but not
-    actionable — the user has to guess the fix. Matching on the message
-    shape keeps this layer loose (no exception-type coupling) while
-    letting us attach a helpful next step.
+    actionable — the user has to guess the fix. Matching anchors on the
+    specific phrasings the service layer emits rather than on loose
+    substrings, so arbitrary docker stderr (e.g. "repository does not
+    exist", "pull access denied") does not trigger a misleading hint.
     """
-    lowered = message.lower()
-    if "not found" not in lowered and "does not exist" not in lowered:
-        return None
-    for marker, hint in _NOT_FOUND_HINTS:
-        if marker.lower() in lowered:
+    for pattern, hint in _HINT_PATTERNS:
+        if pattern.search(message):
             return hint
     return None
 

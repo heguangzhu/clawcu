@@ -184,7 +184,7 @@ def test_create_openclaw_saves_record(temp_clawcu_home, tmp_path) -> None:
 
     assert record.status == "running"
     assert openclaw.versions == ["2026.4.1"]
-    assert store.load_record("writer").image_tag == "clawcu/openclaw:2026.4.1"
+    assert store.load_record("writer").image_tag == "ghcr.io/openclaw/openclaw:2026.4.1"
     assert docker.commands[0][0] == "run"
 
 
@@ -3471,6 +3471,37 @@ def test_clone_instance_exclude_secrets_skips_env_copy(
     stored = store.load_record("writer-exp")
     cloned_event = next(e for e in stored.history if e["action"] == "cloned")
     assert cloned_event["secrets_included"] is False
+
+
+def test_clone_instance_reresolves_image_tag_against_current_repo(
+    temp_clawcu_home, tmp_path
+) -> None:
+    """Regression: clone must re-resolve image_tag via prepare_artifact
+    rather than inheriting the source record's tag. Users who migrate
+    image_repo (e.g. after an upstream registry change) would otherwise
+    produce clones pinned to the source's stale repo prefix."""
+    service, _, openclaw, store = make_service(temp_clawcu_home)
+    source_dir = tmp_path / "writer"
+    source_dir.mkdir()
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(source_dir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+    source_tag = store.load_record("writer").image_tag
+    openclaw.image_repo = "registry.example.com/openclaw"
+    clone = service.clone_instance(
+        "writer",
+        name="writer-exp",
+        datadir=str(tmp_path / "writer-exp"),
+        port=3001,
+    )
+
+    assert clone.image_tag == "registry.example.com/openclaw:2026.4.1"
+    assert clone.image_tag != source_tag
 
 
 def test_clone_instance_rejects_existing_target_container(temp_clawcu_home, tmp_path) -> None:

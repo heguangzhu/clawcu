@@ -162,7 +162,7 @@ class FakeOpenClawManager:
 
     def ensure_image(self, version: str) -> str:
         self.versions.append(version)
-        return f"clawcu/openclaw:{version}"
+        return f"{self.image_repo}:{version}"
 
     def official_image_tag(self, version: str) -> str:
         return f"{self.image_repo}:{version}"
@@ -185,7 +185,7 @@ class FakeHermesManager:
 
     def ensure_image(self, version: str) -> str:
         self.versions.append(version)
-        return f"clawcu/hermes-agent:{version}"
+        return f"{self.image_repo}:{version}"
 
     def official_image_tag(self, version: str) -> str:
         return f"{self.image_repo}:{version}"
