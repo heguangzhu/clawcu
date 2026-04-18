@@ -493,8 +493,12 @@ class FakeService:
             "snapshot_label": f"upgrade-to-{version}",
         }
 
-    def list_upgradable_versions(self, name: str) -> dict:
-        self._record("list_upgradable_versions", name=name)
+    def list_upgradable_versions(
+        self, name: str, *, include_remote: bool = True
+    ) -> dict:
+        self._record(
+            "list_upgradable_versions", name=name, include_remote=include_remote
+        )
         return {
             "instance": name,
             "service": "openclaw",
@@ -502,6 +506,12 @@ class FakeService:
             "current_version": "2026.4.1",
             "history": ["2026.3.20", "2026.4.1"],
             "local_images": ["2026.4.1", "2026.4.2"],
+            "remote_versions": ["2026.4.1", "2026.4.2", "2026.4.3"]
+            if include_remote
+            else None,
+            "remote_error": None,
+            "remote_registry": "ghcr.io" if include_remote else None,
+            "remote_requested": include_remote,
         }
 
     def upgrade_instance(self, name: str, *, version: str) -> InstanceRecord:
@@ -2327,6 +2337,76 @@ def test_upgrade_command_list_versions_json(monkeypatch) -> None:
     assert result.exit_code == 0, result.stdout
     assert '"image_repo"' in result.stdout
     assert '"local_images"' in result.stdout
+
+
+def test_upgrade_list_versions_queries_remote_by_default(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["upgrade", "writer", "--list-versions"])
+
+    assert result.exit_code == 0, result.stdout
+    # Remote should have been requested by default.
+    assert (
+        "list_upgradable_versions",
+        (),
+        {"name": "writer", "include_remote": True},
+    ) in service.calls
+    # Remote tag from the FakeService payload should render.
+    assert "2026.4.3" in result.stdout
+    # Remote section header present (with "Remote" label).
+    assert "Remote" in result.stdout
+
+
+def test_upgrade_list_versions_no_remote_suppresses_query(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app, ["upgrade", "writer", "--list-versions", "--no-remote"]
+    )
+
+    assert result.exit_code == 0, result.stdout
+    # include_remote=False was threaded through the service call.
+    assert (
+        "list_upgradable_versions",
+        (),
+        {"name": "writer", "include_remote": False},
+    ) in service.calls
+    assert "skipped (--no-remote)" in result.stdout
+
+
+def test_upgrade_list_versions_renders_remote_failure_warning(monkeypatch) -> None:
+    service = FakeService()
+
+    # Override the fake to simulate a failed remote fetch.
+    def _failing(name, *, include_remote=True):
+        service._record(
+            "list_upgradable_versions", name=name, include_remote=include_remote
+        )
+        return {
+            "instance": name,
+            "service": "openclaw",
+            "image_repo": "ghcr.io/openclaw/openclaw",
+            "current_version": "2026.4.1",
+            "history": ["2026.4.1"],
+            "local_images": ["2026.4.1"],
+            "remote_versions": None,
+            "remote_error": "network error: timeout",
+            "remote_registry": "ghcr.io",
+            "remote_requested": True,
+        }
+
+    service.list_upgradable_versions = _failing  # type: ignore[method-assign]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["upgrade", "writer", "--list-versions"])
+
+    assert result.exit_code == 0, result.stdout
+    # The warning line includes the reason so users know why remote is
+    # missing; no crash on the failure.
+    assert "fetch failed" in result.stdout
+    assert "timeout" in result.stdout
 
 
 def test_upgrade_command_dry_run_shows_plan_without_executing(monkeypatch) -> None:

@@ -122,10 +122,39 @@ class FakeDockerManager:
         self.commands.append(("logs", container_name))
 
 
+class _FakeRemoteTagResult:
+    """Stand-in for clawcu.core.registry.RemoteTagResult in fakes.
+
+    Service-layer code only reaches through ``.ok``, ``.tags``,
+    ``.error``, and ``.registry`` on the result, so we intentionally
+    keep this structural rather than importing the real dataclass.
+    """
+
+    def __init__(
+        self,
+        *,
+        tags: list[str] | None = None,
+        error: str | None = None,
+        registry: str = "",
+    ) -> None:
+        self.tags = tags
+        self.error = error
+        self.registry = registry
+
+    @property
+    def ok(self) -> bool:
+        return self.tags is not None
+
+
 class FakeOpenClawManager:
     def __init__(self) -> None:
         self.versions: list[str] = []
         self.image_repo = "ghcr.io/openclaw/openclaw"
+        # Tests can patch this to simulate registry responses. Default
+        # is None (no remote fetch). Setting .remote_result or
+        # .remote_tags exercises the "remote query succeeded" branch.
+        self.remote_result: _FakeRemoteTagResult | None = None
+        self.list_remote_versions_calls: list[dict] = []
 
     def build_image(self, version: str) -> str:
         self.versions.append(version)
@@ -138,11 +167,21 @@ class FakeOpenClawManager:
     def official_image_tag(self, version: str) -> str:
         return f"{self.image_repo}:{version}"
 
+    def list_remote_versions(self, **kwargs) -> _FakeRemoteTagResult:
+        self.list_remote_versions_calls.append(kwargs)
+        if self.remote_result is not None:
+            return self.remote_result
+        # Default "empty success" so service-layer tests that enable
+        # remote fetching don't accidentally look like a failure.
+        return _FakeRemoteTagResult(tags=[], registry="ghcr.io")
+
 
 class FakeHermesManager:
     def __init__(self) -> None:
         self.versions: list[str] = []
         self.image_repo = "clawcu/hermes-agent"
+        self.remote_result: _FakeRemoteTagResult | None = None
+        self.list_remote_versions_calls: list[dict] = []
 
     def ensure_image(self, version: str) -> str:
         self.versions.append(version)
@@ -150,6 +189,12 @@ class FakeHermesManager:
 
     def official_image_tag(self, version: str) -> str:
         return f"{self.image_repo}:{version}"
+
+    def list_remote_versions(self, **kwargs) -> _FakeRemoteTagResult:
+        self.list_remote_versions_calls.append(kwargs)
+        if self.remote_result is not None:
+            return self.remote_result
+        return _FakeRemoteTagResult(tags=[], registry="registry-1.docker.io")
 
 
 def make_service(

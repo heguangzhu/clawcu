@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Callable
 
 from clawcu.core.docker import DockerManager
+from clawcu.core.registry import RemoteTagResult, fetch_remote_tags
 from clawcu.core.storage import StateStore
 from clawcu.core.subprocess_utils import CommandError, run_command
 from clawcu.core.validation import normalize_version
+
+# OpenClaw tags are year-dot-month-dot-patch ("2026.4.2"), optionally
+# prefixed with "v". Anything else (e.g. "latest", "sha-...", branch
+# previews) is excluded from the release listing.
+_OPENCLAW_RELEASE_TAG = re.compile(r"^v?\d{4}\.\d{1,2}\.\d+(?:[-.][A-Za-z0-9.-]+)?$")
 
 DEFAULT_OPENCLAW_IMAGE_REPO = "ghcr.io/openclaw/openclaw"
 DEFAULT_OPENCLAW_IMAGE_REPO_CN = "ghcr.nju.edu.cn/openclaw/openclaw"
@@ -40,6 +47,40 @@ class OpenClawManager:
 
     def official_image_tag(self, version: str) -> str:
         return f"{self.image_repo}:{normalize_version(version)}"
+
+    def list_remote_versions(
+        self,
+        *,
+        timeout: float | None = None,
+        fetcher: Callable[..., RemoteTagResult] | None = None,
+    ) -> RemoteTagResult:
+        """Fetch the remote tag list for the configured OpenClaw repo.
+
+        The raw registry output contains build artifacts we do not want
+        to surface (``latest``, ``main``, commit shas). This wrapper
+        filters tags down to OpenClaw's semantic release pattern —
+        ``YYYY.M.P`` optionally prefixed with ``v`` — and returns a new
+        ``RemoteTagResult`` with the filtered list. Errors are preserved
+        on the result untouched.
+        """
+        fetch = fetcher or fetch_remote_tags
+        raw = fetch(self.image_repo, timeout=timeout or 4)
+        if not raw.ok:
+            return raw
+        filtered = sorted(
+            {
+                tag.lstrip("v")
+                for tag in (raw.tags or [])
+                if _OPENCLAW_RELEASE_TAG.match(tag)
+            }
+        )
+        return RemoteTagResult(
+            repo=raw.repo,
+            registry=raw.registry,
+            tags=filtered,
+            pages_fetched=raw.pages_fetched,
+            extras={"raw_tag_count": len(raw.tags or [])},
+        )
 
     def pull_official_image(self, version: str) -> str:
         normalized = normalize_version(version)

@@ -1071,15 +1071,27 @@ class ClawCUService:
             "snapshot_label": snapshot_label,
         }
 
-    def list_upgradable_versions(self, name: str) -> dict:
+    def list_upgradable_versions(
+        self, name: str, *, include_remote: bool = True
+    ) -> dict:
         """Enumerate versions useful for `clawcu upgrade --list-versions`.
 
-        Returns three buckets:
+        Returns four buckets:
         - ``history``: every from/to version this instance has observed
           plus the current version (useful as "roll back candidates");
         - ``local_images``: tags of the configured image repo present on
           the local Docker daemon (these upgrades skip a pull);
+        - ``remote_versions``: tag list returned by the configured
+          image registry, filtered by the service's release-tag rule.
+          ``None`` when ``include_remote=False`` or when the fetch
+          failed (``remote_error`` carries the reason);
         - ``current_version`` for callers to annotate.
+
+        ``include_remote=True`` (the default) means the remote registry
+        is queried. The query is best-effort: network/auth failures are
+        caught, surfaced via ``remote_error``, and do not fail the
+        overall call. Pass ``include_remote=False`` for a strictly
+        offline view (e.g. in CI or on airplanes).
         """
         record = self.store.load_record(name)
         manager = self._service_manager(record)
@@ -1093,6 +1105,22 @@ class ClawCUService:
                         history_set.add(value)
         history_set.discard("-")
         local_images = self.docker.list_local_images(repo) if repo else []
+
+        remote_versions: list[str] | None = None
+        remote_error: str | None = None
+        remote_registry: str | None = None
+        if include_remote and repo and hasattr(manager, "list_remote_versions"):
+            try:
+                result = manager.list_remote_versions()
+            except Exception as exc:  # defensive — manager is best-effort
+                remote_error = f"unexpected error: {exc}"
+            else:
+                remote_registry = getattr(result, "registry", None) or None
+                if result.ok:
+                    remote_versions = result.tags or []
+                else:
+                    remote_error = result.error
+
         return {
             "instance": record.name,
             "service": record.service,
@@ -1100,6 +1128,10 @@ class ClawCUService:
             "current_version": record.version,
             "history": sorted(history_set),
             "local_images": local_images,
+            "remote_versions": remote_versions,
+            "remote_error": remote_error,
+            "remote_registry": remote_registry,
+            "remote_requested": include_remote,
         }
 
     def list_rollback_targets(self, name: str) -> dict:

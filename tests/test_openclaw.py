@@ -442,3 +442,56 @@ def test_exec_in_container_interactive_uses_tty_flags_with_terminal(monkeypatch)
 
     command, _, _ = runner.calls[0]
     assert command == ["docker", "exec", "-i", "-t", "clawcu-openclaw-writer", "pwd"]
+
+
+def test_openclaw_list_remote_versions_filters_release_tags() -> None:
+    from clawcu.core.registry import RemoteTagResult
+
+    store = type("NoStore", (), {})()
+    docker = type("NoDocker", (), {})()
+    manager = OpenClawManager(store=store, docker=docker, image_repo="ghcr.io/openclaw/openclaw")  # type: ignore[arg-type]
+
+    def fake_fetcher(repo: str, *, timeout: float = 0) -> RemoteTagResult:
+        return RemoteTagResult(
+            repo=repo,
+            registry="ghcr.io",
+            tags=[
+                "2026.4.1",
+                "v2026.4.2",
+                "2026.4.3-beta.1",
+                "latest",
+                "main",
+                "sha-abc123",
+                "2026.4.2-amd64",
+                "",  # filtered by the registry client itself usually, but we
+                # still guard here so callers can rely on "no empty strings".
+            ],
+        )
+
+    result = manager.list_remote_versions(fetcher=fake_fetcher)
+
+    assert result.ok
+    # "latest", "main", "sha-..." are dropped. "v" prefix is stripped
+    # so local-vs-remote comparisons work on plain semver strings.
+    assert result.tags is not None
+    assert "2026.4.1" in result.tags
+    assert "2026.4.2" in result.tags
+    assert "2026.4.3-beta.1" in result.tags
+    assert "latest" not in result.tags
+    assert "main" not in result.tags
+    assert "sha-abc123" not in result.tags
+
+
+def test_openclaw_list_remote_versions_forwards_fetch_errors() -> None:
+    from clawcu.core.registry import RemoteTagResult
+
+    store = type("NoStore", (), {})()
+    docker = type("NoDocker", (), {})()
+    manager = OpenClawManager(store=store, docker=docker, image_repo="ghcr.io/openclaw/openclaw")  # type: ignore[arg-type]
+
+    def failing_fetcher(repo: str, *, timeout: float = 0) -> RemoteTagResult:
+        return RemoteTagResult(repo=repo, registry="ghcr.io", error="network error: timeout")
+
+    result = manager.list_remote_versions(fetcher=failing_fetcher)
+    assert not result.ok
+    assert result.error == "network error: timeout"

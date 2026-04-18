@@ -1899,6 +1899,7 @@ def _print_upgradable_versions(payload: dict) -> None:
         console.print("[bold]History:[/bold] [dim]-[/dim]")
 
     local = payload.get("local_images") or []
+    local_set = set(local)
     if local:
         console.print("[bold]Local images (no pull needed):[/bold]")
         for tag in local:
@@ -1908,6 +1909,48 @@ def _print_upgradable_versions(payload: dict) -> None:
         console.print(
             "[bold]Local images:[/bold] [dim]none found for this repo; Docker will pull on upgrade[/dim]"
         )
+
+    remote_requested = bool(payload.get("remote_requested"))
+    remote = payload.get("remote_versions")
+    remote_error = payload.get("remote_error")
+    remote_registry = payload.get("remote_registry")
+    if not remote_requested:
+        console.print(
+            "[bold]Remote:[/bold] [dim]skipped (--no-remote)[/dim]"
+        )
+    elif remote is None:
+        # Remote was asked for but failed. Show the reason so the user
+        # knows why they are only seeing local/history.
+        if remote_error:
+            console.print(
+                f"[bold]Remote:[/bold] [yellow]fetch failed: {remote_error}[/yellow]"
+            )
+        else:
+            console.print(
+                "[bold]Remote:[/bold] [yellow]fetch failed (no details)[/yellow]"
+            )
+        console.print(
+            "[dim]  try --no-remote to skip the registry query, "
+            "or check network / mirror configuration[/dim]"
+        )
+    elif not remote:
+        registry_hint = f" on {remote_registry}" if remote_registry else ""
+        console.print(
+            f"[bold]Remote{registry_hint}:[/bold] [dim]no release tags matched[/dim]"
+        )
+    else:
+        registry_hint = f" on {remote_registry}" if remote_registry else ""
+        console.print(
+            f"[bold]Remote{registry_hint} ({len(remote)} release tags):[/bold]"
+        )
+        for tag in remote:
+            markers: list[str] = []
+            if tag == current:
+                markers.append("current")
+            if tag in local_set:
+                markers.append("local")
+            suffix = f" [dim]({', '.join(markers)})[/dim]" if markers else ""
+            console.print(f"  - {tag}{suffix}")
 
 
 @app.command(
@@ -1923,12 +1966,24 @@ def upgrade_instance(
         typer.Option(
             "--list-versions",
             help=(
-                "List candidate versions (local docker images for the service's "
-                "image repo, plus this instance's version history). Does not "
-                "require --version."
+                "List candidate versions for this instance: the configured "
+                "registry's release tags (best-effort remote query), the "
+                "local Docker images you've already pulled, and this "
+                "instance's version history. Does not require --version."
             ),
         ),
     ] = False,
+    include_remote: Annotated[
+        bool,
+        typer.Option(
+            "--remote/--no-remote",
+            help=(
+                "Query the configured image registry for available release "
+                "tags (default on). Use --no-remote for a strictly offline "
+                "view — e.g. in CI or when the registry is unreachable."
+            ),
+        ),
+    ] = True,
     dry_run: Annotated[
         bool,
         typer.Option(
@@ -1957,7 +2012,9 @@ def upgrade_instance(
 
     if list_versions:
         try:
-            payload = service.list_upgradable_versions(name)
+            payload = service.list_upgradable_versions(
+                name, include_remote=include_remote
+            )
         except Exception as exc:
             _exit_with_error(str(exc))
         if _json_mode():

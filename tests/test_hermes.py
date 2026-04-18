@@ -408,3 +408,54 @@ def test_apply_provider_updates_hermes_config_and_env(temp_clawcu_home, tmp_path
 
 def test_default_hermes_image_repo_constant() -> None:
     assert DEFAULT_HERMES_IMAGE_REPO == "clawcu/hermes-agent"
+
+
+def test_hermes_list_remote_versions_filters_semver_tags() -> None:
+    from clawcu.core.registry import RemoteTagResult
+
+    store = type("NoStore", (), {})()
+    docker = type("NoDocker", (), {})()
+    manager = HermesManager(store=store, docker=docker, image_repo="clawcu/hermes-agent")  # type: ignore[arg-type]
+
+    def fake_fetcher(repo: str, *, timeout: float = 0) -> RemoteTagResult:
+        return RemoteTagResult(
+            repo=repo,
+            registry="registry-1.docker.io",
+            tags=[
+                "1.0.0",
+                "v1.1.0",
+                "1.2.0-beta.1",
+                "latest",
+                "edge",
+                "sha-deadbeef",
+            ],
+        )
+
+    result = manager.list_remote_versions(fetcher=fake_fetcher)
+    assert result.ok
+    assert result.tags is not None
+    assert "1.0.0" in result.tags
+    assert "1.1.0" in result.tags
+    assert "1.2.0-beta.1" in result.tags
+    assert "latest" not in result.tags
+    assert "edge" not in result.tags
+
+
+def test_hermes_list_remote_versions_preserves_error_passthrough() -> None:
+    from clawcu.core.registry import RemoteTagResult
+
+    store = type("NoStore", (), {})()
+    docker = type("NoDocker", (), {})()
+    manager = HermesManager(store=store, docker=docker, image_repo="clawcu/hermes-agent")  # type: ignore[arg-type]
+
+    def failing(repo: str, *, timeout: float = 0) -> RemoteTagResult:
+        return RemoteTagResult(
+            repo=repo,
+            registry="registry-1.docker.io",
+            error="unauthorized (private repo or token expired)",
+        )
+
+    result = manager.list_remote_versions(fetcher=failing)
+    assert not result.ok
+    assert result.error is not None
+    assert "unauthorized" in result.error

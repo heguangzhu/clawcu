@@ -2839,6 +2839,89 @@ def test_list_upgradable_versions_merges_history_and_local_images(
     assert payload["local_images"] == ["2026.4.1", "2026.4.2", "2026.4.3"]
 
 
+def test_list_upgradable_versions_includes_remote_tags_by_default(
+    temp_clawcu_home, tmp_path
+) -> None:
+    from tests.support import _FakeRemoteTagResult
+
+    service, _, openclaw, _ = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=18789,
+        cpu="1",
+        memory="2g",
+    )
+    # Simulate a successful registry query.
+    openclaw.remote_result = _FakeRemoteTagResult(
+        tags=["2026.4.1", "2026.4.2", "2026.4.3"],
+        registry="ghcr.io",
+    )
+
+    payload = service.list_upgradable_versions("writer")
+
+    assert payload["remote_requested"] is True
+    assert payload["remote_versions"] == ["2026.4.1", "2026.4.2", "2026.4.3"]
+    assert payload["remote_error"] is None
+    assert payload["remote_registry"] == "ghcr.io"
+    # The manager must have been asked — default include_remote=True.
+    assert openclaw.list_remote_versions_calls  # at least one call
+
+
+def test_list_upgradable_versions_surfaces_remote_failure(
+    temp_clawcu_home, tmp_path
+) -> None:
+    from tests.support import _FakeRemoteTagResult
+
+    service, _, openclaw, _ = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=18789,
+        cpu="1",
+        memory="2g",
+    )
+    openclaw.remote_result = _FakeRemoteTagResult(
+        error="network error: timeout",
+        registry="ghcr.io",
+    )
+
+    payload = service.list_upgradable_versions("writer")
+
+    # Remote failed -> remote_versions is None but the overall call
+    # must still succeed (best-effort contract).
+    assert payload["remote_versions"] is None
+    assert payload["remote_error"] == "network error: timeout"
+    assert payload["remote_registry"] == "ghcr.io"
+    # Local + history still populated normally.
+    assert payload["current_version"] == "2026.4.1"
+    assert "2026.4.1" in payload["history"]
+
+
+def test_list_upgradable_versions_skips_remote_when_disabled(
+    temp_clawcu_home, tmp_path
+) -> None:
+    service, _, openclaw, _ = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=18789,
+        cpu="1",
+        memory="2g",
+    )
+
+    payload = service.list_upgradable_versions("writer", include_remote=False)
+
+    assert payload["remote_requested"] is False
+    assert payload["remote_versions"] is None
+    assert payload["remote_error"] is None
+    # Manager must NOT have been asked at all.
+    assert openclaw.list_remote_versions_calls == []
+
+
 def test_rollback_restores_snapshot_data_and_instance_env(temp_clawcu_home, tmp_path) -> None:
     service, _, _, store = make_service(temp_clawcu_home)
     messages: list[str] = []

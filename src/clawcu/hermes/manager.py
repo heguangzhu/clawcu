@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Callable
 
 from clawcu.core.docker import DockerManager
+from clawcu.core.registry import RemoteTagResult, fetch_remote_tags
 from clawcu.core.storage import StateStore
 from clawcu.core.subprocess_utils import CommandError, run_command
 from clawcu.core.validation import image_tag_for_service, normalize_service_version
 
 DEFAULT_HERMES_IMAGE_REPO = "clawcu/hermes-agent"
 Reporter = Callable[[str], None]
+
+# Hermes release tags use semver ("1.2.3", optionally "v1.2.3" or
+# "1.2.3-beta.1"). Filter out floating aliases ("latest", "edge"),
+# arch/variant suffixes ("1.2.3-amd64"), and commit shas.
+_HERMES_RELEASE_TAG = re.compile(r"^v?\d+\.\d+\.\d+(?:-[A-Za-z0-9.]+)?$")
 
 
 class HermesManager:
@@ -39,6 +46,36 @@ class HermesManager:
 
     def official_image_tag(self, version: str) -> str:
         return f"{self.image_repo}:{normalize_service_version('hermes', version)}"
+
+    def list_remote_versions(
+        self,
+        *,
+        timeout: float | None = None,
+        fetcher: Callable[..., RemoteTagResult] | None = None,
+    ) -> RemoteTagResult:
+        """Fetch the remote tag list for the configured Hermes repo.
+
+        Filters registry output down to semver release tags, stripping a
+        leading ``v`` so local and remote buckets compare cleanly.
+        """
+        fetch = fetcher or fetch_remote_tags
+        raw = fetch(self.image_repo, timeout=timeout or 4)
+        if not raw.ok:
+            return raw
+        filtered = sorted(
+            {
+                tag.lstrip("v")
+                for tag in (raw.tags or [])
+                if _HERMES_RELEASE_TAG.match(tag)
+            }
+        )
+        return RemoteTagResult(
+            repo=raw.repo,
+            registry=raw.registry,
+            tags=filtered,
+            pages_fetched=raw.pages_fetched,
+            extras={"raw_tag_count": len(raw.tags or [])},
+        )
 
     def pull_official_image(self, version: str) -> str:
         normalized = normalize_service_version("hermes", version)
