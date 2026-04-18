@@ -134,6 +134,7 @@ class ClawCUService:
         all_instances: bool = False,
         instance: str | None = None,
         path: str | None = None,
+        overwrite: bool = False,
     ) -> dict[str, list[str]]:
         selected = [bool(all_instances), instance is not None, path is not None]
         if sum(selected) != 1:
@@ -190,6 +191,7 @@ class ClawCUService:
 
         saved: list[str] = []
         merged: list[str] = []
+        overwritten: list[str] = []
         skipped: list[str] = []
         scanned: list[str] = []
 
@@ -202,12 +204,16 @@ class ClawCUService:
                     continue
                 raise
             for bundle in bundles:
-                target_name, status = self._store_collected_provider_bundle(bundle)
+                target_name, status = self._store_collected_provider_bundle(
+                    bundle, overwrite=overwrite
+                )
                 collection_label = f"{target_name} ({source_label})"
                 if status == "saved":
                     saved.append(collection_label)
                 elif status == "merged":
                     merged.append(collection_label)
+                elif status == "overwritten":
+                    overwritten.append(collection_label)
                 else:
                     skipped.append(collection_label)
 
@@ -216,9 +222,16 @@ class ClawCUService:
             f"sources={','.join(scanned)} "
             f"saved={','.join(saved)} "
             f"merged={','.join(merged)} "
+            f"overwritten={','.join(overwritten)} "
             f"skipped={','.join(skipped)}"
         )
-        return {"saved": saved, "merged": merged, "skipped": skipped, "scanned": scanned}
+        return {
+            "saved": saved,
+            "merged": merged,
+            "overwritten": overwritten,
+            "skipped": skipped,
+            "scanned": scanned,
+        }
 
     def list_providers(self) -> list[dict]:
         providers: list[dict] = []
@@ -292,6 +305,71 @@ class ClawCUService:
             fallbacks=fallbacks,
             persist=persist,
         )
+
+    def plan_apply_provider(
+        self,
+        provider: str,
+        instance: str,
+        agent: str = "main",
+        *,
+        primary: str | None = None,
+        fallbacks: list[str] | None = None,
+        persist: bool = False,
+    ) -> dict[str, object]:
+        """Compute an apply_provider plan without touching disk.
+
+        Returns the provider/instance/agent, the runtime dir the adapter
+        would write under, the file list that would be rewritten, and the
+        projected env key + env file path when ``persist`` is requested.
+        Pure read — no files are modified.
+        """
+        record = self.store.load_record(instance)
+        service_name, provider_name = self._resolve_provider_ref(
+            provider, target_service=record.service
+        )
+        bundle = self.store.load_provider_bundle(service_name, provider_name)
+        adapter = self.adapter_for_record(record)
+        agent_name = (agent or "main").strip() or "main"
+
+        if service_name == "openclaw":
+            runtime_dir = Path(record.datadir) / "agents" / agent_name / "agent"
+            writes = [
+                str(runtime_dir / "auth-profiles.json"),
+                str(runtime_dir / "models.json"),
+                str(Path(record.datadir) / "openclaw.json"),
+            ]
+        else:
+            # Hermes writes per-agent profile files under the instance home.
+            runtime_dir = Path(record.datadir)
+            writes = [str(runtime_dir / f"profiles-{agent_name}.yaml")]
+
+        env_key = None
+        env_path = None
+        if persist:
+            try:
+                api_key = self._provider_bundle_api_key(bundle)
+                if isinstance(api_key, str) and api_key.strip():
+                    env_key = self._provider_env_key(provider_name)
+            except Exception:
+                env_key = None
+            try:
+                env_path = str(adapter.env_path(self, record))
+            except Exception:
+                env_path = None
+
+        return {
+            "provider": provider_name,
+            "service": service_name,
+            "instance": record.name,
+            "agent": agent_name,
+            "runtime_dir": str(runtime_dir),
+            "writes": writes,
+            "persist": bool(persist),
+            "env_key": env_key or "-",
+            "env_path": env_path or "-",
+            "primary": primary or "-",
+            "fallbacks": ", ".join(fallbacks) if fallbacks else "-",
+        }
 
     def list_provider_models(self, name: str) -> list[str]:
         service_name, provider_name = self._resolve_provider_ref(name)
@@ -2046,7 +2124,9 @@ class ClawCUService:
             raise ValueError(f"Provider '{provider_name}' payload is invalid.")
         return provider_name, provider_payload
 
-    def _store_collected_provider_bundle(self, bundle: dict[str, object]) -> tuple[str, str]:
+    def _store_collected_provider_bundle(
+        self, bundle: dict[str, object], *, overwrite: bool = False
+    ) -> tuple[str, str]:
         service_name = str(bundle["service"])
         base_name = str(bundle["name"])
         if not self.store.provider_exists(service_name, base_name):
@@ -2061,12 +2141,19 @@ class ClawCUService:
         for candidate in candidate_names:
             existing = self.store.load_provider_bundle(service_name, candidate)
             if self._provider_bundle_equals(existing, bundle):
+                if overwrite:
+                    self.store.save_provider_bundle(service_name, candidate, bundle)
+                    return candidate, "overwritten"
                 return candidate, "skipped"
 
-            if service_name == "openclaw" and self._provider_signature(existing) == self._provider_signature(bundle):
-                merged = self._merge_service_provider_bundles(existing, bundle)
-                self.store.save_provider_bundle(service_name, candidate, merged)
-                return candidate, "merged"
+            if self._provider_signature(existing) == self._provider_signature(bundle):
+                if overwrite:
+                    self.store.save_provider_bundle(service_name, candidate, bundle)
+                    return candidate, "overwritten"
+                if service_name == "openclaw":
+                    merged = self._merge_service_provider_bundles(existing, bundle)
+                    self.store.save_provider_bundle(service_name, candidate, merged)
+                    return candidate, "merged"
 
         suffix = 2
         while True:

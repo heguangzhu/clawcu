@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -36,14 +39,9 @@ provider_app = typer.Typer(
     help="Collect and reuse model configuration assets from managed instances and local homes.",
     add_completion=False,
 )
-provider_models_app = typer.Typer(
-    help="Inspect the models stored in a collected provider.",
-    add_completion=False,
-)
-app.add_typer(pull_app, name="pull")
-app.add_typer(create_app, name="create")
-app.add_typer(provider_app, name="provider")
-provider_app.add_typer(provider_models_app, name="models")
+app.add_typer(pull_app, name="pull", rich_help_panel="Setup")
+app.add_typer(create_app, name="create", rich_help_panel="Lifecycle")
+app.add_typer(provider_app, name="provider", rich_help_panel="Providers")
 console = Console()
 _DISPLAY_DATE_RE = re.compile(r"(\d{4}\.\d{1,2}\.\d{1,2})")
 
@@ -482,6 +480,51 @@ def _completion_check(service: ClawCUService) -> dict[str, str | bool]:
 
 _OUTPUT_STATE: dict[str, bool] = {"json": False}
 
+# Help grouping panels — Typer renders options/commands under these headings.
+_PANEL_INFO = "Info"
+_PANEL_SETUP = "Setup"
+_PANEL_LIFECYCLE = "Lifecycle"
+_PANEL_CONFIG = "Configuration"
+_PANEL_ACCESS = "Access"
+_PANEL_DATA = "Environment & Data"
+_PANEL_PROVIDERS = "Providers"
+_PANEL_DIAG = "Diagnostics"
+
+
+def _collect_environment_info() -> dict[str, str]:
+    """Gather version / environment info used by --version and diagnostics."""
+    info: dict[str, str] = {
+        "clawcu": __version__,
+        "python": f"{platform.python_version()} ({platform.python_implementation()})",
+        "platform": f"{platform.system()} {platform.release()} ({platform.machine()})",
+    }
+    docker_path = shutil.which("docker") or ""
+    info["docker_cli"] = docker_path or "not found"
+    if docker_path:
+        try:
+            out = subprocess.run(
+                [docker_path, "version", "--format", "{{.Server.Version}}"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            server = (out.stdout or "").strip()
+            info["docker_server"] = server or "unreachable"
+        except Exception:
+            info["docker_server"] = "unreachable"
+    else:
+        info["docker_server"] = "unreachable"
+    try:
+        service = ClawCUService()
+        info["clawcu_home"] = str(service.get_clawcu_home())
+        info["openclaw_image_repo"] = str(service.get_openclaw_image_repo() or "-")
+        info["hermes_image_repo"] = str(service.get_hermes_image_repo() or "-")
+    except Exception:
+        info.setdefault("clawcu_home", "-")
+        info.setdefault("openclaw_image_repo", "-")
+        info.setdefault("hermes_image_repo", "-")
+    return info
+
 
 def _json_mode() -> bool:
     return bool(_OUTPUT_STATE.get("json"))
@@ -533,14 +576,26 @@ def root_callback(
     else:
         _OUTPUT_STATE["json"] = False
     if version:
+        info = _collect_environment_info()
         if json_output:
-            _print_json({"clawcu": __version__})
+            _print_json(info)
         else:
-            console.print(f"clawcu {__version__}")
+            console.print(f"clawcu {info['clawcu']}")
+            console.print(f"  python        : {info['python']}")
+            console.print(f"  platform      : {info['platform']}")
+            console.print(f"  docker cli    : {info['docker_cli']}")
+            console.print(f"  docker server : {info['docker_server']}")
+            console.print(f"  clawcu home   : {info['clawcu_home']}")
+            console.print(f"  openclaw repo : {info['openclaw_image_repo']}")
+            console.print(f"  hermes repo   : {info['hermes_image_repo']}")
         raise typer.Exit()
 
 
-@app.command("setup", help="Check local prerequisites and configure the default ClawCU home and service image repos.")
+@app.command(
+    "setup",
+    help="Check local prerequisites and configure the default ClawCU home and service image repos.",
+    rich_help_panel=_PANEL_SETUP,
+)
 def setup_environment(
     completion: Annotated[
         bool,
@@ -728,27 +783,21 @@ def provider_callback(ctx: typer.Context) -> None:
         _show_help_and_exit(ctx)
 
 
-@provider_models_app.callback(invoke_without_command=True)
-def provider_models_callback(ctx: typer.Context) -> None:
-    if ctx.invoked_subcommand is None:
-        _show_help_and_exit(ctx)
-
-
-@pull_app.command("openclaw")
+@pull_app.command("openclaw", rich_help_panel=_PANEL_SETUP)
 def pull_openclaw(
     version: Annotated[str, typer.Option("--version", help="OpenClaw version to pull.")],
 ) -> None:
     _do_pull("openclaw", version)
 
 
-@pull_app.command("hermes")
+@pull_app.command("hermes", rich_help_panel=_PANEL_SETUP)
 def pull_hermes(
     version: Annotated[str, typer.Option("--version", help="Hermes git ref to pull and build.")],
 ) -> None:
     _do_pull("hermes", version)
 
 
-@create_app.command("openclaw")
+@create_app.command("openclaw", rich_help_panel=_PANEL_LIFECYCLE)
 def create_openclaw(
     name: Annotated[str, typer.Option("--name", help="Managed instance name.")],
     version: Annotated[str, typer.Option("--version", help="OpenClaw version to run.")],
@@ -769,7 +818,7 @@ def create_openclaw(
     _do_create("openclaw", name=name, version=version, datadir=datadir, port=port, cpu=cpu, memory=memory)
 
 
-@create_app.command("hermes")
+@create_app.command("hermes", rich_help_panel=_PANEL_LIFECYCLE)
 def create_hermes(
     name: Annotated[str, typer.Option("--name", help="Managed instance name.")],
     version: Annotated[str, typer.Option("--version", help="Hermes git ref to run.")],
@@ -790,7 +839,13 @@ def create_hermes(
     _do_create("hermes", name=name, version=version, datadir=datadir, port=port, cpu=cpu, memory=memory)
 
 
-@provider_app.command("collect", help="Collect model configuration assets from managed instances or local agent homes.")
+@provider_app.command(
+    "collect",
+    help=(
+        "Collect model configuration assets from managed instances or local agent homes. "
+        "--all / --instance / --path are mutually exclusive."
+    ),
+)
 def collect_providers(
     all_instances: Annotated[
         bool,
@@ -804,6 +859,16 @@ def collect_providers(
         str | None,
         typer.Option("--path", help="Collect model configs from an external OpenClaw or Hermes home directory."),
     ] = None,
+    overwrite: Annotated[
+        bool,
+        typer.Option(
+            "--overwrite",
+            help=(
+                "Overwrite existing collected assets that share the same provider signature, "
+                "rather than merging (default) or skipping identical copies."
+            ),
+        ),
+    ] = False,
 ) -> None:
     if not all_instances and not instance and not path:
         _exit_with_error(
@@ -814,29 +879,46 @@ def collect_providers(
             all_instances=all_instances,
             instance=instance,
             path=path,
+            overwrite=overwrite,
         )
+    except TypeError:
+        # Older service builds don't accept overwrite — fall back silently.
+        try:
+            result = get_service().collect_providers(
+                all_instances=all_instances,
+                instance=instance,
+                path=path,
+            )
+        except Exception as exc:
+            _exit_with_error(str(exc))
     except Exception as exc:
         _exit_with_error(str(exc))
     for saved in result["saved"]:
         console.print(f"[green]Collected provider:[/green] {saved}")
     for merged in result.get("merged", []):
         console.print(f"[blue]Merged duplicate:[/blue] {merged}")
+    for overwritten in result.get("overwritten", []):
+        console.print(f"[magenta]Overwrote existing:[/magenta] {overwritten}")
     for skipped in result["skipped"]:
         console.print(f"[yellow]Skipped duplicate:[/yellow] {skipped}")
     saved_count = len(result["saved"])
     merged_count = len(result.get("merged", []))
+    overwritten_count = len(result.get("overwritten", []))
     skipped_count = len(result["skipped"])
     scanned_count = len(result.get("scanned", []))
-    if not saved_count and not merged_count and not skipped_count:
+    if not saved_count and not merged_count and not overwritten_count and not skipped_count:
         console.print("No provider assets were found.")
         return
-    console.print(
+    summary = (
         "Collect summary: "
         f"scanned {scanned_count} source(s), "
         f"collected {saved_count}, "
         f"merged {merged_count}, "
-        f"skipped {skipped_count}."
     )
+    if overwritten_count:
+        summary += f"overwrote {overwritten_count}, "
+    summary += f"skipped {skipped_count}."
+    console.print(summary)
 
 
 @provider_app.command("list", help="List all collected provider assets.")
@@ -893,16 +975,55 @@ def apply_provider(
         ),
     ] = False,
     primary: Annotated[str | None, typer.Option("--primary", help="Set the agent primary model.")] = None,
+    fallback: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--fallback",
+            help="Fallback model for the agent. Repeat the flag to add more (e.g. --fallback a --fallback b).",
+        ),
+    ] = None,
     fallbacks: Annotated[
         str | None,
-        typer.Option("--fallbacks", help="Comma-separated fallback model list for the agent."),
+        typer.Option(
+            "--fallbacks",
+            help="Comma-separated fallback model list (legacy; prefer repeating --fallback).",
+        ),
     ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            help="Preview which files would be written without touching disk.",
+        ),
+    ] = False,
 ) -> None:
-    fallback_list = None
-    if fallbacks is not None:
+    # Merge the two fallback flags. --fallback (repeatable) takes precedence;
+    # fall back to --fallbacks (csv) for back-compat with earlier scripts.
+    fallback_list: list[str] | None = None
+    if fallback:
+        fallback_list = [item.strip() for item in fallback if item and item.strip()]
+    elif fallbacks is not None:
         fallback_list = [item.strip() for item in fallbacks.split(",") if item.strip()]
+
+    service = get_service()
+
+    if dry_run:
+        try:
+            plan = service.plan_apply_provider(
+                provider,
+                instance,
+                agent,
+                persist=persist,
+                primary=primary,
+                fallbacks=fallback_list,
+            )
+        except Exception as exc:
+            _exit_with_error(str(exc))
+        _print_apply_provider_plan(plan)
+        return
+
     try:
-        result = get_service().apply_provider(
+        result = service.apply_provider(
             provider,
             instance,
             agent,
@@ -915,21 +1036,46 @@ def apply_provider(
     console.print(
         f"[green]Applied provider:[/green] {result['provider']} -> {result['instance']}/{result['agent']}"
     )
+    if result.get("runtime_dir"):
+        console.print(f"  Runtime dir: [blue]{result['runtime_dir']}[/blue]")
     if persist:
         if result.get("env_key") and result.get("env_key") != "-":
             console.print(
-                f"Persistence: config now uses [blue]${{{result.get('env_key', '-')}}}[/blue] and the secret was stored in the instance env file."
+                f"  Persistence: config now uses [blue]${{{result.get('env_key', '-')}}}[/blue] and the secret was stored in the instance env file."
             )
         elif result.get("env_path"):
             console.print(
-                f"Persistence: config and env were updated in [blue]{result['env_path']}[/blue]."
+                f"  Persistence: config and env were updated in [blue]{result['env_path']}[/blue]."
             )
     if primary or fallback_list is not None:
         console.print(
-            "Agent models: "
+            "  Agent models: "
             f"primary={result.get('primary', '-')} "
             f"fallbacks={result.get('fallbacks', '-')}"
         )
+
+
+def _print_apply_provider_plan(plan: dict) -> None:
+    """Render an apply_provider_plan payload as a compact summary."""
+    table = Table(show_header=False, box=None, pad_edge=False, title="Apply plan (dry-run)")
+    table.add_column(style="bold cyan")
+    table.add_column()
+    table.add_row("Provider", str(plan.get("provider", "-")))
+    table.add_row("Service", str(plan.get("service", "-")))
+    table.add_row("Instance", str(plan.get("instance", "-")))
+    table.add_row("Agent", str(plan.get("agent", "-")))
+    table.add_row("Runtime dir", str(plan.get("runtime_dir", "-")))
+    writes = plan.get("writes") or []
+    if writes:
+        table.add_row("Would write", "\n".join(str(item) for item in writes))
+    env_key = plan.get("env_key") or "-"
+    if plan.get("persist"):
+        table.add_row("Env key", f"${{{env_key}}}" if env_key != "-" else "-")
+        table.add_row("Env file", str(plan.get("env_path", "-")))
+    table.add_row("Primary", str(plan.get("primary", "-")))
+    table.add_row("Fallbacks", str(plan.get("fallbacks", "-")))
+    console.print(table)
+    console.print("[dim]Dry run: nothing on disk was modified.[/dim]")
 
 
 @provider_app.command("remove", help="Remove a collected provider directory.")
@@ -948,11 +1094,7 @@ def remove_provider(
     console.print(f"[yellow]Removed provider:[/yellow] {name}")
 
 
-@provider_models_app.command("list", help="List the models stored in a collected provider.")
-def list_provider_models(
-    name: Annotated[str, typer.Argument(help="Provider name.")],
-    json_output: Annotated[bool, _JSON_OPTION] = False,
-) -> None:
+def _list_provider_models_impl(name: str, json_output: bool) -> None:
     _set_json_mode(json_output)
     try:
         models = get_service().list_provider_models(name)
@@ -966,6 +1108,21 @@ def list_provider_models(
         return
     for model in models:
         console.print(model)
+
+
+@provider_app.command(
+    "models",
+    help=(
+        "List the models stored in a collected provider. "
+        "Replaces the older `clawcu provider models list <name>` form — "
+        "the trailing `list` level is no longer required."
+    ),
+)
+def list_provider_models(
+    name: Annotated[str, typer.Argument(help="Provider name.")],
+    json_output: Annotated[bool, _JSON_OPTION] = False,
+) -> None:
+    _list_provider_models_impl(name, json_output)
 _LIST_SOURCES = ("managed", "local", "all")
 
 
@@ -1012,6 +1169,7 @@ def _apply_list_filters(
         "List managed instances. By default shows ClawCU-managed instances only; "
         "pass --source local or --source all to include ~/.openclaw / ~/.hermes pseudo-entries."
     ),
+    rich_help_panel=_PANEL_INFO,
 )
 def list_instances(
     running: Annotated[
@@ -1232,6 +1390,7 @@ def _print_inspect_human(payload: dict, *, reveal: bool, show_history: bool) -> 
 @app.command(
     "inspect",
     help="Show detailed state for a managed instance. Default is a compact readable view; pass --json for the full payload.",
+    rich_help_panel=_PANEL_INFO,
 )
 def inspect_instance(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
@@ -1290,6 +1449,7 @@ def _copy_to_clipboard(value: str) -> tuple[bool, str]:
         "Print the dashboard token for a managed instance. "
         "Default shows both the token and the access URL with the `#token=…` anchor."
     ),
+    rich_help_panel=_PANEL_ACCESS,
 )
 def token_for_instance(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
@@ -1353,7 +1513,11 @@ def token_for_instance(
             )
 
 
-@app.command("setenv", help="Set environment variables for a managed instance.")
+@app.command(
+    "setenv",
+    help="Set environment variables for a managed instance.",
+    rich_help_panel=_PANEL_DATA,
+)
 def set_instance_env(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
     assignments: Annotated[list[str] | None, typer.Argument(help="One or more KEY=VALUE assignments.")] = None,
@@ -1454,7 +1618,11 @@ def set_instance_env(
     )
 
 
-@app.command("getenv", help="List environment variables configured for a managed instance.")
+@app.command(
+    "getenv",
+    help="List environment variables configured for a managed instance.",
+    rich_help_panel=_PANEL_DATA,
+)
 def get_instance_env(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
     reveal: Annotated[
@@ -1491,7 +1659,11 @@ def get_instance_env(
         console.print("[dim](sensitive values masked; re-run with --reveal to show)[/dim]")
 
 
-@app.command("unsetenv", help="Remove environment variables configured for a managed instance.")
+@app.command(
+    "unsetenv",
+    help="Remove environment variables configured for a managed instance.",
+    rich_help_panel=_PANEL_DATA,
+)
 def unset_instance_env(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
     keys: Annotated[list[str], typer.Argument(help="One or more environment variable names.")],
@@ -1574,7 +1746,11 @@ def unset_instance_env(
     )
 
 
-@app.command("approve", help="Approve a pending browser pairing request for an instance.")
+@app.command(
+    "approve",
+    help="Approve a pending browser pairing request for an instance.",
+    rich_help_panel=_PANEL_ACCESS,
+)
 def approve_pairing(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
     request_id: Annotated[str | None, typer.Argument(help="Specific pairing request id to approve.")] = None,
@@ -1595,6 +1771,7 @@ def approve_pairing(
     help="Run the native configuration flow inside a managed instance.",
     add_help_option=False,
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    rich_help_panel=_PANEL_ACCESS,
 )
 def configure_instance(
     ctx: typer.Context,
@@ -1628,6 +1805,7 @@ def configure_instance(
     help="Run an arbitrary command inside a managed instance container.",
     add_help_option=False,
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    rich_help_panel=_PANEL_ACCESS,
 )
 def exec_instance(
     ctx: typer.Context,
@@ -1661,6 +1839,7 @@ def exec_instance(
 @app.command(
     "tui",
     help="Launch the native interactive TUI or chat flow for a managed instance.",
+    rich_help_panel=_PANEL_ACCESS,
 )
 def tui_instance(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
@@ -1678,7 +1857,11 @@ def tui_instance(
         _exit_with_error(str(exc))
 
 
-@app.command("start", help="Start a stopped managed instance.")
+@app.command(
+    "start",
+    help="Start a stopped managed instance.",
+    rich_help_panel=_PANEL_LIFECYCLE,
+)
 def start_instance(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
 ) -> None:
@@ -1693,7 +1876,11 @@ def start_instance(
     _print_access_url(service, record.name)
 
 
-@app.command("stop", help="Stop a running managed instance.")
+@app.command(
+    "stop",
+    help="Stop a running managed instance.",
+    rich_help_panel=_PANEL_LIFECYCLE,
+)
 def stop_instance(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
     time: Annotated[
@@ -1717,7 +1904,11 @@ def stop_instance(
     console.print(f"[yellow]Stopped instance:[/yellow] {record.name}{suffix}")
 
 
-@app.command("restart", help="Restart a managed instance.")
+@app.command(
+    "restart",
+    help="Restart a managed instance.",
+    rich_help_panel=_PANEL_LIFECYCLE,
+)
 def restart_instance(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
     recreate_if_config_changed: Annotated[
@@ -1785,6 +1976,7 @@ def _do_recreate(service: ClawCUService, name: str) -> None:
 @app.command(
     "recreate",
     help="Recreate an existing instance. Auto-retries instances in create_failed status.",
+    rich_help_panel=_PANEL_LIFECYCLE,
 )
 def recreate_instance(
     name: Annotated[str, typer.Argument(help="Instance to recreate.")],
@@ -1932,6 +2124,7 @@ def _print_upgradable_versions(payload: dict, *, show_all: bool = False) -> None
 @app.command(
     "upgrade",
     help="Upgrade an instance to a newer service version with a safety snapshot of its data directory and env file.",
+    rich_help_panel=_PANEL_LIFECYCLE,
 )
 def upgrade_instance(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
@@ -2140,6 +2333,7 @@ def _print_rollback_targets(payload: dict) -> None:
 @app.command(
     "rollback",
     help="Roll an instance back to an earlier snapshot. Defaults to the most recent transition; pass --to <version> to target a specific one, or --list to enumerate available targets.",
+    rich_help_panel=_PANEL_LIFECYCLE,
 )
 def rollback_instance(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
@@ -2250,6 +2444,7 @@ def rollback_instance(
         "version at copy time, e.g. to preview an upgrade without "
         "touching the original."
     ),
+    rich_help_panel=_PANEL_LIFECYCLE,
 )
 def clone_instance(
     source_name: Annotated[str, typer.Argument(help="Source instance name.")],
@@ -2315,7 +2510,11 @@ def clone_instance(
     _print_access_url(service, record.name)
 
 
-@app.command("logs", help="Stream or print Docker logs for a managed instance.")
+@app.command(
+    "logs",
+    help="Stream or print Docker logs for a managed instance.",
+    rich_help_panel=_PANEL_DIAG,
+)
 def logs_instance(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
     follow: Annotated[bool, typer.Option("--follow", help="Follow the Docker log stream.")] = False,
@@ -2352,7 +2551,11 @@ def logs_instance(
         _exit_with_error(str(exc))
 
 
-@app.command("remove", help="Remove an instance and optionally delete its data directory.")
+@app.command(
+    "remove",
+    help="Remove an instance and optionally delete its data directory.",
+    rich_help_panel=_PANEL_LIFECYCLE,
+)
 def remove_instance(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
     delete_data: Annotated[

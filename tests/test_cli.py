@@ -761,13 +761,14 @@ def test_provider_help_lists_subcommands() -> None:
     assert "models" in result.stdout
 
 
-def test_provider_models_help_lists_subcommands() -> None:
+def test_provider_models_help_is_a_leaf_command() -> None:
+    """v0.2: the trailing `list` level was removed — `provider models`
+    is now a direct leaf command that takes a provider name."""
     result = runner.invoke(app, ["provider", "models", "--help"])
 
     assert result.exit_code == 0
-    assert "Inspect the models stored in a collected provider." in result.stdout
-    assert "list" in result.stdout
     assert "List the models stored in a collected provider." in result.stdout
+    assert "NAME" in result.stdout
 
 
 def test_setup_command_reports_success(monkeypatch) -> None:
@@ -1017,18 +1018,22 @@ def test_empty_service_groups_show_help_instead_of_error() -> None:
     create_result = runner.invoke(app, ["create"])
     pull_result = runner.invoke(app, ["pull"])
     provider_result = runner.invoke(app, ["provider"])
-    provider_models_result = runner.invoke(app, ["provider", "models"])
 
     assert create_result.exit_code == 0
     assert pull_result.exit_code == 0
     assert provider_result.exit_code == 0
-    assert provider_models_result.exit_code == 0
     assert "create [OPTIONS] SERVICE" in create_result.stdout
     assert "pull [OPTIONS] SERVICE" in pull_result.stdout
     assert "provider [OPTIONS] COMMAND [ARGS]..." in provider_result.stdout
-    assert "provider models [OPTIONS] COMMAND [ARGS]..." in provider_models_result.stdout
     assert "Missing command" not in create_result.stdout
     assert "Missing command" not in pull_result.stdout
+
+    # `provider models` is now a leaf command that takes a provider name
+    # directly (v0.2 dropped the trailing `list` level). Missing the name
+    # surfaces the standard Typer "Missing argument 'NAME'" error.
+    provider_models_result = runner.invoke(app, ["provider", "models"])
+    assert provider_models_result.exit_code == 2
+    assert "Missing argument" in provider_models_result.output
 
 
 def test_missing_required_arguments_exit_with_posix_error() -> None:
@@ -1045,7 +1050,7 @@ def test_missing_required_arguments_exit_with_posix_error() -> None:
         "token",
         "provider show",
         "provider remove",
-        "provider models list",
+        "provider models",
         "start",
         "stop",
         "restart",
@@ -1188,6 +1193,7 @@ def test_provider_collect_command_accepts_source_selection(monkeypatch) -> None:
             "all_instances": False,
             "instance": "writer",
             "path": None,
+            "overwrite": False,
         },
     )
 
@@ -1764,10 +1770,14 @@ def test_provider_remove_requires_confirmation_in_non_interactive(monkeypatch) -
 
 
 def test_provider_models_list_command_forwards_arguments(monkeypatch) -> None:
+    """v0.2: `clawcu provider models <name>` replaces the older
+    `clawcu provider models list <name>` form — the trailing `list` level
+    was dropped per design review.
+    """
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
 
-    list_result = runner.invoke(app, ["provider", "models", "list", "openai-main"])
+    list_result = runner.invoke(app, ["provider", "models", "openai-main"])
 
     assert list_result.exit_code == 0
     assert "gpt-5" in list_result.stdout
