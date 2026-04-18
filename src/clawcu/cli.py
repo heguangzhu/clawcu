@@ -417,9 +417,26 @@ def _json_mode() -> bool:
     return bool(_OUTPUT_STATE.get("json"))
 
 
+def _set_json_mode(enabled: bool) -> None:
+    """Merge a per-command --json flag into the global output state.
+
+    Commands that accept a local ``--json`` option call this at entry,
+    so both ``clawcu --json inspect foo`` and ``clawcu inspect foo --json``
+    reach ``_json_mode() == True`` by the time the render path runs.
+    """
+    if enabled:
+        _OUTPUT_STATE["json"] = True
+
+
 def _print_json(payload) -> None:
     """Emit a machine-readable JSON payload to stdout."""
     console.print_json(json.dumps(payload, ensure_ascii=False, default=str))
+
+
+_JSON_OPTION = typer.Option(
+    "--json",
+    help="Emit machine-readable JSON instead of the default table/view.",
+)
 
 
 @app.callback(invoke_without_command=True)
@@ -432,11 +449,19 @@ def root_callback(
         bool,
         typer.Option(
             "--json",
-            help="Emit machine-readable JSON where supported (list, inspect, token, getenv, provider list/show/models).",
+            help=(
+                "Emit machine-readable JSON where supported (list, inspect, token, getenv, provider list/models). "
+                "Also accepted as a per-command flag (e.g. `clawcu inspect <name> --json`)."
+            ),
         ),
     ] = False,
 ) -> None:
-    _OUTPUT_STATE["json"] = json_output
+    # Only overwrite if set, so a per-command --json that runs later can still
+    # toggle the state without this callback clobbering it back to False.
+    if json_output:
+        _OUTPUT_STATE["json"] = True
+    else:
+        _OUTPUT_STATE["json"] = False
     if version:
         if json_output:
             _print_json({"clawcu": __version__})
@@ -759,7 +784,9 @@ def collect_providers(
 def list_providers(
     wide: Annotated[bool, typer.Option("--wide", help="Show all columns (PROVIDER, ENDPOINT, full model list).")] = False,
     reveal: Annotated[bool, typer.Option("--reveal", help="Show full API keys. Off by default for safety.")] = False,
+    json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
+    _set_json_mode(json_output)
     try:
         records = get_service().list_providers()
     except Exception as exc:
@@ -875,7 +902,9 @@ def remove_provider(
 def list_provider_models(
     ctx: typer.Context,
     name: Annotated[str | None, typer.Argument(help="Provider name.")] = None,
+    json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
+    _set_json_mode(json_output)
     if not name:
         _show_help_and_exit(ctx)
     try:
@@ -978,7 +1007,9 @@ def list_instances(
         bool,
         typer.Option("--reveal", help="Show full dashboard tokens inside ACCESS URLs. Off by default for safety."),
     ] = False,
+    json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
+    _set_json_mode(json_output)
     resolved_source = _resolve_list_source(
         source, local_flag=local, managed_flag=managed, all_flag=all_sources
     )
@@ -1166,7 +1197,9 @@ def inspect_instance(
         bool,
         typer.Option("--reveal", help="Show full dashboard tokens and access URLs. Off by default for safety."),
     ] = False,
+    json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
+    _set_json_mode(json_output)
     if not name:
         _show_help_and_exit(ctx)
     try:
@@ -1183,7 +1216,9 @@ def inspect_instance(
 def token_for_instance(
     ctx: typer.Context,
     name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
+    json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
+    _set_json_mode(json_output)
     if not name:
         _show_help_and_exit(ctx)
     service = get_service()
@@ -1252,7 +1287,9 @@ def get_instance_env(
         bool,
         typer.Option("--reveal", help="Show unmasked values for KEY/TOKEN/SECRET/PASSWORD entries. Off by default."),
     ] = False,
+    json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
+    _set_json_mode(json_output)
     if not name:
         _show_help_and_exit(ctx)
     try:

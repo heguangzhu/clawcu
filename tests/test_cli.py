@@ -1614,6 +1614,61 @@ def test_inspect_command_json_mode_preserves_raw_payload(monkeypatch) -> None:
     assert '"latest_upgrade_snapshot"' in result.stdout
 
 
+def test_inspect_command_json_flag_accepted_after_subcommand(monkeypatch) -> None:
+    """`--json` should work before OR after the subcommand for UX parity."""
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["inspect", "writer", "--json"])
+
+    assert result.exit_code == 0
+    assert '"Name": "writer"' in result.stdout
+    assert '"snapshots"' in result.stdout
+
+
+def test_list_command_json_flag_accepted_after_subcommand(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["list", "--json"])
+
+    assert result.exit_code == 0
+    # JSON payload starts with `[`
+    assert result.stdout.strip().startswith("[")
+
+
+def test_token_command_json_flag_accepted_after_subcommand(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["token", "writer", "--json"])
+
+    assert result.exit_code == 0
+    assert '"token"' in result.stdout
+    assert "token-writer" in result.stdout
+
+
+def test_getenv_command_json_flag_accepted_after_subcommand(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["getenv", "writer", "--json"])
+
+    assert result.exit_code == 0
+    assert '"instance"' in result.stdout
+    assert '"values"' in result.stdout
+
+
+def test_provider_list_json_flag_accepted_after_subcommand(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["provider", "list", "--json"])
+
+    assert result.exit_code == 0
+    assert result.stdout.strip().startswith("[")
+
+
 def test_inspect_command_folds_history_by_default(monkeypatch) -> None:
     service = FakeService()
 
