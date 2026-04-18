@@ -11,9 +11,43 @@ from clawcu.core.subprocess_utils import CommandError, run_command
 from clawcu.core.validation import normalize_version
 
 # OpenClaw tags are year-dot-month-dot-patch ("2026.4.2"), optionally
-# prefixed with "v". Anything else (e.g. "latest", "sha-...", branch
-# previews) is excluded from the release listing.
-_OPENCLAW_RELEASE_TAG = re.compile(r"^v?\d{4}\.\d{1,2}\.\d+(?:[-.][A-Za-z0-9.-]+)?$")
+# prefixed with "v" and optionally followed by a pre-release segment
+# such as "-beta.1". Per-platform ("-amd64", "-arm64") and image-variant
+# ("-slim", "-alpine") tags are excluded — they duplicate the canonical
+# multi-arch manifest list and would just clutter --list-versions.
+_OPENCLAW_RELEASE_TAG = re.compile(
+    r"^v?\d{4}\.\d{1,2}\.\d+"
+    r"(?:-(?:alpha|beta|rc|preview|pre|dev)(?:\.\d+)?)?$"
+)
+
+# Token-based denylist for things that should never appear as a
+# "canonical release" tag even if they sneak past the regex.
+_OPENCLAW_VARIANT_TOKENS = (
+    "amd64",
+    "arm64",
+    "armhf",
+    "armv7",
+    "386",
+    "ppc64le",
+    "s390x",
+    "slim",
+    "alpine",
+    "debug",
+    "nightly",
+)
+
+
+def _is_openclaw_release_tag(tag: str) -> bool:
+    if not _OPENCLAW_RELEASE_TAG.match(tag):
+        return False
+    segments = tag.lstrip("v").lower().split("-")
+    # First segment is the "YYYY.M.P" number; remaining segments must
+    # not be platform/variant tokens.
+    for segment in segments[1:]:
+        head = segment.split(".", 1)[0]
+        if head in _OPENCLAW_VARIANT_TOKENS:
+            return False
+    return True
 
 DEFAULT_OPENCLAW_IMAGE_REPO = "ghcr.io/openclaw/openclaw"
 DEFAULT_OPENCLAW_IMAGE_REPO_CN = "ghcr.nju.edu.cn/openclaw/openclaw"
@@ -71,7 +105,7 @@ class OpenClawManager:
             {
                 tag.lstrip("v")
                 for tag in (raw.tags or [])
-                if _OPENCLAW_RELEASE_TAG.match(tag)
+                if _is_openclaw_release_tag(tag)
             }
         )
         return RemoteTagResult(

@@ -14,9 +14,38 @@ DEFAULT_HERMES_IMAGE_REPO = "clawcu/hermes-agent"
 Reporter = Callable[[str], None]
 
 # Hermes release tags use semver ("1.2.3", optionally "v1.2.3" or
-# "1.2.3-beta.1"). Filter out floating aliases ("latest", "edge"),
-# arch/variant suffixes ("1.2.3-amd64"), and commit shas.
-_HERMES_RELEASE_TAG = re.compile(r"^v?\d+\.\d+\.\d+(?:-[A-Za-z0-9.]+)?$")
+# "1.2.3-beta.1"). Per-platform ("-amd64") and image-variant ("-slim")
+# tags duplicate the canonical multi-arch manifest list and would just
+# clutter --list-versions, so they are filtered out too.
+_HERMES_RELEASE_TAG = re.compile(
+    r"^v?\d+\.\d+\.\d+"
+    r"(?:-(?:alpha|beta|rc|preview|pre|dev)(?:\.\d+)?)?$"
+)
+
+_HERMES_VARIANT_TOKENS = (
+    "amd64",
+    "arm64",
+    "armhf",
+    "armv7",
+    "386",
+    "ppc64le",
+    "s390x",
+    "slim",
+    "alpine",
+    "debug",
+    "nightly",
+)
+
+
+def _is_hermes_release_tag(tag: str) -> bool:
+    if not _HERMES_RELEASE_TAG.match(tag):
+        return False
+    segments = tag.lstrip("v").lower().split("-")
+    for segment in segments[1:]:
+        head = segment.split(".", 1)[0]
+        if head in _HERMES_VARIANT_TOKENS:
+            return False
+    return True
 
 
 class HermesManager:
@@ -66,7 +95,7 @@ class HermesManager:
             {
                 tag.lstrip("v")
                 for tag in (raw.tags or [])
-                if _HERMES_RELEASE_TAG.match(tag)
+                if _is_hermes_release_tag(tag)
             }
         )
         return RemoteTagResult(

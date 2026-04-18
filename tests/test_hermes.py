@@ -422,12 +422,19 @@ def test_hermes_list_remote_versions_filters_semver_tags() -> None:
             repo=repo,
             registry="registry-1.docker.io",
             tags=[
+                # keep
                 "1.0.0",
                 "v1.1.0",
                 "1.2.0-beta.1",
+                # drop floating aliases and shas
                 "latest",
                 "edge",
                 "sha-deadbeef",
+                # drop per-platform + variant dupes
+                "1.1.0-amd64",
+                "1.1.0-arm64",
+                "1.1.0-slim",
+                "1.1.0-slim-amd64",
             ],
         )
 
@@ -439,6 +446,13 @@ def test_hermes_list_remote_versions_filters_semver_tags() -> None:
     assert "1.2.0-beta.1" in result.tags
     assert "latest" not in result.tags
     assert "edge" not in result.tags
+    for reject in (
+        "1.1.0-amd64",
+        "1.1.0-arm64",
+        "1.1.0-slim",
+        "1.1.0-slim-amd64",
+    ):
+        assert reject not in result.tags
 
 
 def test_hermes_list_remote_versions_preserves_error_passthrough() -> None:

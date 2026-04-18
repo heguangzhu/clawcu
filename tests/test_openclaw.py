@@ -456,30 +456,48 @@ def test_openclaw_list_remote_versions_filters_release_tags() -> None:
             repo=repo,
             registry="ghcr.io",
             tags=[
+                # keep: canonical release + pre-release
                 "2026.4.1",
                 "v2026.4.2",
                 "2026.4.3-beta.1",
+                # drop: floating aliases, branch names, commit shas
                 "latest",
                 "main",
                 "sha-abc123",
+                # drop: per-platform manifests that duplicate the canonical tag
                 "2026.4.2-amd64",
-                "",  # filtered by the registry client itself usually, but we
-                # still guard here so callers can rely on "no empty strings".
+                "2026.4.2-arm64",
+                # drop: image-variant builds
+                "2026.4.2-slim",
+                "2026.4.2-slim-amd64",
+                "2026.4.3-beta.1-arm64",
+                # drop: empty
+                "",
             ],
         )
 
     result = manager.list_remote_versions(fetcher=fake_fetcher)
 
     assert result.ok
-    # "latest", "main", "sha-..." are dropped. "v" prefix is stripped
-    # so local-vs-remote comparisons work on plain semver strings.
     assert result.tags is not None
+    # "v" prefix is stripped so local-vs-remote compare cleanly.
     assert "2026.4.1" in result.tags
     assert "2026.4.2" in result.tags
     assert "2026.4.3-beta.1" in result.tags
+    # Floating aliases, branch names, commit shas are out.
     assert "latest" not in result.tags
     assert "main" not in result.tags
     assert "sha-abc123" not in result.tags
+    # Per-platform and variant tags must be out — they would clutter
+    # the list without surfacing any new upgrade targets.
+    for reject in (
+        "2026.4.2-amd64",
+        "2026.4.2-arm64",
+        "2026.4.2-slim",
+        "2026.4.2-slim-amd64",
+        "2026.4.3-beta.1-arm64",
+    ):
+        assert reject not in result.tags
 
 
 def test_openclaw_list_remote_versions_forwards_fetch_errors() -> None:
