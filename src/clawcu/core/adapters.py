@@ -112,6 +112,42 @@ class ServiceAdapter(ABC):
     ) -> str:
         raise ValueError(f"`clawcu approve` is not supported for {self.display_name} instances.")
 
+    def list_pending_pairings(
+        self,
+        service: "ClawCUService",
+        name: str,
+    ) -> list[dict[str, object]]:
+        """Return pending pairing requests as a list of dicts.
+
+        Each dict should at minimum contain ``requestId``. Services that
+        do not implement device pairing raise ``ValueError`` (mirrors the
+        default ``approve_pairing`` behavior).
+        """
+        raise ValueError(f"`clawcu approve --list` is not supported for {self.display_name} instances.")
+
+    def list_agents(
+        self,
+        service: "ClawCUService",
+        record: "InstanceRecord",
+    ) -> list[str]:
+        """Return the list of agent names available for this instance.
+
+        Default falls back to the agents discovered by
+        ``instance_agent_summaries`` — subclasses can override for a
+        service-native listing. Returns the canonical ``main`` when
+        nothing is configured yet, so `--list-agents` always has at
+        least one entry.
+        """
+        summaries = self.instance_agent_summaries(service, record)
+        names: list[str] = []
+        for summary in summaries:
+            agent_name = str(summary.get("agent") or "").strip()
+            if agent_name and agent_name not in names:
+                names.append(agent_name)
+        if "main" not in names:
+            names.insert(0, "main")
+        return names
+
     @abstractmethod
     def instance_provider_summary(self, service: "ClawCUService", record: InstanceRecord) -> dict[str, str]:
         raise NotImplementedError

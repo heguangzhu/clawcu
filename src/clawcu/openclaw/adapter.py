@@ -287,6 +287,28 @@ class OpenClawAdapter(ServiceAdapter):
             return token
         raise ValueError(f"Instance '{record.name}' does not have a dashboard token configured.")
 
+    def list_pending_pairings(self, service, name: str) -> list[dict[str, object]]:
+        record = service._persist_live_status(service.store.load_record(name))
+        pending_path = Path(record.datadir) / "devices" / "pending.json"
+        if not pending_path.exists():
+            return []
+        try:
+            raw = pending_path.read_text(encoding="utf-8").strip()
+            if not raw:
+                return []
+            pending = json.loads(raw)
+        except Exception:
+            return []
+        if not isinstance(pending, dict):
+            return []
+        entries: list[dict[str, object]] = []
+        for value in pending.values():
+            if isinstance(value, dict) and value.get("requestId"):
+                entries.append(dict(value))
+        # Newest first so interactive selection shows fresh requests.
+        entries.sort(key=lambda item: item.get("ts", 0), reverse=True)
+        return entries
+
     def approve_pairing(self, service, name: str, request_id: str | None = None) -> str:
         record = service._persist_live_status(service.store.load_record(name))
         selected_request_id = request_id or self._latest_pending_request_id(record)

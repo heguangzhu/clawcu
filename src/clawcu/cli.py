@@ -50,8 +50,39 @@ def get_service() -> ClawCUService:
     return ClawCUService()
 
 
+_NOT_FOUND_HINTS: tuple[tuple[str, str], ...] = (
+    # Ordered most-specific first — matching is substring-based.
+    ("provider bundle", "Run `clawcu provider list` to see collected providers, or `clawcu provider collect` to import new ones."),
+    ("provider ", "Run `clawcu provider list` to see collected providers."),
+    ("instance ", "Run `clawcu list` to see managed instances."),
+    ("snapshot", "Run `clawcu rollback <name> --list` to see available rollback targets."),
+    ("image", "Run `clawcu pull --service <svc> --version <ver>` to pull the image first."),
+)
+
+
+def _actionable_hint_for(message: str) -> str | None:
+    """Return a short 'Run X to see Y' hint for well-known error shapes.
+
+    The runtime raises naked ``ValueError`` / ``RuntimeError`` messages
+    like ``Instance 'foo' was not found.`` which are readable but not
+    actionable — the user has to guess the fix. Matching on the message
+    shape keeps this layer loose (no exception-type coupling) while
+    letting us attach a helpful next step.
+    """
+    lowered = message.lower()
+    if "not found" not in lowered and "does not exist" not in lowered:
+        return None
+    for marker, hint in _NOT_FOUND_HINTS:
+        if marker.lower() in lowered:
+            return hint
+    return None
+
+
 def _exit_with_error(message: str) -> None:
     console.print(f"[bold red]Error:[/bold red] {message}")
+    hint = _actionable_hint_for(message)
+    if hint:
+        console.print(f"[dim]Hint:[/dim] {hint}")
     raise typer.Exit(code=1)
 
 
@@ -593,7 +624,10 @@ def root_callback(
 
 @app.command(
     "setup",
-    help="Check local prerequisites and configure the default ClawCU home and service image repos.",
+    help=(
+        "Check local prerequisites and configure the default ClawCU home and service image repos. "
+        "Pass --non-interactive to accept all existing defaults without prompting (safe for CI)."
+    ),
     rich_help_panel=_PANEL_SETUP,
 )
 def setup_environment(
@@ -613,6 +647,17 @@ def setup_environment(
         str | None,
         typer.Option("--hermes-image-repo", help="Save the default Hermes image repo without prompting."),
     ] = None,
+    non_interactive: Annotated[
+        bool,
+        typer.Option(
+            "--non-interactive",
+            "--accept-defaults",
+            help=(
+                "Skip every prompt and accept the current saved value (or the built-in default when "
+                "no saved value exists). Use in CI or scripts to bootstrap ClawCU without a TTY."
+            ),
+        ),
+    ] = False,
 ) -> None:
     console.print("Checking local prerequisites for ClawCU...")
     service = get_service()
@@ -620,7 +665,7 @@ def setup_environment(
     if completion:
         checks.append(_completion_check(service))
     if _print_setup_checks(checks):
-        is_interactive = _is_interactive_stdin()
+        is_interactive = _is_interactive_stdin() and not non_interactive
         has_explicit_config = any(
             value is not None
             for value in (
@@ -629,7 +674,7 @@ def setup_environment(
                 hermes_image_repo,
             )
         )
-        if is_interactive or has_explicit_config:
+        if is_interactive or has_explicit_config or non_interactive:
             configured_home = clawcu_home
             if configured_home is None and is_interactive:
                 configured_home = typer.prompt(
@@ -647,7 +692,7 @@ def setup_environment(
                     default=service.suggest_openclaw_image_repo(),
                 ).strip()
             elif configured_repo is None:
-                configured_repo = service.get_openclaw_image_repo()
+                configured_repo = service.get_openclaw_image_repo() or service.suggest_openclaw_image_repo()
             saved_repo = service.set_openclaw_image_repo(configured_repo)
             console.print(f"[green]Saved OpenClaw image repo:[/green] {saved_repo}")
             configured_hermes_repo = hermes_image_repo
@@ -660,11 +705,11 @@ def setup_environment(
                 configured_hermes_repo = service.get_hermes_image_repo()
             saved_hermes_repo = service.set_hermes_image_repo(configured_hermes_repo)
             console.print(f"[green]Saved Hermes image repo:[/green] {saved_hermes_repo}")
-        elif not is_interactive:
+        else:
             console.print(
                 "[yellow]Non-interactive shell detected.[/yellow] "
-                "Pass setup options such as "
-                "`--clawcu-home`, `--openclaw-image-repo`, or `--hermes-image-repo` to save config without prompts."
+                "Pass `--non-interactive` to accept the current defaults, or pass one of "
+                "`--clawcu-home`, `--openclaw-image-repo`, `--hermes-image-repo` to save explicit values."
             )
         console.print("[green]ClawCU setup check passed.[/green] Docker and the ClawCU runtime layout are ready.")
         return
@@ -1748,16 +1793,55 @@ def unset_instance_env(
 
 @app.command(
     "approve",
-    help="Approve a pending browser pairing request for an instance.",
+    help=(
+        "Approve a pending browser pairing request for an instance. "
+        "Pass --list to enumerate pending requests without approving."
+    ),
     rich_help_panel=_PANEL_ACCESS,
 )
 def approve_pairing(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
     request_id: Annotated[str | None, typer.Argument(help="Specific pairing request id to approve.")] = None,
+    list_pending: Annotated[
+        bool,
+        typer.Option(
+            "--list",
+            help="List pending pairing requests for this instance without approving any of them.",
+        ),
+    ] = False,
+    json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
+    _set_json_mode(json_output)
     service = get_service()
     if hasattr(service, "set_reporter"):
         service.set_reporter(_print_progress)
+
+    if list_pending:
+        try:
+            pending = service.list_pending_pairings(name)
+        except Exception as exc:
+            _exit_with_error(str(exc))
+        if _json_mode():
+            _print_json({"instance": name, "pending": pending})
+            return
+        if not pending:
+            console.print(f"No pending pairing requests for '{name}'.")
+            return
+        table = Table(title=f"Pending pairings for {name}")
+        table.add_column("REQUEST_ID", no_wrap=True)
+        table.add_column("DEVICE", overflow="fold")
+        table.add_column("REQUESTED", no_wrap=True)
+        for entry in pending:
+            req_id = str(entry.get("requestId", "-"))
+            device = str(entry.get("device") or entry.get("deviceName") or entry.get("userAgent") or "-")
+            ts = entry.get("ts") or entry.get("timestamp") or "-"
+            table.add_row(req_id, device, str(ts))
+        console.print(table)
+        console.print(
+            f"[dim]Run `clawcu approve {name} <REQUEST_ID>` to approve a specific request.[/dim]"
+        )
+        return
+
     try:
         approved_request_id = service.approve_pairing(name, request_id=request_id)
     except Exception as exc:
@@ -1814,6 +1898,21 @@ def exec_instance(
         typer.Option("--help", "-h", help="Show passthrough usage and examples.", is_eager=True),
     ] = False,
     name: Annotated[str | None, typer.Argument(help="Managed instance name.")] = None,
+    workdir: Annotated[
+        str | None,
+        typer.Option("--workdir", "-w", help="Working directory inside the container (docker exec --workdir)."),
+    ] = None,
+    user: Annotated[
+        str | None,
+        typer.Option("--user", "-u", help="User inside the container, e.g. 1000:1000 (docker exec --user)."),
+    ] = None,
+    env: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--env", "-e",
+            help="Extra environment variable as KEY=VALUE. Repeat to set more. Overrides the adapter's default env.",
+        ),
+    ] = None,
 ) -> None:
     if help_flag or not name or not ctx.args:
         _show_passthrough_help(
@@ -1823,34 +1922,95 @@ def exec_instance(
                 "clawcu exec <instance> openclaw config",
                 "clawcu exec <instance> pwd",
                 "clawcu exec <instance> ls",
+                "clawcu exec --workdir /tmp <instance> ls",
+                "clawcu exec --user 1000:1000 <instance> id",
+                "clawcu exec --env FOO=bar <instance> env",
             ],
             usage="Usage: clawcu exec [OPTIONS] [NAME] COMMAND [ARGS]...",
         )
+    extra_env: dict[str, str] = {}
+    for item in env or []:
+        if "=" not in item:
+            _exit_with_error(f"--env expects KEY=VALUE, got: {item!r}")
+        key, value = item.split("=", 1)
+        key = key.strip()
+        if not key:
+            _exit_with_error(f"--env key must be non-empty: {item!r}")
+        extra_env[key] = value
     service = get_service()
     if hasattr(service, "set_reporter"):
         service.set_reporter(_print_progress)
     extra_args = list(ctx.args)
     try:
-        service.exec_instance(name, extra_args)
+        try:
+            service.exec_instance(
+                name,
+                extra_args,
+                workdir=workdir,
+                user=user,
+                extra_env=extra_env or None,
+            )
+        except TypeError:
+            # Older service builds don't accept workdir/user/extra_env.
+            if workdir or user or extra_env:
+                _exit_with_error(
+                    "The installed ClawCU service does not support --workdir / --user / --env yet."
+                )
+            service.exec_instance(name, extra_args)
     except Exception as exc:
         _exit_with_error(str(exc))
 
 
 @app.command(
     "tui",
-    help="Launch the native interactive TUI or chat flow for a managed instance.",
+    help=(
+        "Launch the native interactive TUI or chat flow for a managed instance. "
+        "Pass --list-agents to print the available agent names without launching."
+    ),
     rich_help_panel=_PANEL_ACCESS,
 )
 def tui_instance(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
     agent: Annotated[
         str,
-        typer.Option("--agent", help="Target agent name. Defaults to main."),
+        typer.Option(
+            "--agent",
+            help=(
+                "Target agent name. Defaults to 'main'. For OpenClaw this maps to "
+                "the agent runtime directory; for Hermes it maps to the chat profile."
+            ),
+        ),
     ] = "main",
+    list_agents: Annotated[
+        bool,
+        typer.Option(
+            "--list-agents",
+            help="List the agent names configured for this instance and exit without launching.",
+        ),
+    ] = False,
+    json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
+    _set_json_mode(json_output)
     service = get_service()
     if hasattr(service, "set_reporter"):
         service.set_reporter(_print_progress)
+
+    if list_agents:
+        try:
+            agents = service.list_agents(name)
+        except Exception as exc:
+            _exit_with_error(str(exc))
+        if _json_mode():
+            _print_json({"instance": name, "agents": agents})
+            return
+        if not agents:
+            console.print(f"No agents configured for '{name}'.")
+            return
+        for agent_name in agents:
+            marker = " [dim](default)[/dim]" if agent_name == "main" else ""
+            console.print(f"- {agent_name}{marker}")
+        return
+
     try:
         service.tui_instance(name, agent=agent)
     except Exception as exc:

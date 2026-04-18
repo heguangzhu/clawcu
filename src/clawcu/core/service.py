@@ -908,21 +908,50 @@ class ClawCUService:
         record = self._persist_live_status(self.store.load_record(name))
         return self.adapter_for_record(record).approve_pairing(self, name, request_id=request_id)
 
+    def list_pending_pairings(self, name: str) -> list[dict[str, object]]:
+        record = self._persist_live_status(self.store.load_record(name))
+        return self.adapter_for_record(record).list_pending_pairings(self, name)
+
+    def list_agents(self, name: str) -> list[str]:
+        record = self.store.load_record(name)
+        return self.adapter_for_record(record).list_agents(self, record)
+
     def configure_instance(self, name: str, extra_args: list[str] | None = None) -> None:
         record = self._persist_live_status(self.store.load_record(name))
         self.adapter_for_record(record).configure_instance(self, name, extra_args=extra_args)
 
-    def exec_instance(self, name: str, command: list[str]) -> None:
+    def exec_instance(
+        self,
+        name: str,
+        command: list[str],
+        *,
+        workdir: str | None = None,
+        user: str | None = None,
+        extra_env: dict[str, str] | None = None,
+    ) -> None:
         if not command:
             raise ValueError("Please provide a command to run inside the instance.")
         record = self._persist_live_status(self.store.load_record(name))
         adapter = self.adapter_for_record(record)
         env_values = adapter.exec_env(self, record)
+        # User-supplied --env values win over the adapter's computed env.
+        if extra_env:
+            env_values.update(extra_env)
         command = adapter.normalize_exec_command(self, record, command)
         self.store.append_log(
-            f"exec instance name={record.name} command={' '.join(command)}"
+            f"exec instance name={record.name} command={' '.join(command)} "
+            f"workdir={workdir or '-'} user={user or '-'}"
         )
-        self.docker.exec_in_container_interactive(record.container_name, command, env=env_values)
+        extra_kwargs: dict[str, object] = {"env": env_values}
+        if workdir is not None:
+            extra_kwargs["workdir"] = workdir
+        if user is not None:
+            extra_kwargs["user"] = user
+        self.docker.exec_in_container_interactive(
+            record.container_name,
+            command,
+            **extra_kwargs,
+        )
 
     def tui_instance(self, name: str, *, agent: str = "main") -> None:
         record = self._persist_live_status(self.store.load_record(name))

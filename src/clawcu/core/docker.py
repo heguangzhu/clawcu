@@ -166,12 +166,25 @@ class DockerManager:
         command: list[str],
         *,
         env: dict[str, str] | None = None,
+        workdir: str | None = None,
+        user: str | None = None,
     ) -> object:
+        """Run an interactive `docker exec` in the container.
+
+        ``env`` is a key→value dict; each entry becomes ``-e KEY=VAL``.
+        ``workdir`` and ``user`` map to ``docker exec --workdir`` and
+        ``--user`` respectively — they are passed through verbatim so
+        callers can use any value Docker accepts (e.g. ``1000:1000``).
+        """
         docker_command = ["docker", "exec"]
         if sys.stdin.isatty():
             docker_command.append("-i")
         if sys.stdout.isatty() and sys.stderr.isatty():
             docker_command.append("-t")
+        if workdir:
+            docker_command.extend(["--workdir", workdir])
+        if user:
+            docker_command.extend(["--user", user])
         if env:
             for key, value in sorted(env.items()):
                 docker_command.extend(["-e", f"{key}={value}"])
