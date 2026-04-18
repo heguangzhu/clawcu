@@ -586,9 +586,6 @@ def test_root_help_lists_descriptions_for_top_level_commands() -> None:
     assert "Stop a running managed instance." in result.stdout
     assert "restart" in result.stdout
     assert "Restart a managed instance." in result.stdout
-    assert "retry" in result.stdout
-    assert "[Deprecated]" in result.stdout
-    assert "Alias of" in result.stdout
     assert "recreate" in result.stdout
     assert "Recreate an existing instance." in result.stdout
     assert "Auto-retries instances in" in result.stdout
@@ -925,7 +922,6 @@ def test_empty_argument_commands_show_help_instead_of_error() -> None:
         ("start", "start [OPTIONS] [NAME]"),
         ("stop", "stop [OPTIONS] [NAME]"),
         ("restart", "restart [OPTIONS] [NAME]"),
-        ("retry", "retry [OPTIONS] [NAME]"),
         ("recreate", "recreate [OPTIONS] [NAME]"),
         ("upgrade", "upgrade [OPTIONS] [NAME]"),
         ("rollback", "rollback [OPTIONS] [NAME]"),
@@ -1415,20 +1411,14 @@ def test_create_command_surfaces_duplicate_name_error(monkeypatch) -> None:
     assert "Instance 'writer' already exists." in result.stdout
 
 
-def test_retry_command_retries_failed_instance(monkeypatch) -> None:
+def test_retry_command_is_removed(monkeypatch) -> None:
     service = FakeService()
-    service.instance_statuses["writer"] = "create_failed"
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
 
     result = runner.invoke(app, ["retry", "writer"])
 
-    assert result.exit_code == 0
-    assert "Deprecation:" in result.stdout
-    assert "Step 1/4: Loading the failed instance record" in result.stdout
-    assert "Retried instance:" in result.stdout
-    assert "(status: running)" in result.stdout
-    assert "Open URL:" in result.stdout
-    assert service.calls[-1] == ("dashboard_url", (), {"name": "writer"})
+    # The `retry` subcommand has been removed in favor of `recreate`.
+    assert result.exit_code != 0
 
 
 def test_recreate_command_recreates_instance(monkeypatch) -> None:

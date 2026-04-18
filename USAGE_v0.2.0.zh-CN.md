@@ -34,12 +34,11 @@
 | `clawcu start <name>` | 启动一个已停止的托管实例。 |
 | `clawcu stop <name>` | 停止一个正在运行的托管实例。 |
 | `clawcu restart <name>` | 重启一个托管实例。 |
-| `clawcu retry <name>` | 重试一个处于 `create_failed` 的实例。 |
-| `clawcu recreate <name>` | 按保存的实例配置重建容器，保留同一套实例设置。 |
+| `clawcu recreate <name>` | 按保存的实例配置重建容器；若实例处于 `create_failed`，会自动走重试路径。 |
 | `clawcu upgrade <name> --version <version-or-tag>` | 将实例升级到新的服务版本或 tag。升级前会自动快照实例 home 和对应的 env 路径。 |
 | `clawcu rollback <name>` | 通过恢复匹配的快照和 env 快照，把实例回退到上一次可逆的版本切换。 |
 | `clawcu clone <source> --name <name> [--datadir <path>] [--port <port>]` | 复制源实例，生成新的隔离实验实例。 |
-| `clawcu logs <name> [--follow]` | 查看实例日志，`--follow` 会持续跟随输出。 |
+| `clawcu logs <name> [--follow] [--tail N] [--since DURATION]` | 查看实例日志，默认只显示最后 200 行。`--follow` 会持续跟随输出；`--tail 0` 打印全部日志。 |
 | `clawcu remove <name> [--keep-data\|--delete-data]` | 删除实例和容器，并选择是否保留数据目录。 |
 
 ## 4. 交互访问与原生命令

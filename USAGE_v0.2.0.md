@@ -34,12 +34,11 @@ It describes the shared command surface, the service-specific differences betwee
 | `clawcu start <name>` | Start a stopped managed instance. |
 | `clawcu stop <name>` | Stop a running managed instance. |
 | `clawcu restart <name>` | Restart a managed instance. |
-| `clawcu retry <name>` | Retry an instance that is stuck in `create_failed`. |
-| `clawcu recreate <name>` | Recreate an instance container from saved configuration while keeping the same instance settings. |
+| `clawcu recreate <name>` | Recreate an instance container from saved configuration. Automatically retries instances stuck in `create_failed`. |
 | `clawcu upgrade <name> --version <version-or-tag>` | Upgrade an instance to a new service version or tag. ClawCU snapshots the instance home plus the matching env path before replacing the container. |
 | `clawcu rollback <name>` | Roll back an instance to the previous reversible version transition by restoring the matching snapshot and env snapshot. |
 | `clawcu clone <source> --name <name> [--datadir <path>] [--port <port>]` | Copy a source instance into a new isolated experiment instance. |
-| `clawcu logs <name> [--follow]` | Show instance logs. `--follow` keeps streaming them. |
+| `clawcu logs <name> [--follow] [--tail N] [--since DURATION]` | Show instance logs. Defaults to the last 200 lines. `--follow` keeps streaming them; `--tail 0` streams the full history. |
 | `clawcu remove <name> [--keep-data\|--delete-data]` | Remove the instance and container, with a choice to keep or delete the data directory. |
 
 ## 4. Interactive Access and Native Commands

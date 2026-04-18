@@ -1268,26 +1268,6 @@ def _do_recreate(service: ClawCUService, name: str) -> None:
 
 
 @app.command(
-    "retry",
-    help="[Deprecated] Alias of `clawcu recreate`. Prefer `clawcu recreate`, which auto-detects create_failed state.",
-)
-def retry_instance(
-    ctx: typer.Context,
-    name: Annotated[str | None, typer.Argument(help="Failed instance name to retry.")] = None,
-) -> None:
-    if not name:
-        _show_help_and_exit(ctx)
-    console.print(
-        "[yellow]Deprecation:[/yellow] `clawcu retry` is deprecated. "
-        "Use `clawcu recreate` instead — it auto-detects create_failed instances."
-    )
-    service = get_service()
-    if hasattr(service, "set_reporter"):
-        service.set_reporter(_print_progress)
-    _do_recreate(service, name)
-
-
-@app.command(
     "recreate",
     help="Recreate an existing instance. Auto-retries instances in create_failed status.",
 )
