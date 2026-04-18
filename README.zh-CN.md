@@ -95,7 +95,7 @@ pipx install .
 
 ## 快速开始
 
-先检查环境并配置默认值：
+先检查 Docker 访问、运行目录，并配置默认值：
 
 ```bash
 clawcu setup
@@ -112,15 +112,16 @@ clawcu setup --completion
 - 默认 `ClawCU home`
 - 默认 OpenClaw 镜像源
 - 默认 Hermes 镜像仓库
-- 默认 Hermes 镜像仓库
 
 ### OpenClaw
 
-从官方镜像源拉取指定版本：
+为 OpenClaw 准备要使用的版本：
 
 ```bash
 clawcu pull openclaw --version 2026.4.1
 ```
+
+这一步会记录 ClawCU 应使用的 OpenClaw 镜像；如果本地还没有该镜像，Docker 会在实例启动时自动拉取。
 
 创建并启动实例：
 

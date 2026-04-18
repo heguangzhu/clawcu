@@ -14,16 +14,16 @@
 | 命令 | 说明 |
 |------|------|
 | `clawcu --version` | 显示当前安装的 ClawCU 版本。 |
-| `clawcu setup [--completion]` | 检查 Docker、ClawCU home、运行目录，并交互式配置默认的 ClawCU home、OpenClaw 镜像源和 Hermes 镜像源。 |
-| `clawcu pull openclaw --version <version>` | 拉取指定版本的 OpenClaw 官方镜像。如果镜像不存在或拉取失败，ClawCU 会直接报错。 |
+| `clawcu setup [--completion]` | 检查 Docker CLI 是否可用、Docker daemon 是否可达、ClawCU home、运行目录，并交互式配置默认的 ClawCU home、OpenClaw 镜像源和 Hermes 镜像源。 |
+| `clawcu pull openclaw --version <version>` | 为指定版本准备 OpenClaw 官方镜像引用。如果本地还没有该镜像，后续 `create`、`start` 或 `recreate` 需要它时，Docker 会自动拉取。 |
 | `clawcu pull hermes --version <tag>` | 从配置好的 Hermes 镜像仓库拉取指定 tag 的预构建 Hermes 镜像。 |
 
 ## 2. 实例创建
 
 | 命令 | 说明 |
 |------|------|
-| `clawcu create openclaw --name <name> --version <version> [--datadir <path>] [--port <port>] [--cpu 1] [--memory 2g]` | 创建并启动 OpenClaw 实例。`datadir` 默认是 `~/.clawcu/<name>`，宿主机端口默认从 `18789` 开始，冲突时按 `+10` 探测。 |
-| `clawcu create hermes --name <name> --version <ref> [--datadir <path>] [--port <port>] [--cpu 1] [--memory 2g]` | 创建并启动 Hermes 实例。`datadir` 默认是 `~/.clawcu/<name>`，宿主机端口默认从 `8642` 开始，冲突时按 `+10` 探测。 |
+| `clawcu create openclaw --name <name> --version <version> [--datadir <path>] [--port <port>] [--cpu 1] [--memory 2g]` | 创建并启动 OpenClaw 实例。`datadir` 默认是 `~/.clawcu/<name>`，托管实例的宿主机端口默认从 `18799` 开始，冲突时按 `+10` 探测，这样不会占用本地 OpenClaw 默认端口。 |
+| `clawcu create hermes --name <name> --version <ref> [--datadir <path>] [--port <port>] [--cpu 1] [--memory 2g]` | 创建并启动 Hermes 实例。`datadir` 默认是 `~/.clawcu/<name>`，托管 API 端口默认从 `8652` 开始；ClawCU 还会额外分配一个从 `9129` 开始的托管 dashboard 端口。两者冲突时都按 `+10` 探测。 |
 
 ## 3. 共享生命周期命令
 
@@ -46,7 +46,7 @@
 
 | 命令 | 说明 |
 |------|------|
-| `clawcu config <name> [-- args...]` | 在托管容器内运行服务原生配置流程。OpenClaw 对应 `openclaw configure`，Hermes 对应其原生 config 流程。 |
+| `clawcu config <name> [-- args...]` | 在托管容器内运行服务原生配置流程。OpenClaw 对应 `openclaw configure`，Hermes 对应 `hermes setup`。 |
 | `clawcu exec <name> <command...>` | 在托管容器内执行任意命令，并自动注入该实例对应的 env。 |
 | `clawcu tui <name> [--agent <agent>]` | 启动该实例的原生交互入口。OpenClaw 走 TUI 流程，Hermes 走交互式 chat 流程。 |
 
@@ -81,8 +81,9 @@
 ## 8. 默认行为约定
 
 - 端口默认值：
-  - OpenClaw 从 `18789` 开始
-  - Hermes 从 `8642` 开始
+  - OpenClaw 托管实例从 `18799` 开始
+  - Hermes 托管 API 端口从 `8652` 开始
+  - Hermes 托管 dashboard 端口从 `9129` 开始
   - 冲突时都按 `+10` 探测
 - 资源默认值：
   - `1 CPU + 2GB RAM`
@@ -92,6 +93,8 @@
   - `clawcu-<service>-<instance-name>`
 - 访问摘要：
   - 两类服务都会在 `create`、`list`、`inspect` 中展示访问 URL
+  - OpenClaw 展示主服务端口和 dashboard URL
+  - Hermes 展示 dashboard 端口和 dashboard URL，就绪判断也可能同时依赖 API server
 - env 路径：
   - OpenClaw 使用 `~/.clawcu/instances/<instance>.env`
   - Hermes 使用 `<datadir>/.env`

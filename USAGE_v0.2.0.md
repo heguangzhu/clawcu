@@ -14,16 +14,16 @@ It describes the shared command surface, the service-specific differences betwee
 | Command | Description |
 |------|------|
 | `clawcu --version` | Show the installed ClawCU version. |
-| `clawcu setup [--completion]` | Check Docker, ClawCU home, runtime directories, and interactively configure the default ClawCU home, the OpenClaw image repo, and the Hermes image repo. |
-| `clawcu pull openclaw --version <version>` | Pull the official OpenClaw image for the requested version. If the image is missing or cannot be pulled, ClawCU reports the error directly. |
+| `clawcu setup [--completion]` | Check Docker CLI access, Docker daemon reachability, ClawCU home, runtime directories, and interactively configure the default ClawCU home, the OpenClaw image repo, and the Hermes image repo. |
+| `clawcu pull openclaw --version <version>` | Prepare the official OpenClaw image reference for the requested version. If the image is missing locally, Docker pulls it when a later `create`, `start`, or `recreate` needs it. |
 | `clawcu pull hermes --version <tag>` | Pull the prebuilt Hermes image for the requested tag from the configured Hermes image repo. |
 
 ## 2. Instance Creation
 
 | Command | Description |
 |------|------|
-| `clawcu create openclaw --name <name> --version <version> [--datadir <path>] [--port <port>] [--cpu 1] [--memory 2g]` | Create and start an OpenClaw instance. `datadir` defaults to `~/.clawcu/<name>`. Host port defaults to `18789` and probes by `+10` on conflict. |
-| `clawcu create hermes --name <name> --version <ref> [--datadir <path>] [--port <port>] [--cpu 1] [--memory 2g]` | Create and start a Hermes instance. `datadir` defaults to `~/.clawcu/<name>`. Host port defaults to `8642` and probes by `+10` on conflict. |
+| `clawcu create openclaw --name <name> --version <version> [--datadir <path>] [--port <port>] [--cpu 1] [--memory 2g]` | Create and start an OpenClaw instance. `datadir` defaults to `~/.clawcu/<name>`. Managed host port defaults to `18799` and probes by `+10` on conflict so it does not occupy the local OpenClaw default port. |
+| `clawcu create hermes --name <name> --version <ref> [--datadir <path>] [--port <port>] [--cpu 1] [--memory 2g]` | Create and start a Hermes instance. `datadir` defaults to `~/.clawcu/<name>`. Managed API port defaults to `8652`; ClawCU also allocates a managed dashboard port starting from `9129`. Both probe by `+10` on conflict. |
 
 ## 3. Shared Lifecycle Commands
 
@@ -46,7 +46,7 @@ It describes the shared command surface, the service-specific differences betwee
 
 | Command | Description |
 |------|------|
-| `clawcu config <name> [-- args...]` | Run the service-native configuration flow inside the managed container. OpenClaw maps to `openclaw configure`; Hermes maps to its native config flow. |
+| `clawcu config <name> [-- args...]` | Run the service-native configuration flow inside the managed container. OpenClaw maps to `openclaw configure`; Hermes maps to `hermes setup`. |
 | `clawcu exec <name> <command...>` | Run an arbitrary command inside the managed container with the instance env injected. |
 | `clawcu tui <name> [--agent <agent>]` | Launch the native interactive flow for the instance. OpenClaw uses its TUI flow; Hermes uses its interactive chat flow. |
 
@@ -81,9 +81,10 @@ It describes the shared command surface, the service-specific differences betwee
 ## 8. Default Behavior Conventions
 
 - Port defaults:
-  - OpenClaw starts from `18789`
-  - Hermes starts from `8642`
-  - both probe by `+10` on conflict
+  - OpenClaw managed instances start from `18799`
+  - Hermes managed API ports start from `8652`
+  - Hermes managed dashboard ports start from `9129`
+  - all probe by `+10` on conflict
 - Resources:
   - default is `1 CPU + 2GB RAM`
 - Data directory:
@@ -92,6 +93,8 @@ It describes the shared command surface, the service-specific differences betwee
   - `clawcu-<service>-<instance-name>`
 - Access info:
   - both services expose an access URL in `create`, `list`, and `inspect`
+  - OpenClaw displays its main service port and dashboard URL
+  - Hermes displays its dashboard port and dashboard URL, while readiness may also use the API server
 - Env location:
   - OpenClaw uses `~/.clawcu/instances/<instance>.env`
   - Hermes uses `<datadir>/.env`

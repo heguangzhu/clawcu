@@ -95,7 +95,7 @@ pipx install .
 
 ## Quick Start
 
-Check prerequisites and configure defaults:
+Check Docker access, runtime directories, and configure defaults:
 
 ```bash
 clawcu setup
@@ -115,11 +115,13 @@ In an interactive terminal, `clawcu setup` prompts for:
 
 ### OpenClaw
 
-Pull a version from the official registry:
+Prepare an OpenClaw version for use:
 
 ```bash
 clawcu pull openclaw --version 2026.4.1
 ```
+
+This records the OpenClaw image ClawCU should use. If it is missing locally, Docker pulls it when the instance starts.
 
 Create and start an instance:
 
@@ -141,7 +143,7 @@ clawcu token writer
 
 ### Hermes
 
-Pull and build a managed Hermes image from the official repo:
+Pull a prebuilt Hermes image:
 
 ```bash
 clawcu pull hermes --version v2026.4.13
