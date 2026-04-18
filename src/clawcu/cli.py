@@ -2101,15 +2101,32 @@ def restart_instance(
     _print_access_url(service, record.name)
 
 
-def _do_recreate(service: ClawCUService, name: str) -> None:
+def _do_recreate(
+    service: ClawCUService,
+    name: str,
+    *,
+    fresh: bool = False,
+    timeout: int | None = None,
+) -> None:
     """Unified recreate logic.
 
     Tries retry_instance first (cheap auto-port recovery path for
     create_failed records); if the service rejects it with a
     ValueError ("Only create_failed ..."), falls back to the regular
-    recreate_instance flow. Prints the appropriate verb based on which
-    path succeeded.
+    recreate_instance flow. When ``fresh`` or ``timeout`` is provided,
+    skip the retry shortcut and go straight to recreate — both flags
+    only make sense for a running instance.
     """
+    if fresh or timeout is not None:
+        try:
+            record = service.recreate_instance(name, fresh=fresh, timeout=timeout)
+        except Exception as exc:
+            _exit_with_error(str(exc))
+        console.print(
+            f"[green]Recreated instance:[/green] {record.name} ({record.version}) on port {record.port} (status: {record.status})"
+        )
+        _print_access_url(service, record.name)
+        return
     try:
         record = service.retry_instance(name)
     except ValueError as exc:
@@ -2140,11 +2157,36 @@ def _do_recreate(service: ClawCUService, name: str) -> None:
 )
 def recreate_instance(
     name: Annotated[str, typer.Argument(help="Instance to recreate.")],
+    fresh: Annotated[
+        bool,
+        typer.Option(
+            "--fresh",
+            help="Wipe the instance datadir before recreating. Destructive: data is irrecoverable.",
+        ),
+    ] = False,
+    timeout: Annotated[
+        int | None,
+        typer.Option(
+            "--timeout",
+            min=0,
+            help="Seconds to wait for the container to stop gracefully before force-removing.",
+        ),
+    ] = None,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Skip the confirmation prompt for --fresh."),
+    ] = False,
 ) -> None:
     service = get_service()
     if hasattr(service, "set_reporter"):
         service.set_reporter(_print_progress)
-    _do_recreate(service, name)
+    if fresh:
+        _confirm_destructive(
+            f"About to wipe the datadir of instance '{name}' before recreating. "
+            "All instance data under the datadir will be permanently deleted.",
+            yes,
+        )
+    _do_recreate(service, name, fresh=fresh, timeout=timeout)
 
 
 def _print_upgrade_plan(plan: dict) -> None:

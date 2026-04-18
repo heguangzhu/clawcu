@@ -1089,14 +1089,23 @@ class ClawCUService:
         self.reporter(self._lifecycle_summary("retried", live_record))
         return live_record
 
-    def recreate_instance(self, name: str, *, prepare_artifact: bool = True) -> InstanceRecord:
+    def recreate_instance(
+        self,
+        name: str,
+        *,
+        prepare_artifact: bool = True,
+        fresh: bool = False,
+        timeout: int | None = None,
+    ) -> InstanceRecord:
         record = self.store.load_record(name)
         adapter = self.adapter_for_record(record)
         effective_auth_mode = self._effective_auth_mode(record)
         self.reporter(
             f"Recreating instance '{record.name}' (service={record.service}, version {record.version}, port {record.port}, auth={effective_auth_mode})."
         )
-        self.store.append_log(f"recreate instance name={record.name} version={record.version}")
+        self.store.append_log(
+            f"recreate instance name={record.name} version={record.version} fresh={fresh} timeout={timeout}"
+        )
         if prepare_artifact:
             prepared_image = adapter.prepare_artifact(record.version)
         else:
@@ -1104,7 +1113,16 @@ class ClawCUService:
             self.reporter(
                 f"Reusing the existing image tag {record.image_tag} without re-running artifact preparation."
             )
+        if timeout is not None:
+            try:
+                self.docker.stop_container(record.container_name, timeout=timeout)
+            except Exception as exc:
+                self.reporter(
+                    f"Graceful stop failed during recreate (proceeding to force-remove): {exc}"
+                )
         self.docker.remove_container(record.container_name, missing_ok=True)
+        if fresh:
+            self._wipe_datadir(record)
 
         spec = InstanceSpec(
             service=record.service,
@@ -1132,6 +1150,32 @@ class ClawCUService:
         live_record = self._start_new_instance(spec, history=history, auto_port=False)
         self.reporter(self._lifecycle_summary("recreated", live_record))
         return live_record
+
+    def _wipe_datadir(self, record: InstanceRecord) -> None:
+        """Remove all contents of ``record.datadir`` (used by recreate --fresh).
+
+        The directory itself is preserved so the bind mount stays valid.
+        Refuses to touch obviously unsafe paths (``/``, ``$HOME``, empty)
+        as a defense-in-depth against a corrupted record — datadir
+        normally lives under the managed root and is trusted, but the
+        cost of an accidental HOME wipe is too high to skip the check.
+        """
+        datadir = Path(record.datadir).expanduser().resolve()
+        unsafe = {Path("/").resolve(), Path.home().resolve()}
+        if str(datadir) in {"", "."} or datadir in unsafe:
+            raise ValueError(
+                f"Refusing to wipe unsafe datadir for instance '{record.name}': {datadir}"
+            )
+        if not datadir.exists():
+            return
+        removed = 0
+        for child in datadir.iterdir():
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+            removed += 1
+        self.reporter(f"Wiped datadir contents: {datadir} ({removed} entries removed)")
 
     def _service_manager(self, record: InstanceRecord):
         """Return the service-native manager (openclaw / hermes) for a record."""

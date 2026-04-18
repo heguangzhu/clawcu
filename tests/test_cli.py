@@ -469,8 +469,14 @@ class FakeService:
         record.status = "running"
         return record
 
-    def recreate_instance(self, name: str) -> InstanceRecord:
-        self._record("recreate_instance", name=name)
+    def recreate_instance(
+        self,
+        name: str,
+        *,
+        fresh: bool = False,
+        timeout: int | None = None,
+    ) -> InstanceRecord:
+        self._record("recreate_instance", name=name, fresh=fresh, timeout=timeout)
         if self.reporter:
             self.reporter("Recreating instance")
         record = self._instance(name=name)
@@ -1378,7 +1384,7 @@ def test_setenv_command_can_recreate_instance_immediately(monkeypatch) -> None:
             "assignments": ["OPENAI_API_KEY=sk-test"],
         },
     )
-    assert service.calls[1] == ("recreate_instance", (), {"name": "writer"})
+    assert service.calls[1] == ("recreate_instance", (), {"name": "writer", "fresh": False, "timeout": None})
 
 
 def test_getenv_command_lists_instance_environment(monkeypatch) -> None:
@@ -1438,7 +1444,7 @@ def test_unsetenv_command_can_recreate_instance_immediately(monkeypatch) -> None
         (),
         {"name": "writer", "keys": ["OPENAI_API_KEY"]},
     )
-    assert service.calls[1] == ("recreate_instance", (), {"name": "writer"})
+    assert service.calls[1] == ("recreate_instance", (), {"name": "writer", "fresh": False, "timeout": None})
 
 
 def test_setenv_command_from_file_loads_assignments(monkeypatch, tmp_path) -> None:
@@ -1904,6 +1910,40 @@ def test_recreate_command_recreates_instance(monkeypatch) -> None:
     assert "(status: running)" in result.stdout
     assert "Open URL:" in result.stdout
     assert service.calls[-1] == ("dashboard_url", (), {"name": "writer"})
+
+
+def test_recreate_command_forwards_timeout_and_skips_retry(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["recreate", "writer", "--timeout", "30"])
+
+    assert result.exit_code == 0
+    method_names = [call[0] for call in service.calls]
+    assert "retry_instance" not in method_names
+    recreate_call = next(call for call in service.calls if call[0] == "recreate_instance")
+    assert recreate_call[2] == {"name": "writer", "fresh": False, "timeout": 30}
+
+
+def test_recreate_command_fresh_requires_confirm_by_default(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["recreate", "writer", "--fresh"])
+
+    assert result.exit_code != 0
+    assert not any(call[0] == "recreate_instance" for call in service.calls)
+
+
+def test_recreate_command_fresh_with_yes_wipes_datadir(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["recreate", "writer", "--fresh", "--yes"])
+
+    assert result.exit_code == 0
+    recreate_call = next(call for call in service.calls if call[0] == "recreate_instance")
+    assert recreate_call[2] == {"name": "writer", "fresh": True, "timeout": None}
 
 
 def test_recreate_command_auto_retries_create_failed_instance(monkeypatch) -> None:

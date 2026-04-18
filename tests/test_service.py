@@ -2429,6 +2429,78 @@ def test_recreate_instance_rebuilds_container(temp_clawcu_home, tmp_path) -> Non
     assert "clawcu_version" in recreate_event
 
 
+def test_recreate_instance_with_timeout_stops_gracefully_before_rm(
+    temp_clawcu_home, tmp_path
+) -> None:
+    service, docker, _, _ = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+
+    service.recreate_instance("writer", timeout=42)
+
+    cname = "clawcu-openclaw-writer"
+    assert ("stop", cname, 42) in docker.commands
+    rm_index = docker.commands.index(("rm", cname))
+    stop_index = docker.commands.index(("stop", cname, 42))
+    assert stop_index < rm_index, "graceful stop must precede the force-remove"
+
+
+def test_recreate_instance_fresh_wipes_datadir_contents(
+    temp_clawcu_home, tmp_path
+) -> None:
+    service, _docker, _openclaw, _store = make_service(temp_clawcu_home)
+    datadir = tmp_path / "writer"
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+
+    (datadir / "stale_file.txt").write_text("leftover")
+    nested = datadir / "subdir"
+    nested.mkdir(exist_ok=True)
+    (nested / "deep.bin").write_bytes(b"\x00\x01\x02")
+
+    service.recreate_instance("writer", fresh=True)
+
+    assert datadir.exists()
+    assert not (datadir / "stale_file.txt").exists()
+    assert not (datadir / "subdir").exists()
+
+
+def test_recreate_instance_fresh_refuses_unsafe_datadir(
+    temp_clawcu_home, tmp_path
+) -> None:
+    service, _docker, _openclaw, store = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+
+    record = store.load_record("writer")
+    from pathlib import Path as _Path
+
+    home = _Path.home()
+    updated = record.__class__(**{**record.__dict__, "datadir": str(home)})
+    store.save_record(updated)
+
+    with pytest.raises(ValueError, match="Refusing to wipe unsafe datadir"):
+        service.recreate_instance("writer", fresh=True)
+
+
 def test_recreate_hermes_preserves_dashboard_port(temp_clawcu_home, tmp_path) -> None:
     service, docker, _, store = make_service(temp_clawcu_home)
     hermes_adapter = service.adapters["hermes"]
