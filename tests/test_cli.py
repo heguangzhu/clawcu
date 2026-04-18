@@ -7,7 +7,12 @@ from types import SimpleNamespace
 from rich.console import Console
 from typer.testing import CliRunner
 
-from clawcu.cli import _actionable_hint_for, _display_version, app
+from clawcu.cli import (
+    _actionable_hint_for,
+    _display_version,
+    _provider_api_key_cell,
+    app,
+)
 from clawcu.models import InstanceRecord
 
 runner = CliRunner()
@@ -48,6 +53,23 @@ def test_actionable_hint_matches_canonical_service_errors() -> None:
     ) == "Run `clawcu rollback <name> --list` to see available rollback targets."
 
 
+def test_provider_api_key_cell_distinguishes_unset_set_and_env_ref() -> None:
+    # P2#10: "unset" used to cover both genuinely missing keys and
+    # legitimate ${ENV_VAR} references collected from instances that
+    # resolve credentials at runtime. Surface them as distinct states.
+    assert _provider_api_key_cell("", reveal=False, wide=False) == "[dim]unset[/dim]"
+    assert _provider_api_key_cell(
+        "${OPENAI_API_KEY}", reveal=False, wide=False
+    ) == "[cyan]env-ref[/cyan]"
+    assert _provider_api_key_cell(
+        "$OPENAI_API_KEY", reveal=False, wide=False
+    ) == "[cyan]env-ref[/cyan]"
+    assert _provider_api_key_cell(
+        "sk-literal", reveal=False, wide=False
+    ) == "[green]set[/green]"
+    assert _provider_api_key_cell("sk-literal", reveal=True, wide=False) == "sk-literal"
+
+
 def test_actionable_hint_ignores_unrelated_docker_stderr() -> None:
     # Regression guard for product_review-2.md P0#2: substring matching
     # on "instance"/"image"/"does not exist" fired on arbitrary Docker
@@ -81,8 +103,17 @@ class FakeService:
         self.pulled_versions: list[str] = []
         self.calls: list[tuple[str, tuple, dict]] = []
         self.reporter = None
-        self.store = SimpleNamespace(paths=SimpleNamespace(home=Path("/tmp/clawcu-test-home")))
+        self.store = SimpleNamespace(
+            paths=SimpleNamespace(home=Path("/tmp/clawcu-test-home")),
+            load_record=self._fake_load_record,
+        )
         self.instance_statuses: dict[str, str] = {}
+        self._missing_instance_names: set[str] = set()
+
+    def _fake_load_record(self, name: str):
+        if name in self._missing_instance_names:
+            raise FileNotFoundError(f"Instance '{name}' was not found.")
+        return self._instance(name=name)
 
     def _record(self, method: str, *args, **kwargs) -> None:
         self.calls.append((method, args, kwargs))
@@ -701,6 +732,17 @@ def test_root_version_flag_prints_version() -> None:
     assert f"clawcu {__version__}" in result.stdout
 
 
+def test_root_version_flag_annotates_clawcu_home_setup_status() -> None:
+    # P2#12: --version used to show just the home path, so users who
+    # never ran setup assumed their home was configured. Surface the
+    # setup state next to the path.
+    result = runner.invoke(app, ["--version"])
+
+    assert result.exit_code == 0
+    assert "clawcu home" in result.stdout
+    assert ("(configured)" in result.stdout) or ("(uninitialized)" in result.stdout)
+
+
 def test_create_help_uses_service_language_and_lists_supported_services() -> None:
     result = runner.invoke(app, ["create", "--help"])
 
@@ -1200,6 +1242,47 @@ def test_list_command_status_filter_drops_other_statuses(monkeypatch) -> None:
     assert "No instances found." in result.stdout
 
 
+def test_list_command_stacks_rows_at_narrow_terminal(monkeypatch) -> None:
+    # P1#4: default 6-column table collapses the ACCESS column at <72
+    # terminal columns. Fall back to key:value stacked layout so no cell
+    # ever degrades to a single character.
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+    monkeypatch.setattr("clawcu.cli.console", Console(width=60, force_terminal=False, no_color=True))
+
+    result = runner.invoke(app, ["list"])
+
+    assert result.exit_code == 0
+    assert "writer" in result.stdout
+    assert "version:" in result.stdout
+    assert "access:" in result.stdout
+
+
+def test_list_command_wide_falls_back_when_terminal_too_narrow(monkeypatch) -> None:
+    # P1#3: --wide collapses trailing columns to 1 char at ~80 cols.
+    # When terminal is narrower than the wide-layout threshold, print a
+    # warning and render the default view instead.
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+    monkeypatch.setattr("clawcu.cli.console", Console(width=80, force_terminal=False, no_color=True))
+
+    result = runner.invoke(app, ["list", "--wide"])
+
+    assert result.exit_code == 0
+    assert "--wide needs at least 120 columns" in result.stdout
+
+
+def test_provider_list_wide_falls_back_when_terminal_too_narrow(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+    monkeypatch.setattr("clawcu.cli.console", Console(width=80, force_terminal=False, no_color=True))
+
+    result = runner.invoke(app, ["provider", "list", "--wide"])
+
+    assert result.exit_code == 0
+    assert "--wide needs at least 110 columns" in result.stdout
+
+
 def test_list_command_rejects_unknown_source(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
@@ -1398,6 +1481,19 @@ def test_setenv_command_updates_instance_env(monkeypatch) -> None:
             ],
         },
     )
+
+
+def test_setenv_command_warns_for_empty_value_assignments(monkeypatch) -> None:
+    # P2#5: KEY= (empty string) is legal but indistinguishable from a
+    # typo. Surface it and point at `unsetenv` for the delete path.
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["setenv", "writer", "FOO="])
+
+    assert result.exit_code == 0
+    assert "wrote empty string for" in result.stdout
+    assert "unsetenv writer FOO" in result.stdout
 
 
 def test_setenv_command_can_recreate_instance_immediately(monkeypatch) -> None:
@@ -1666,6 +1762,28 @@ def test_provider_list_command_shows_providers(monkeypatch) -> None:
     assert service.calls[0] == ("list_providers", (), {})
 
 
+def test_provider_list_pluralizes_model_count_correctly(monkeypatch) -> None:
+    # P2#9: default view said "1 models" for a single-model provider;
+    # singular should read "1 model".
+    service = FakeService()
+    service._provider_summary = lambda name="openai-main", api_style="openai": {
+        "service": "openclaw",
+        "name": name,
+        "provider": "openai",
+        "api_style": api_style,
+        "api_key": "sk-test-1234567890",
+        "endpoint": "https://api.example.com/v1",
+        "models": ["only-one"],
+    }
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["provider", "list"])
+
+    assert result.exit_code == 0
+    assert "1 model" in result.stdout
+    assert "1 models" not in result.stdout
+
+
 def test_provider_list_wide_masks_key_by_default(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
@@ -1675,7 +1793,7 @@ def test_provider_list_wide_masks_key_by_default(monkeypatch) -> None:
     result = runner.invoke(app, ["provider", "list", "--wide"])
 
     assert result.exit_code == 0
-    # --wide adds PROVIDER and ENDPOINT columns, API key still masked
+    # --wide adds ENDPOINT column, API key masked to prefix
     assert "ENDPOINT" in result.stdout
     assert "sk-tes" in result.stdout  # masked form starts with first 6 chars
     assert "sk-test-1234567890" not in result.stdout  # full key not shown
@@ -2011,6 +2129,22 @@ def test_recreate_command_fresh_with_yes_wipes_datadir(monkeypatch) -> None:
     assert result.exit_code == 0
     recreate_call = next(call for call in service.calls if call[0] == "recreate_instance")
     assert recreate_call[2] == {"name": "writer", "fresh": True, "timeout": None}
+
+
+def test_recreate_command_fresh_validates_instance_exists_before_confirm(monkeypatch) -> None:
+    # P2#7: the destructive prompt used to fire before checking whether
+    # the instance actually exists, so a typo produced a confusing
+    # "Refusing destructive action" message instead of "not found".
+    service = FakeService()
+    service._missing_instance_names.add("does-not-exist")
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["recreate", "does-not-exist", "--fresh", "--yes"])
+
+    assert result.exit_code != 0
+    assert "was not found" in result.stdout
+    assert "Refusing destructive action" not in result.stdout
+    assert not any(call[0] == "recreate_instance" for call in service.calls)
 
 
 def test_recreate_command_auto_retries_create_failed_instance(monkeypatch) -> None:

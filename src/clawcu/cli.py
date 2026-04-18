@@ -316,21 +316,58 @@ def _access_host_port(access_url: str) -> str:
     return access_url
 
 
+_WIDE_INSTANCE_MIN_COLS = 120
+_NARROW_INSTANCE_MIN_COLS = 72
+
+
+def _print_instance_stacked(records: list[dict], *, reveal: bool) -> None:
+    """Key/value layout used when the terminal is too narrow for the
+    6-column table (e.g. tmux split-pane, SSH). Each instance prints as
+    a short block so columns never collapse into 1-char cells."""
+    console.print("[bold]ClawCU Instances[/bold]")
+    for idx, record in enumerate(records):
+        access_url = record.get("access_url", "-")
+        if not reveal:
+            access_url = _strip_token_fragment(access_url)
+        console.print(f"[bold]{record['name']}[/bold]  [dim]({record.get('service', '-')})[/dim]")
+        console.print(f"  version: {_display_version(record['version'])}")
+        console.print(f"  port:    {record['port']}")
+        console.print(f"  status:  {record['status']}")
+        console.print(f"  access:  {_access_host_port(access_url)}")
+        if idx != len(records) - 1:
+            console.print()
+
+
 def _print_instance_table(records: list[dict], *, wide: bool = False, reveal: bool = False) -> None:
+    # --wide expects ~120+ columns to render readably. At narrower widths
+    # Rich collapses trailing columns to a single character, producing a
+    # worse view than the default 6-column layout. Degrade to the default
+    # with a hint instead of silently shipping an unreadable table.
+    width = console.size.width
+    effective_wide = wide
+    if wide and width < _WIDE_INSTANCE_MIN_COLS:
+        console.print(
+            f"[yellow]--wide needs at least {_WIDE_INSTANCE_MIN_COLS} columns; "
+            f"terminal is {width}. Falling back to the default view.[/yellow]"
+        )
+        effective_wide = False
+
+    if not effective_wide and width < _NARROW_INSTANCE_MIN_COLS and records:
+        _print_instance_stacked(records, reveal=reveal)
+        return
+
     table = Table(title="ClawCU Instances")
-    # Narrow default: NAME / SERVICE / VERSION / PORT / STATUS / ACCESS (host:port only).
-    # Wide adds SOURCE / HOME / PROVIDERS / MODELS / SNAPSHOT and shows full URL.
-    if wide:
+    if effective_wide:
         table.add_column("SOURCE", no_wrap=True)
     table.add_column("NAME", no_wrap=True)
     table.add_column("SERVICE", no_wrap=True)
-    if wide:
+    if effective_wide:
         table.add_column("HOME", overflow="fold")
     table.add_column("VERSION", no_wrap=True)
     table.add_column("PORT", no_wrap=True)
     table.add_column("STATUS", no_wrap=True)
-    table.add_column("ACCESS", overflow="fold")
-    if wide:
+    table.add_column("ACCESS", overflow="fold", min_width=14)
+    if effective_wide:
         table.add_column("PROVIDERS", overflow="fold")
         table.add_column("MODELS", overflow="fold")
         table.add_column("SNAPSHOT", overflow="fold")
@@ -338,22 +375,22 @@ def _print_instance_table(records: list[dict], *, wide: bool = False, reveal: bo
         access_url = record.get("access_url", "-")
         if not reveal:
             access_url = _strip_token_fragment(access_url)
-        if not wide:
+        if not effective_wide:
             access_cell = _access_host_port(access_url)
         else:
             access_cell = access_url
         row: list[str] = []
-        if wide:
+        if effective_wide:
             row.append(record.get("source", "-"))
         row.append(record["name"])
         row.append(record.get("service", "-"))
-        if wide:
+        if effective_wide:
             row.append(record.get("home", "-"))
         row.append(_display_version(record["version"]))
         row.append(str(record["port"]))
         row.append(record["status"])
         row.append(access_cell)
-        if wide:
+        if effective_wide:
             row.append(record.get("providers", "-"))
             row.append(record.get("models", "-"))
             row.append(record.get("snapshot", "-"))
@@ -383,38 +420,59 @@ def _print_agent_table(records: list[dict]) -> None:
     console.print(table)
 
 
+_WIDE_PROVIDER_MIN_COLS = 110
+_API_KEY_ENV_REF = re.compile(r"^\$\{[^}]+\}$|^\$[A-Z_][A-Z0-9_]*$")
+
+
+def _provider_api_key_cell(raw_key: str, *, reveal: bool, wide: bool) -> str:
+    """Classify provider api_key cell so users can tell apart unset
+    (truly empty), env-ref (placeholder like ``${OPENAI_API_KEY}`` —
+    normal when collected from an instance that sources keys from env),
+    and set (literal key present)."""
+    if reveal:
+        return raw_key or "-"
+    if not raw_key:
+        return "[dim]unset[/dim]"
+    if _API_KEY_ENV_REF.match(raw_key.strip()):
+        return "[cyan]env-ref[/cyan]"
+    return "[green]set[/green]" if not wide else (_mask_secret(raw_key) or "-")
+
+
 def _print_provider_table(records: list[dict], *, wide: bool = False, reveal: bool = False) -> None:
+    effective_wide = wide
+    if wide and console.size.width < _WIDE_PROVIDER_MIN_COLS:
+        console.print(
+            f"[yellow]--wide needs at least {_WIDE_PROVIDER_MIN_COLS} columns; "
+            f"terminal is {console.size.width}. Falling back to the default view.[/yellow]"
+        )
+        effective_wide = False
+
+    # Drop the redundant PROVIDER column by default — NAME and PROVIDER are
+    # the same value in practice; the wide view used to carry both even at
+    # narrow widths.
     table = Table(title="ClawCU Providers")
     table.add_column("SERVICE", no_wrap=True)
     table.add_column("NAME", no_wrap=True)
-    if wide:
-        table.add_column("PROVIDER", no_wrap=True)
     table.add_column("API_STYLE", no_wrap=True)
     table.add_column("API_KEY", no_wrap=True)
-    if wide:
+    if effective_wide:
         table.add_column("ENDPOINT", overflow="fold")
     table.add_column("MODELS", overflow="fold")
     for record in records:
         raw_key = str(record.get("api_key") or "")
-        if reveal:
-            key_cell = raw_key or "-"
-        elif raw_key:
-            key_cell = "[green]set[/green]" if not wide else (_mask_secret(raw_key) or "-")
-        else:
-            key_cell = "[dim]unset[/dim]"
+        key_cell = _provider_api_key_cell(raw_key, reveal=reveal, wide=effective_wide)
         models = record.get("models") or []
-        if wide:
+        if effective_wide:
             models_cell = ", ".join(models) or "-"
         else:
-            models_cell = f"{len(models)} models" if models else "-"
+            model_count = len(models)
+            models_cell = f"{model_count} {'model' if model_count == 1 else 'models'}" if models else "-"
         row: list[str] = []
         row.append(record.get("service", "-"))
         row.append(record["name"])
-        if wide:
-            row.append(record.get("provider") or "-")
         row.append(record["api_style"])
         row.append(key_cell)
-        if wide:
+        if effective_wide:
             row.append(record.get("endpoint") or "-")
         row.append(models_cell)
         table.add_row(*row)
@@ -562,10 +620,17 @@ def _collect_environment_info() -> dict[str, str]:
         info["clawcu_home"] = str(service.get_clawcu_home())
         info["openclaw_image_repo"] = str(service.get_openclaw_image_repo() or "-")
         info["hermes_image_repo"] = str(service.get_hermes_image_repo() or "-")
+        # "configured" if the bootstrap config file exists (setup has written
+        # at least one persistent value). Otherwise the home path may be the
+        # default location without any user-applied settings.
+        info["setup_status"] = (
+            "configured" if service.store.paths.config_path.exists() else "uninitialized"
+        )
     except Exception:
         info.setdefault("clawcu_home", "-")
         info.setdefault("openclaw_image_repo", "-")
         info.setdefault("hermes_image_repo", "-")
+        info.setdefault("setup_status", "unknown")
     return info
 
 
@@ -628,7 +693,7 @@ def root_callback(
             console.print(f"  platform      : {info['platform']}")
             console.print(f"  docker cli    : {info['docker_cli']}")
             console.print(f"  docker server : {info['docker_server']}")
-            console.print(f"  clawcu home   : {info['clawcu_home']}")
+            console.print(f"  clawcu home   : {info['clawcu_home']} ({info['setup_status']})")
             console.print(f"  openclaw repo : {info['openclaw_image_repo']}")
             console.print(f"  hermes repo   : {info['hermes_image_repo']}")
         raise typer.Exit()
@@ -1753,6 +1818,15 @@ def set_instance_env(
 
     if apply_now and hasattr(service, "set_reporter"):
         service.set_reporter(_print_progress)
+    # Flag empty-value assignments. These are legal (they write KEY= to
+    # the env file) but indistinguishable from a typo — surface them so
+    # the user can pick between `unsetenv KEY` (delete) and a real value.
+    empty_value_keys: list[str] = []
+    for assignment in effective_assignments:
+        if "=" in assignment:
+            key, value = assignment.split("=", 1)
+            if not value.strip():
+                empty_value_keys.append(key.strip())
     try:
         result = service.set_instance_env(name, effective_assignments)
     except Exception as exc:
@@ -1760,6 +1834,12 @@ def set_instance_env(
     console.print(
         f"[green]Updated env file:[/green] {result['path']} ({', '.join(result['updated_keys'])})"
     )
+    if empty_value_keys:
+        joined = ", ".join(empty_value_keys)
+        console.print(
+            f"[yellow]Note:[/yellow] wrote empty string for [bold]{joined}[/bold]. "
+            f"Use `clawcu unsetenv {result['instance']} {empty_value_keys[0]}` to remove the key entirely."
+        )
     if apply_now:
         try:
             record = service.recreate_instance(str(result["instance"]))
@@ -2296,6 +2376,13 @@ def recreate_instance(
     if hasattr(service, "set_reporter"):
         service.set_reporter(_print_progress)
     if fresh:
+        # Validate the instance exists *before* the destructive prompt.
+        # Otherwise a typo prints the "--yes required" warning even though
+        # there is nothing to wipe, hiding the real "not found" failure.
+        try:
+            service.store.load_record(name)
+        except Exception as exc:
+            _exit_with_error(str(exc))
         _confirm_destructive(
             f"About to wipe the datadir of instance '{name}' before recreating. "
             "All instance data under the datadir will be permanently deleted.",
