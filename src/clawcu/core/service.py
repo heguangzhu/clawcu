@@ -18,6 +18,7 @@ from clawcu import __version__ as clawcu_version
 from clawcu.core.adapters import ServiceAdapter
 from clawcu.core.docker import DockerManager
 from clawcu.core.models import AccessInfo, InstanceRecord, InstanceSpec
+from clawcu.core.registry import semver_sort_key
 from clawcu.core.storage import StateStore
 from clawcu.core.subprocess_utils import CommandError, run_command
 from clawcu.core.validation import (
@@ -1301,6 +1302,10 @@ class ClawCUService:
                         history_set.add(value)
         history_set.discard("-")
         local_images = self.docker.list_local_images(repo) if repo else []
+        # Sort by semver so the "Local images" section agrees with the
+        # remote section. Non-semver tags (e.g. ``latest``) fall into the
+        # low-sort bucket and stay at the top, labelled by the CLI.
+        local_images = sorted(local_images, key=semver_sort_key)
 
         remote_versions: list[str] | None = None
         remote_error: str | None = None
@@ -1322,7 +1327,7 @@ class ClawCUService:
             "service": record.service,
             "image_repo": repo,
             "current_version": record.version,
-            "history": sorted(history_set),
+            "history": sorted(history_set, key=semver_sort_key),
             "local_images": local_images,
             "remote_versions": remote_versions,
             "remote_error": remote_error,

@@ -17,6 +17,7 @@ from rich.table import Table
 from typer.main import get_command
 
 from clawcu import __version__
+from clawcu.core.registry import is_semver_release_tag
 from clawcu.service import ClawCUService
 
 app = typer.Typer(
@@ -28,22 +29,28 @@ app = typer.Typer(
 pull_app = typer.Typer(
     help=(
         "Pull and build managed services.\n\n"
-        "Examples:\n"
-        "  clawcu pull openclaw --version 2026.4.15\n"
-        "  clawcu pull hermes --version 1.0.0\n"
-        "  clawcu pull --service openclaw --version 2026.4.15  # alt form"
+        "**Examples:**\n\n"
+        "```\n"
+        "clawcu pull openclaw --version 2026.4.15\n"
+        "clawcu pull hermes --version 1.0.0\n"
+        "clawcu pull --service openclaw --version 2026.4.15  # alt form\n"
+        "```"
     ),
+    rich_markup_mode="markdown",
     subcommand_metavar="SERVICE",
     add_completion=False,
 )
 create_app = typer.Typer(
     help=(
         "Create managed services.\n\n"
-        "Examples:\n"
-        "  clawcu create openclaw --name demo --version 2026.4.15\n"
-        "  clawcu create hermes --name agent --version 1.0.0\n"
-        "  clawcu create --service openclaw --name demo --version 2026.4.15  # alt form"
+        "**Examples:**\n\n"
+        "```\n"
+        "clawcu create openclaw --name demo --version 2026.4.15\n"
+        "clawcu create hermes --name agent --version 1.0.0\n"
+        "clawcu create --service openclaw --name demo --version 2026.4.15  # alt form\n"
+        "```"
     ),
+    rich_markup_mode="markdown",
     subcommand_metavar="SERVICE",
     add_completion=False,
 )
@@ -530,6 +537,20 @@ def _print_provider_table(records: list[dict], *, wide: bool = False, reveal: bo
         row.append(models_cell)
         table.add_row(*row)
     console.print(table)
+    # Legend line — only print it when the table actually uses one of
+    # the non-default states. Users who only see ``set`` don't need the
+    # explanation and it just adds noise.
+    if not reveal:
+        states_in_view = {str(r.get("api_key_state") or "") for r in records}
+        if states_in_view - {"", "set"}:
+            console.print(
+                "[dim]API_KEY legend: "
+                "[green]set[/green] = literal key captured; "
+                "[cyan]env-ref[/cyan] = ${ENV_VAR} placeholder; "
+                "[yellow]empty[/yellow] = source had the field but it was blank; "
+                "unset = no apiKey field in the source. "
+                "Pass --reveal to see the literal values.[/dim]"
+            )
 
 
 def _print_setup_checks(checks: list[dict[str, str | bool]]) -> bool:
@@ -1445,7 +1466,8 @@ def _apply_list_filters(
     "list",
     help=(
         "List managed instances. By default shows ClawCU-managed instances only; "
-        "pass --source local or --source all to include ~/.openclaw / ~/.hermes pseudo-entries."
+        "pass --source local or --source all to include ~/.openclaw / ~/.hermes pseudo-entries. "
+        "ACCESS URLs have the #token=... fragment masked by default; pass --reveal to show the literal token."
     ),
     rich_help_panel=_PANEL_INFO,
 )
@@ -1667,7 +1689,12 @@ def _print_inspect_human(payload: dict, *, reveal: bool, show_history: bool) -> 
 
 @app.command(
     "inspect",
-    help="Show detailed state for a managed instance. Default is a compact readable view; pass --json for the full payload.",
+    help=(
+        "Show detailed state for a managed instance. Default is a compact readable view; "
+        "pass --json for the full payload. Unlike `list`, `inspect` prints the full access URL "
+        "(including the #token=... fragment) by default — use it when you want the complete state; "
+        "pass --reveal to render tokens in the human view too."
+    ),
     rich_help_panel=_PANEL_INFO,
 )
 def inspect_instance(
@@ -1725,7 +1752,9 @@ def _copy_to_clipboard(value: str) -> tuple[bool, str]:
     "token",
     help=(
         "Print the dashboard token for a managed instance. "
-        "Default shows both the token and the access URL with the `#token=…` anchor."
+        "Default shows both the token and the access URL with the `#token=…` anchor. "
+        "Unlike `list`, `token` always prints the literal value (that's the whole point); "
+        "avoid piping its output to shared logs."
     ),
     rich_help_panel=_PANEL_ACCESS,
 )
@@ -2438,7 +2467,9 @@ def recreate_instance(
             _exit_with_error(str(exc))
         _confirm_destructive(
             f"About to wipe the datadir of instance '{name}' before recreating. "
-            "All instance data under the datadir will be permanently deleted.",
+            "All instance data under the datadir will be permanently deleted. "
+            "Historical snapshots under ~/.clawcu/snapshots/ are NOT touched — "
+            "use 'clawcu rollback --list' after the wipe to see what remains.",
             yes,
         )
     _do_recreate(service, name, fresh=fresh, timeout=timeout)
@@ -2509,8 +2540,13 @@ def _print_upgradable_versions(payload: dict, *, show_all: bool = False) -> None
     if local:
         console.print("[bold]Local images (no pull needed):[/bold]")
         for tag in local:
-            marker = " [dim](current)[/dim]" if tag == current else ""
-            console.print(f"  - {tag}{marker}")
+            markers: list[str] = []
+            if tag == current:
+                markers.append("current")
+            if not is_semver_release_tag(tag):
+                markers.append("non-release")
+            suffix = f" [dim]({', '.join(markers)})[/dim]" if markers else ""
+            console.print(f"  - {tag}{suffix}")
     else:
         console.print(
             "[bold]Local images:[/bold] [dim]none found for this repo; Docker will pull on upgrade[/dim]"
@@ -2891,7 +2927,19 @@ def rollback_instance(
     try:
         plan = service.rollback_plan(name, to_version=to_version)
     except Exception as exc:
-        _exit_with_error(str(exc))
+        # Under --dry-run, "no rollback history" is not a hard failure
+        # — surface the same empty-state hint that `--list` prints so
+        # the user's next step is obvious.
+        message = str(exc)
+        if dry_run and "has no rollback history" in message:
+            console.print(f"[bold]Instance:[/bold] {name}")
+            console.print(
+                "[dim]No rollback targets recorded yet. Run 'clawcu upgrade' "
+                "to produce a snapshot first, or 'clawcu rollback --list' to "
+                "enumerate available targets once they exist.[/dim]"
+            )
+            return
+        _exit_with_error(message)
 
     if dry_run:
         if _json_mode():
@@ -3011,9 +3059,17 @@ def clone_instance(
         except Exception:
             providers = []
         if providers:
-            names = ", ".join(sorted(entry.get("name", "?") for entry in providers))
+            # Show up to 3 names so the line stays scannable; if the
+            # user has more collected providers, tell them where to see
+            # the rest rather than dumping a one-line wall of commas.
+            sorted_names = sorted(entry.get("name", "?") for entry in providers)
+            head = sorted_names[:3]
+            extra = len(sorted_names) - len(head)
+            names_cell = ", ".join(head)
+            if extra > 0:
+                names_cell += f" (+{extra} more — see `clawcu provider list`)"
             console.print(
-                f"[dim]  collected providers for {record.service}: {names}. "
+                f"[dim]  collected providers for {record.service}: {names_cell}. "
                 f"Apply one with `clawcu provider apply <name> {record.name}`.[/dim]"
             )
     _print_access_url(service, record.name)

@@ -68,6 +68,14 @@ def semver_sort_key(tag: str) -> tuple:
     pre_key = "" if pre is None else pre
     return (int(major), int(minor), int(patch), weight, pre_key)
 
+
+def is_semver_release_tag(tag: str) -> bool:
+    """True when ``tag`` matches the ``X.Y.Z[-pre]`` shape used by
+    ``semver_sort_key``. Non-matching tags (``latest``, ``main``, commit
+    shas, etc.) sort before every release but callers may want to label
+    them explicitly in UI — this helper makes that decision local."""
+    return bool(_SEMVER_SORT_KEY_RE.match(tag.lstrip("v")))
+
 DEFAULT_TIMEOUT_SECONDS = 4
 DEFAULT_PAGE_SIZE = 100
 MAX_PAGES = 20  # Hard cap to avoid pathological loops on misbehaving registries.
