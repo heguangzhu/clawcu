@@ -1510,6 +1510,40 @@ class ClawCUService:
             "remote_requested": include_remote,
         }
 
+    _AVAILABLE_VERSIONS_CACHE_VERSION = 1
+
+    def _available_versions_cache_path(self) -> Path:
+        return self.store.paths.home / "cache" / "available_versions.json"
+
+    def _load_available_versions_cache(self) -> dict:
+        path = self._available_versions_cache_path()
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        if payload.get("version") != self._AVAILABLE_VERSIONS_CACHE_VERSION:
+            return {}
+        entries = payload.get("entries")
+        return entries if isinstance(entries, dict) else {}
+
+    def _save_available_versions_cache(self, entries: dict) -> None:
+        path = self._available_versions_cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": self._AVAILABLE_VERSIONS_CACHE_VERSION,
+            "entries": entries,
+        }
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        tmp.replace(path)
+
     def list_service_available_versions(
         self, *, include_remote: bool = True
     ) -> dict:
@@ -1522,7 +1556,19 @@ class ClawCUService:
         the CLI can explain why a service's row is empty. The fetch is
         best-effort; network / auth failures are caught so a red badge
         day at the registry does not break the default `list` command.
+
+        Successful fetches are cached on disk at
+        ``<clawcu_home>/cache/available_versions.json`` and reused for
+        the remainder of the local calendar day. A stale entry (either
+        a previous day or an ``image_repo`` mismatch after ``setup``)
+        triggers a fresh fetch. Failures are never cached so a transient
+        registry outage does not linger. ``include_remote=False``
+        bypasses both the fetch and the cache entirely — used by
+        ``--no-remote`` for strictly offline rendering.
         """
+        today = time.strftime("%Y-%m-%d")
+        cache: dict = self._load_available_versions_cache() if include_remote else {}
+        cache_changed = False
         out: dict[str, dict] = {}
         for name, manager in (
             ("openclaw", self.openclaw),
@@ -1535,29 +1581,76 @@ class ClawCUService:
                 "versions": None,
                 "registry": None,
                 "error": None,
+                "local_versions": [],
             }
-            if include_remote and repo and hasattr(manager, "list_remote_versions"):
-                try:
-                    result = manager.list_remote_versions()
-                except Exception as exc:  # defensive — best-effort only
-                    entry["error"] = f"unexpected error: {exc}"
+            if not (include_remote and repo and hasattr(manager, "list_remote_versions")):
+                # Offline mode (`--no-remote` or no repo configured):
+                # surface local docker images so the footer still has
+                # something useful to say.
+                entry["local_versions"] = self._collect_local_versions(repo)
+                out[name] = entry
+                continue
+
+            cached = cache.get(name)
+            if (
+                isinstance(cached, dict)
+                and cached.get("fetched_date") == today
+                and cached.get("image_repo") == repo
+                and isinstance(cached.get("versions"), list)
+            ):
+                entry["versions"] = list(cached["versions"])
+                entry["registry"] = cached.get("registry")
+                out[name] = entry
+                continue
+
+            try:
+                result = manager.list_remote_versions()
+            except Exception as exc:  # defensive — best-effort only
+                entry["error"] = f"unexpected error: {exc}"
+            else:
+                entry["registry"] = getattr(result, "registry", None) or None
+                if result.ok:
+                    # Drop prerelease tags (`-beta.1`, `-rc.2`, `-alpha`, …)
+                    # from the "available versions" surface. Both services
+                    # use `YYYY.M.P` for stable releases and append a
+                    # hyphenated suffix for prereleases, so a simple
+                    # "no hyphen" rule is exact enough. upgrade's own
+                    # `--list-versions` still sees the full tag set via
+                    # list_upgradable_versions for testers who want them.
+                    entry["versions"] = [
+                        tag for tag in (result.tags or []) if "-" not in tag
+                    ]
+                    cache[name] = {
+                        "service": name,
+                        "image_repo": repo,
+                        "versions": entry["versions"],
+                        "registry": entry["registry"],
+                        "fetched_date": today,
+                    }
+                    cache_changed = True
                 else:
-                    entry["registry"] = getattr(result, "registry", None) or None
-                    if result.ok:
-                        # Drop prerelease tags (`-beta.1`, `-rc.2`, `-alpha`, …)
-                        # from the "available versions" surface. Both services
-                        # use `YYYY.M.P` for stable releases and append a
-                        # hyphenated suffix for prereleases, so a simple
-                        # "no hyphen" rule is exact enough. upgrade's own
-                        # `--list-versions` still sees the full tag set via
-                        # list_upgradable_versions for testers who want them.
-                        entry["versions"] = [
-                            tag for tag in (result.tags or []) if "-" not in tag
-                        ]
-                    else:
-                        entry["error"] = result.error
+                    entry["error"] = result.error
+            if entry["versions"] is None:
+                # Remote fetch failed — fall back to local docker images
+                # so the user still sees something actionable instead of
+                # just a red error line.
+                entry["local_versions"] = self._collect_local_versions(repo)
             out[name] = entry
+        if cache_changed:
+            self._save_available_versions_cache(cache)
         return out
+
+    def _collect_local_versions(self, repo: str) -> list[str]:
+        if not repo:
+            return []
+        try:
+            tags = self.docker.list_local_images(repo)
+        except Exception:
+            return []
+        # Filter prereleases to match the remote-versions policy, sort by
+        # semver so the "newest first" UI layer works uniformly.
+        stable = [tag for tag in tags if "-" not in tag and tag != "latest"]
+        return sorted(stable, key=semver_sort_key)
 
     def list_rollback_targets(self, name: str) -> dict:
         """Enumerate snapshot targets usable by `clawcu rollback --list`.

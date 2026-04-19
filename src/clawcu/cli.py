@@ -494,8 +494,9 @@ def _print_available_versions(payload: dict, *, limit: int = 10) -> None:
     """Render the per-service remote version block below `clawcu list`.
 
     Each row shows the most recent ``limit`` tags with the newest first.
-    When the fetch failed the error is surfaced inline so the user knows
-    why the list is empty, rather than seeing a silently blank row.
+    When the fetch failed the error is surfaced inline and a second
+    indented line surfaces local Docker images as an offline fallback
+    so the user sees something actionable instead of just a red line.
     """
     console.print()
     console.print(
@@ -504,10 +505,21 @@ def _print_available_versions(payload: dict, *, limit: int = 10) -> None:
     for name in ("openclaw", "hermes"):
         entry = payload.get(name) or {}
         label = f"  [cyan]{name:<9}[/cyan]"
+        indent = "             "  # aligns continuation lines under the first tag
         versions = entry.get("versions")
+        local_versions = entry.get("local_versions") or []
         if versions is None:
             error = entry.get("error") or "remote fetch skipped"
             console.print(f"{label} [yellow]{error}[/yellow]")
+            if local_versions:
+                total_local = len(local_versions)
+                newest_local = list(reversed(local_versions[-limit:]))
+                local_suffix = (
+                    f" [dim]({total_local} total)[/dim]" if total_local > limit else ""
+                )
+                console.print(
+                    f"{indent}[dim]local images:[/dim] {', '.join(newest_local)}{local_suffix}"
+                )
             continue
         if not versions:
             console.print(f"{label} [dim]no release tags[/dim]")

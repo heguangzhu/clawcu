@@ -3302,6 +3302,200 @@ def test_list_service_available_versions_skips_when_include_remote_false(
     assert service.hermes.list_remote_versions_calls == []
 
 
+def test_list_service_available_versions_caches_fetches_for_the_day(
+    temp_clawcu_home,
+) -> None:
+    from tests.support import _FakeRemoteTagResult
+
+    service, _, openclaw, _ = make_service(temp_clawcu_home)
+    openclaw.remote_result = _FakeRemoteTagResult(
+        tags=["2026.4.10", "2026.4.15"], registry="ghcr.io"
+    )
+    service.hermes.remote_result = _FakeRemoteTagResult(
+        tags=["2026.4.13"], registry="registry-1.docker.io"
+    )
+
+    first = service.list_service_available_versions()
+    assert first["openclaw"]["versions"] == ["2026.4.10", "2026.4.15"]
+    assert first["hermes"]["versions"] == ["2026.4.13"]
+    # First call populates the cache with a real network fetch per service.
+    assert len(openclaw.list_remote_versions_calls) == 1
+    assert len(service.hermes.list_remote_versions_calls) == 1
+
+    cache_path = service._available_versions_cache_path()
+    assert cache_path.exists()
+
+    # Swap remote_result to detect whether the second call refetches.
+    openclaw.remote_result = _FakeRemoteTagResult(
+        tags=["9999.9.9"], registry="ghcr.io"
+    )
+    service.hermes.remote_result = _FakeRemoteTagResult(
+        tags=["9999.9.9"], registry="registry-1.docker.io"
+    )
+
+    second = service.list_service_available_versions()
+    # Same day → served from cache, no additional manager calls.
+    assert len(openclaw.list_remote_versions_calls) == 1
+    assert len(service.hermes.list_remote_versions_calls) == 1
+    assert second["openclaw"]["versions"] == ["2026.4.10", "2026.4.15"]
+    assert second["hermes"]["versions"] == ["2026.4.13"]
+
+
+def test_list_service_available_versions_refetches_after_day_boundary(
+    temp_clawcu_home,
+) -> None:
+    import json
+
+    from tests.support import _FakeRemoteTagResult
+
+    service, _, openclaw, _ = make_service(temp_clawcu_home)
+    openclaw.remote_result = _FakeRemoteTagResult(
+        tags=["2026.4.10"], registry="ghcr.io"
+    )
+    service.hermes.remote_result = _FakeRemoteTagResult(
+        tags=["2026.4.13"], registry="registry-1.docker.io"
+    )
+
+    service.list_service_available_versions()
+    assert len(openclaw.list_remote_versions_calls) == 1
+    assert len(service.hermes.list_remote_versions_calls) == 1
+
+    # Simulate yesterday's cache by backdating every entry's fetched_date.
+    cache_path = service._available_versions_cache_path()
+    raw = json.loads(cache_path.read_text(encoding="utf-8"))
+    for entry in raw["entries"].values():
+        entry["fetched_date"] = "2020-01-01"
+    cache_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    # New remote results to confirm the refetch picked up fresh data.
+    openclaw.remote_result = _FakeRemoteTagResult(
+        tags=["2026.4.20"], registry="ghcr.io"
+    )
+    service.hermes.remote_result = _FakeRemoteTagResult(
+        tags=["2026.4.21"], registry="registry-1.docker.io"
+    )
+
+    payload = service.list_service_available_versions()
+    assert len(openclaw.list_remote_versions_calls) == 2
+    assert len(service.hermes.list_remote_versions_calls) == 2
+    assert payload["openclaw"]["versions"] == ["2026.4.20"]
+    assert payload["hermes"]["versions"] == ["2026.4.21"]
+
+
+def test_list_service_available_versions_refetches_when_image_repo_changes(
+    temp_clawcu_home,
+) -> None:
+    from tests.support import _FakeRemoteTagResult
+
+    service, _, openclaw, _ = make_service(temp_clawcu_home)
+    openclaw.remote_result = _FakeRemoteTagResult(
+        tags=["2026.4.10"], registry="ghcr.io"
+    )
+    service.hermes.remote_result = _FakeRemoteTagResult(
+        tags=["2026.4.13"], registry="registry-1.docker.io"
+    )
+
+    service.list_service_available_versions()
+    assert len(openclaw.list_remote_versions_calls) == 1
+
+    # Same day, but the OpenClaw image_repo changed (e.g. via `setup`) — cache
+    # entry keyed on the old repo must be invalidated for OpenClaw, while the
+    # untouched Hermes entry stays cached.
+    openclaw.image_repo = "ghcr.io/mirror/openclaw"
+    openclaw.remote_result = _FakeRemoteTagResult(
+        tags=["2026.4.99"], registry="ghcr.io"
+    )
+
+    payload = service.list_service_available_versions()
+    assert len(openclaw.list_remote_versions_calls) == 2
+    assert len(service.hermes.list_remote_versions_calls) == 1
+    assert payload["openclaw"]["versions"] == ["2026.4.99"]
+    assert payload["hermes"]["versions"] == ["2026.4.13"]
+
+
+def test_list_service_available_versions_does_not_cache_failures(
+    temp_clawcu_home,
+) -> None:
+    from tests.support import _FakeRemoteTagResult
+
+    service, _, openclaw, _ = make_service(temp_clawcu_home)
+    openclaw.remote_result = _FakeRemoteTagResult(
+        tags=None, registry="ghcr.io", error="network down"
+    )
+    service.hermes.remote_result = _FakeRemoteTagResult(
+        tags=None, registry="registry-1.docker.io", error="network down"
+    )
+
+    first = service.list_service_available_versions()
+    assert first["openclaw"]["error"] == "network down"
+    assert first["hermes"]["error"] == "network down"
+    # Failed fetches must not leave a stale-success entry on disk.
+    assert not service._available_versions_cache_path().exists()
+
+    # Second call must retry rather than serve a cached failure.
+    openclaw.remote_result = _FakeRemoteTagResult(
+        tags=["2026.4.10"], registry="ghcr.io"
+    )
+    service.hermes.remote_result = _FakeRemoteTagResult(
+        tags=["2026.4.13"], registry="registry-1.docker.io"
+    )
+    payload = service.list_service_available_versions()
+    assert len(openclaw.list_remote_versions_calls) == 2
+    assert len(service.hermes.list_remote_versions_calls) == 2
+    assert payload["openclaw"]["versions"] == ["2026.4.10"]
+    assert payload["hermes"]["versions"] == ["2026.4.13"]
+
+
+def test_list_service_available_versions_falls_back_to_local_on_remote_failure(
+    temp_clawcu_home,
+) -> None:
+    from tests.support import _FakeRemoteTagResult
+
+    service, docker, openclaw, _ = make_service(temp_clawcu_home)
+    openclaw.remote_result = _FakeRemoteTagResult(
+        tags=None, registry="ghcr.io", error="Network is unreachable"
+    )
+    service.hermes.remote_result = _FakeRemoteTagResult(
+        tags=None, registry="registry-1.docker.io", error="Network is unreachable"
+    )
+
+    local_by_repo = {
+        openclaw.image_repo: ["2026.4.5", "2026.4.8", "latest", "2026.4.12-beta.1"],
+        service.hermes.image_repo: ["2026.4.13"],
+    }
+    docker.list_local_images = lambda repo: list(local_by_repo.get(repo, []))
+
+    payload = service.list_service_available_versions()
+
+    # Remote error is still surfaced (so the user knows why).
+    assert payload["openclaw"]["error"] == "Network is unreachable"
+    assert payload["hermes"]["error"] == "Network is unreachable"
+    # Local images are surfaced as fallback — prereleases and `latest`
+    # dropped, sorted oldest -> newest to match the remote contract.
+    assert payload["openclaw"]["local_versions"] == ["2026.4.5", "2026.4.8"]
+    assert payload["hermes"]["local_versions"] == ["2026.4.13"]
+
+
+def test_list_service_available_versions_local_fallback_when_remote_disabled(
+    temp_clawcu_home,
+) -> None:
+    service, docker, openclaw, _ = make_service(temp_clawcu_home)
+    local_by_repo = {
+        openclaw.image_repo: ["2026.4.8"],
+        service.hermes.image_repo: [],
+    }
+    docker.list_local_images = lambda repo: list(local_by_repo.get(repo, []))
+
+    payload = service.list_service_available_versions(include_remote=False)
+
+    assert payload["openclaw"]["versions"] is None
+    assert payload["openclaw"]["local_versions"] == ["2026.4.8"]
+    assert payload["hermes"]["local_versions"] == []
+    # Confirm the registry was NOT contacted.
+    assert openclaw.list_remote_versions_calls == []
+    assert service.hermes.list_remote_versions_calls == []
+
+
 def test_rollback_restores_snapshot_data_and_instance_env(temp_clawcu_home, tmp_path) -> None:
     service, _, _, store = make_service(temp_clawcu_home)
     messages: list[str] = []
