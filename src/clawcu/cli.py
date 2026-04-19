@@ -1548,7 +1548,8 @@ def _apply_list_filters(
     help=(
         "List managed instances. By default shows ClawCU-managed instances only; "
         "pass --source local or --source all to include ~/.openclaw / ~/.hermes pseudo-entries. "
-        "ACCESS URLs have the #token=... fragment masked by default; pass --reveal to show the literal token."
+        "ACCESS URLs have the #token=... fragment masked by default; pass --reveal to show the literal token. "
+        "Alias: `ls`."
     ),
     rich_help_panel=_PANEL_INFO,
 )
@@ -3094,9 +3095,10 @@ def clone_instance(
         typer.Argument(
             metavar="[TARGET]",
             help=(
-                "Target clone name. Equivalent to --name; supplying both is "
-                "an error. Using a second positional matches the `git clone "
-                "<source> <target>` convention."
+                "Target clone name. REQUIRED unless --name is passed — one of "
+                "the two must be provided, and passing both is an error. Using "
+                "the second positional matches the `git clone <source> <target>` "
+                "convention; the --name option stays for backward compatibility."
             ),
         ),
     ] = None,
@@ -3104,7 +3106,10 @@ def clone_instance(
         str | None,
         typer.Option(
             "--name",
-            help="New cloned instance name (alternative to the TARGET positional).",
+            help=(
+                "New cloned instance name. REQUIRED unless the TARGET positional "
+                "is supplied — pre-0.2.5 scripts that used this option keep working."
+            ),
         ),
     ] = None,
     datadir: Annotated[str | None, typer.Option("--datadir", help="Target cloned data directory.")] = None,
@@ -3270,7 +3275,7 @@ def logs_instance(
 
 @app.command(
     "remove",
-    help="Remove an instance and optionally delete its data directory.",
+    help="Remove an instance and optionally delete its data directory. Alias: `rm`.",
     rich_help_panel=_PANEL_LIFECYCLE,
 )
 def remove_instance(
