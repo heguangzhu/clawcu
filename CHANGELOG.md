@@ -46,9 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 - OpenClaw lifecycle management: pull, create, list, inspect, start/stop, upgrade, rollback, clone, snapshots.
 
-[Unreleased]: https://github.com/OWNER/clawcu/compare/v0.2.8...HEAD
-[0.2.8]: https://github.com/OWNER/clawcu/compare/v0.2.7...v0.2.8
-[0.2.7]: https://github.com/OWNER/clawcu/compare/v0.2.6...v0.2.7
-[0.2.6]: https://github.com/OWNER/clawcu/compare/v0.2.0...v0.2.6
-[0.2.0]: https://github.com/OWNER/clawcu/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/OWNER/clawcu/releases/tag/v0.1.0
+[Unreleased]: https://github.com/heguangzhu/clawcu/compare/v0.2.8...HEAD
+[0.2.8]: https://github.com/heguangzhu/clawcu/compare/v0.2.7...v0.2.8
+[0.2.7]: https://github.com/heguangzhu/clawcu/compare/v0.2.6...v0.2.7
+[0.2.6]: https://github.com/heguangzhu/clawcu/compare/v0.2.0...v0.2.6
+[0.2.0]: https://github.com/heguangzhu/clawcu/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/heguangzhu/clawcu/releases/tag/v0.1.0
