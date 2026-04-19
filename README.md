@@ -3,21 +3,44 @@
 🌐 Language:
 [English](README.md) | [中文](README.zh-CN.md)
 
-`ClawCU` is a local-first lifecycle manager for running multiple AI agent runtimes on one machine. It currently supports: [OpenClaw](https://github.com/openclaw/openclaw) and [Hermes Agent](https://github.com/NousResearch/hermes-agent).
+[![PyPI](https://img.shields.io/pypi/v/clawcu.svg)](https://pypi.org/project/clawcu/)
+[![Python](https://img.shields.io/pypi/pyversions/clawcu.svg)](https://pypi.org/project/clawcu/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![CI](https://github.com/heguangzhu/clawcu/actions/workflows/ci.yml/badge.svg)](https://github.com/heguangzhu/clawcu/actions/workflows/ci.yml)
 
-## Why ClawCU
+`ClawCU` is a local-first lifecycle manager for running multiple AI agent runtimes on one machine. It currently supports [OpenClaw](https://github.com/openclaw/openclaw) and [Hermes Agent](https://github.com/NousResearch/hermes-agent).
 
-Running agent runtimes by hand breaks in predictable ways. ClawCU gives every runtime:
+<details>
+<summary>Contents</summary>
 
-- **Isolated** — its own container, datadir, and env
-- **Reversible** — every upgrade is snapshotted; rollback is one command
-- **Repeatable** — clone first, test second, promote only if it works
+- [Highlights](#highlights)
+- [Install](#install)
+- [Quick Start](#quick-start)
+- [Safe Upgrade Workflow](#safe-upgrade-workflow)
+- [Model Configuration](#model-configuration)
+- [Environment and Access](#environment-and-access)
+- [Changelog](#changelog)
+- [Contributing](#contributing)
+- [Uninstall](#uninstall)
+- [License](#license)
+
+</details>
 
 ## Highlights
 
 - **One CLI, two runtimes** — OpenClaw and Hermes through the same lifecycle commands
 - **Snapshots before every upgrade** — datadir and env both captured; `rollback` restores from real backups
 - **Clone-first experiments** — copy an instance, upgrade the copy, leave the original running
+
+```text
+$ clawcu list
+┏━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━┓
+┃ NAME            ┃ SERVICE  ┃ VERSION   ┃ PORT  ┃ STATUS  ┃ ACCESS          ┃
+┡━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━┩
+│ writer          │ openclaw │ 2026.4.1  │ 18799 │ running │ 127.0.0.1:18799 │
+│ analyst         │ hermes   │ 2026.4.13 │ 9129  │ running │ 127.0.0.1:9129  │
+└─────────────────┴──────────┴───────────┴───────┴─────────┴─────────────────┘
+```
 
 ## Install
 
@@ -37,241 +60,84 @@ uv tool install clawcu
 
 ## Quick Start
 
-Check Docker access, runtime directories, and configure defaults:
+First-time setup — checks Docker access and configures defaults:
 
 ```bash
 clawcu setup
 ```
 
-Show shell completion guidance only when you want it:
-
-```bash
-clawcu setup --completion
-```
-
-In an interactive terminal, `clawcu setup` prompts for:
-
-- the default `ClawCU home`
-- the default OpenClaw image repo
-- the default Hermes image repo
-
-### OpenClaw
-
-Prepare an OpenClaw version for use:
+Spin up an OpenClaw instance and open the TUI:
 
 ```bash
 clawcu pull openclaw --version 2026.4.1
-```
-
-This records the OpenClaw image ClawCU should use. If it is missing locally, Docker pulls it when the instance starts.
-
-Create and start an instance:
-
-```bash
 clawcu create openclaw --name writer --version 2026.4.1
-```
-
-Verify that the instance is really usable:
-
-```bash
 clawcu tui writer
 ```
 
-Get the dashboard token:
-
-```bash
-clawcu token writer
-```
-
-### Hermes
-
-Pull a prebuilt Hermes image:
-
-```bash
-clawcu pull hermes --version v2026.4.13
-```
-
-Create and start a Hermes instance:
-
-```bash
-clawcu create hermes --name analyst --version v2026.4.13
-```
-
-Enter the Hermes interactive flow:
-
-```bash
-clawcu tui analyst
-```
-
-### Shared day-to-day commands
-
-List what is running:
-
-```bash
-clawcu list
-clawcu list --managed
-clawcu list --agents
-clawcu list --removed     # orphan datadirs whose records were lost
-```
-
-Inspect one managed instance:
-
-```bash
-clawcu inspect writer
-clawcu inspect analyst
-```
-
-Run a native command inside the container:
-
-```bash
-clawcu exec writer pwd
-clawcu exec analyst hermes version
-```
-
-For the full command reference for `v0.2.8`, see [USAGE_v0.2.8.md](release/USAGE_v0.2.8.md).
+Hermes follows the same pattern — replace `openclaw` with `hermes`. For the full command reference (`list` / `inspect` / `exec` / `upgrade` / `provider` …), see the [USAGE reference](release/).
 
 ## Safe Upgrade Workflow
 
-The recommended ClawCU workflow is:
-
-1. clone a working instance
-2. upgrade the clone
-3. validate the clone
-4. rollback the clone if needed
-5. only then decide whether to upgrade the original instance
-
-Example:
+Upgrade on a clone first; promote only if the clone holds:
 
 ```bash
 clawcu clone writer --name writer-upgrade-test
 clawcu upgrade writer-upgrade-test --version 2026.4.10
-clawcu rollback writer-upgrade-test
+clawcu rollback writer-upgrade-test    # if the new version misbehaves
 ```
 
-The same pattern also works for Hermes:
+Every `upgrade` snapshots the instance datadir and the matching env file (`~/.clawcu/instances/<instance>.env` for OpenClaw, `<datadir>/.env` for Hermes) before replacing the container. If the upgrade fails, ClawCU restores both automatically.
 
-```bash
-clawcu clone analyst --name analyst-upgrade-test
-clawcu upgrade analyst-upgrade-test --version v0.9.1
-clawcu rollback analyst-upgrade-test
-```
+## Model Configuration
 
-Why this works well:
-
-- your primary instance stays untouched
-- compatibility problems are isolated
-- repairs happen in the cloned instance
-- rollback has a real snapshot to restore from
-
-### What upgrade protects
-
-Before `upgrade`, ClawCU snapshots:
-
-- the instance data directory
-- the matching service env file
-
-That means:
-
-- OpenClaw snapshots:
-  - `datadir`
-  - `~/.clawcu/instances/<instance>.env`
-- Hermes snapshots:
-  - `datadir`
-  - `<datadir>/.env`
-
-If the upgrade fails, ClawCU attempts to restore the previous version and the matching env snapshot automatically.
-
-## Model Configuration Collection and Reuse
-
-ClawCU keeps the existing `provider` command family for compatibility, but it is now best read as model-configuration collection and reuse across services.
-
-Collect from all managed instances plus local homes:
+Collect API keys and model lists from any managed instance or local home, and apply them elsewhere:
 
 ```bash
 clawcu provider collect --all
-```
-
-Collect from one managed instance:
-
-```bash
-clawcu provider collect --instance writer
-clawcu provider collect --instance analyst
-```
-
-Collect from a local home:
-
-```bash
-clawcu provider collect --path ~/.openclaw
-clawcu provider collect --path ~/.hermes
-```
-
-Inspect what has been collected:
-
-```bash
 clawcu provider list
-clawcu provider show openclaw:minimax
-clawcu provider show hermes:openrouter
-```
-
-Apply a collected model configuration:
-
-```bash
 clawcu provider apply openclaw:minimax writer --agent main --primary minimax/MiniMax-M2.7
-clawcu provider apply hermes:openrouter analyst --persist
 ```
 
-Service identity is stored with each collected bundle so OpenClaw and Hermes configs with the same logical name do not silently collide.
+Service identity is stored with each collected bundle, so OpenClaw and Hermes configs with the same logical name do not silently collide.
 
-## Environment Variables
+## Environment and Access
 
-ClawCU manages env files per service instead of forcing a single storage model.
+Env files live per service (not unified):
 
-OpenClaw:
+- OpenClaw: `~/.clawcu/instances/<instance>.env`
+- Hermes: `<datadir>/.env`
 
-- env path:
-  - `~/.clawcu/instances/<instance>.env`
+Manage them with `clawcu setenv` / `getenv` / `unsetenv` (pass `--apply` to recreate the container immediately). Service-specific access: `clawcu token <instance>` and `clawcu approve <instance>` are OpenClaw-only (dashboard token + pairing model); Hermes uses `clawcu tui` / `config` / `exec` as its operational entrypoints. Full command reference: [release/](release/).
 
-Hermes:
+## Changelog
 
-- env path:
-  - `<datadir>/.env`
+See [CHANGELOG.md](CHANGELOG.md) for release history. Per-version release notes live in [release/](release/).
 
-Shared commands:
+## Contributing
+
+Issues and PRs welcome at [github.com/heguangzhu/clawcu/issues](https://github.com/heguangzhu/clawcu/issues).
+
+Local development:
 
 ```bash
-clawcu setenv <instance> KEY=VALUE
-clawcu getenv <instance>
-clawcu unsetenv <instance> KEY
+git clone https://github.com/heguangzhu/clawcu.git
+cd clawcu
+uv sync --all-extras
+uv run pytest -q
 ```
 
-Optional immediate apply:
+## Uninstall
 
 ```bash
-clawcu setenv <instance> KEY=VALUE --apply
-clawcu unsetenv <instance> KEY --apply
+pip uninstall clawcu
+# or
+pipx uninstall clawcu
+# or
+uv tool uninstall clawcu
 ```
 
-`--apply` recreates the instance so Docker reloads the env file for the running container.
+Uninstalling the CLI leaves every datadir under `~/.clawcu` intact. Remove instance data explicitly with `clawcu remove <name> --delete-data` before uninstalling if you want it gone.
 
-## Access and Service-Specific Commands
+## License
 
-ClawCU keeps the common command surface broad, but some access commands remain service-specific.
-
-OpenClaw-only:
-
-- `clawcu token <instance>`
-- `clawcu approve <instance> [requestId]`
-
-These work because OpenClaw has a matching dashboard token and pairing model.
-
-Hermes:
-
-- has a dashboard URL surfaced by `create`, `list`, and `inspect`
-- uses `tui`, `config`, and `exec` as the main operational entrypoints
-- does not map to the same `token` or `approve` concepts
-
-## Release Notes
-
-- Release notes for `v0.2.8`: [RELEASE_v0.2.8.md](release/RELEASE_v0.2.8.md)
-- Archived release notes for `v0.2.0`: [RELEASE_v0.2.0.md](release/RELEASE_v0.2.0.md)
-- Archived release notes for `v0.1.0`: [RELEASE_v0.1.0.md](release/RELEASE_v0.1.0.md)
+MIT — see [LICENSE](LICENSE).
