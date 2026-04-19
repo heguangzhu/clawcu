@@ -3,7 +3,7 @@
 🌐 Language:
 [English](README.md) | [中文](README.zh-CN.md)
 
-`ClawCU` is a local-first lifecycle manager for running multiple AI agent runtimes on one machine. It currently supports two first-class services: `openclaw` and `hermes`.
+`ClawCU` is a local-first lifecycle manager for running multiple AI agent runtimes on one machine. It currently supports two first-class services: [OpenClaw](https://github.com/openclaw/openclaw) and [Hermes Agent](https://github.com/NousResearch/hermes-agent).
 
 ## Why ClawCU
 
