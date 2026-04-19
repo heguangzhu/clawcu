@@ -10,7 +10,9 @@ import sys
 from pathlib import Path
 from typing import Annotated
 
+import click
 import typer
+import typer.core
 from click.shell_completion import get_completion_class
 from rich.console import Console
 from rich.table import Table
@@ -19,6 +21,28 @@ from typer.main import get_command
 from clawcu import __version__
 from clawcu.core.registry import is_semver_release_tag
 from clawcu.service import ClawCUService
+
+# Show full help on missing-option errors so users see every flag in one go,
+# not just whichever required option happened to fail first. Click's default
+# prints a one-line usage + "Try --help", which leaves the user one more
+# guessing round away from a working command.
+_original_parse_args = typer.core.TyperCommand.parse_args
+
+
+def _parse_args_with_help(self, ctx, args):  # type: ignore[no-untyped-def]
+    try:
+        return _original_parse_args(self, ctx, args)
+    except click.MissingParameter as exc:
+        click.echo(ctx.get_help(), err=True)
+        click.echo("", err=True)
+        click.secho(
+            f"Error: {exc.format_message()}", err=True, fg="red", bold=True
+        )
+        ctx.exit(2)
+
+
+typer.core.TyperCommand.parse_args = _parse_args_with_help  # type: ignore[assignment]
+
 
 app = typer.Typer(
     help="ClawCU manages local multi-agent instances with versioned Docker workflows.",
