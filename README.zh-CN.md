@@ -87,7 +87,7 @@ clawcu create hermes --name analyst --version 2026.4.13
 clawcu tui analyst
 ```
 
-完整命令参考（`list` / `inspect` / `exec` / `upgrade` / `provider` …）见 [USAGE 文档](release/)。
+完整命令参考（`list` / `inspect` / `exec` / `upgrade` / `provider` …）见 [USAGE_latest.zh-CN.md](release/USAGE_latest.zh-CN.md)。
 
 ## 安全升级流程
 
@@ -120,11 +120,11 @@ clawcu provider apply openclaw:minimax writer --agent main --primary minimax/Min
 - OpenClaw：`~/.clawcu/instances/<instance>.env`
 - Hermes：`<datadir>/.env`
 
-用 `clawcu setenv` / `getenv` / `unsetenv` 管理（加 `--apply` 会立即 recreate 容器以重新加载环境变量）。服务专属访问：`clawcu token <instance>` 和 `clawcu approve <instance>` 只适用于 OpenClaw（对应其 dashboard token + pairing 模型）；Hermes 使用 `clawcu tui` / `config` / `exec` 作为运维入口。完整命令参考：[release/](release/)。
+用 `clawcu setenv` / `getenv` / `unsetenv` 管理（加 `--apply` 会立即 recreate 容器以重新加载环境变量）。服务专属访问：`clawcu token <instance>` 和 `clawcu approve <instance>` 只适用于 OpenClaw（对应其 dashboard token + pairing 模型）；Hermes 使用 `clawcu tui` / `config` / `exec` 作为运维入口。完整命令参考：[USAGE_latest.zh-CN.md](release/USAGE_latest.zh-CN.md)。
 
 ## 发布历史
 
-版本演进见 [CHANGELOG.md](CHANGELOG.md)。单版本发布说明放在 [release/](release/) 目录下。
+版本演进见 [CHANGELOG.md](CHANGELOG.md)。最新发布说明：[RELEASE_latest.zh-CN.md](release/RELEASE_latest.zh-CN.md)。
 
 ## 参与贡献
 

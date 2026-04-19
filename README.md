@@ -87,7 +87,7 @@ clawcu create hermes --name analyst --version 2026.4.13
 clawcu tui analyst
 ```
 
-For the full command reference (`list` / `inspect` / `exec` / `upgrade` / `provider` …), see the [USAGE reference](release/).
+For the full command reference (`list` / `inspect` / `exec` / `upgrade` / `provider` …), see [USAGE_latest.md](release/USAGE_latest.md).
 
 ## Safe Upgrade Workflow
 
@@ -120,11 +120,11 @@ Env files live per service (not unified):
 - OpenClaw: `~/.clawcu/instances/<instance>.env`
 - Hermes: `<datadir>/.env`
 
-Manage them with `clawcu setenv` / `getenv` / `unsetenv` (pass `--apply` to recreate the container immediately). Service-specific access: `clawcu token <instance>` and `clawcu approve <instance>` are OpenClaw-only (dashboard token + pairing model); Hermes uses `clawcu tui` / `config` / `exec` as its operational entrypoints. Full command reference: [release/](release/).
+Manage them with `clawcu setenv` / `getenv` / `unsetenv` (pass `--apply` to recreate the container immediately). Service-specific access: `clawcu token <instance>` and `clawcu approve <instance>` are OpenClaw-only (dashboard token + pairing model); Hermes uses `clawcu tui` / `config` / `exec` as its operational entrypoints. Full command reference: [USAGE_latest.md](release/USAGE_latest.md).
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for release history. Per-version release notes live in [release/](release/).
+See [CHANGELOG.md](CHANGELOG.md) for release history. Latest release notes: [RELEASE_latest.md](release/RELEASE_latest.md).
 
 ## Contributing
 
