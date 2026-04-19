@@ -493,13 +493,13 @@ def _print_agent_table(records: list[dict]) -> None:
 def _print_available_versions(payload: dict, *, limit: int = 10) -> None:
     """Render the per-service remote version block below `clawcu list`.
 
-    Each row shows the most recent ``limit`` tags (newest at the right).
+    Each row shows the most recent ``limit`` tags with the newest first.
     When the fetch failed the error is surfaced inline so the user knows
     why the list is empty, rather than seeing a silently blank row.
     """
     console.print()
     console.print(
-        f"[bold]Available versions[/bold] [dim](top {limit} by semver, newest →)[/dim]"
+        f"[bold]Available versions[/bold] [dim](top {limit} by semver, newest first)[/dim]"
     )
     for name in ("openclaw", "hermes"):
         entry = payload.get(name) or {}
@@ -513,9 +513,11 @@ def _print_available_versions(payload: dict, *, limit: int = 10) -> None:
             console.print(f"{label} [dim]no release tags[/dim]")
             continue
         total = len(versions)
-        tail = versions[-limit:]
+        # versions is sorted oldest -> newest; reverse the tail so the
+        # user sees the newest release in the leftmost position.
+        newest_first = list(reversed(versions[-limit:]))
         suffix = f" [dim]({total} total)[/dim]" if total > limit else ""
-        console.print(f"{label} {', '.join(tail)}{suffix}")
+        console.print(f"{label} {', '.join(newest_first)}{suffix}")
 
 
 _WIDE_PROVIDER_MIN_COLS = 110
