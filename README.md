@@ -87,6 +87,12 @@ clawcu create hermes --name analyst --version 2026.4.13
 clawcu tui analyst
 ```
 
+Configure providers / models inside an instance via its service-native flow (OpenClaw's `setup`, Hermes's `config`):
+
+```bash
+clawcu config writer
+```
+
 For the full command reference (`list` / `inspect` / `exec` / `upgrade` / `provider` …), see [USAGE_latest.md](release/USAGE_latest.md).
 
 ## Safe Upgrade Workflow

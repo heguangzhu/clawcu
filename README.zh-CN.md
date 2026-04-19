@@ -87,6 +87,12 @@ clawcu create hermes --name analyst --version 2026.4.13
 clawcu tui analyst
 ```
 
+进入实例原生的配置流程（OpenClaw 的 `setup`、Hermes 的 `config`），在容器内完成模型 / API key 等设置：
+
+```bash
+clawcu config writer
+```
+
 完整命令参考（`list` / `inspect` / `exec` / `upgrade` / `provider` …）见 [USAGE_latest.zh-CN.md](release/USAGE_latest.zh-CN.md)。
 
 ## 安全升级流程
