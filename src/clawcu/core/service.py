@@ -1582,11 +1582,13 @@ class ClawCUService:
                 "registry": None,
                 "error": None,
                 "local_versions": [],
+                "remote_requested": include_remote,
             }
             if not (include_remote and repo and hasattr(manager, "list_remote_versions")):
                 # Offline mode (`--no-remote` or no repo configured):
                 # surface local docker images so the footer still has
-                # something useful to say.
+                # something useful to say. Keep `remote_requested` so the
+                # renderer can tell "user opted out" apart from "fetch failed".
                 entry["local_versions"] = self._collect_local_versions(repo)
                 out[name] = entry
                 continue

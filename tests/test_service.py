@@ -3494,6 +3494,35 @@ def test_list_service_available_versions_local_fallback_when_remote_disabled(
     # Confirm the registry was NOT contacted.
     assert openclaw.list_remote_versions_calls == []
     assert service.hermes.list_remote_versions_calls == []
+    # The CLI renderer uses remote_requested to tell "user opted out of
+    # --no-remote" apart from "network failed" so it can dim the opt-out
+    # line instead of coloring it yellow like a real failure.
+    assert payload["openclaw"]["remote_requested"] is False
+    assert payload["hermes"]["remote_requested"] is False
+
+
+def test_list_service_available_versions_remote_requested_true_on_fetch(
+    temp_clawcu_home,
+) -> None:
+    """Successful fetch and genuine fetch failures both mark
+    ``remote_requested=True`` — the CLI uses this flag to render the
+    failure line in yellow only when the user actually asked for a fetch.
+    """
+    from tests.support import _FakeRemoteTagResult
+
+    service, docker, openclaw, _ = make_service(temp_clawcu_home)
+    openclaw.remote_result = _FakeRemoteTagResult(
+        tags=["2026.4.1"], registry="ghcr.io"
+    )
+    service.hermes.remote_result = _FakeRemoteTagResult(
+        tags=None, error="network unreachable", registry=None
+    )
+    docker.list_local_images = lambda repo: []
+
+    payload = service.list_service_available_versions()
+
+    assert payload["openclaw"]["remote_requested"] is True
+    assert payload["hermes"]["remote_requested"] is True
 
 
 def test_rollback_restores_snapshot_data_and_instance_env(temp_clawcu_home, tmp_path) -> None:

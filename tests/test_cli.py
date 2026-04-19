@@ -1329,6 +1329,112 @@ def test_list_json_mode_skips_available_versions_footer(monkeypatch) -> None:
     ) not in service.calls
 
 
+def test_bare_clawcu_invoke_shows_help_and_exits_zero() -> None:
+    """`clawcu` with no subcommand is a "what does this take?" query.
+
+    Matches the exit-0 convention used by every subcommand with required
+    args (test above). Regression guard: the top-level app previously
+    relied on Typer's ``no_args_is_help=True`` which inherits Click's
+    exit-2 default.
+    """
+    result = runner.invoke(app, [])
+    assert result.exit_code == 0
+    assert "Usage:" in result.output
+    assert "COMMAND [ARGS]" in result.output
+
+
+def test_list_no_remote_footer_renders_as_dim_offline(monkeypatch) -> None:
+    """`--no-remote` is a user choice, not a failure — render it dim,
+    not in the yellow "something went wrong" color reserved for real
+    fetch failures. Aligns with the `upgrade --list-versions`
+    convention (`inspect`-style: dim "remote skipped by --no-remote").
+    """
+    service = FakeService()
+
+    def offline_versions(*, include_remote: bool) -> dict:
+        service._record(
+            "list_service_available_versions", include_remote=include_remote
+        )
+        return {
+            "openclaw": {
+                "service": "openclaw",
+                "image_repo": "ghcr.io/openclaw/openclaw",
+                "versions": None,
+                "registry": None,
+                "error": None,
+                "local_versions": ["2026.4.15", "2026.4.14"],
+                "remote_requested": include_remote,
+            },
+            "hermes": {
+                "service": "hermes",
+                "image_repo": "clawcu/hermes-agent",
+                "versions": None,
+                "registry": None,
+                "error": None,
+                "local_versions": [],
+                "remote_requested": include_remote,
+            },
+        }
+
+    service.list_service_available_versions = offline_versions  # type: ignore[assignment]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["list", "--no-remote"])
+
+    assert result.exit_code == 0
+    assert "offline (remote skipped by --no-remote)" in result.stdout
+    # The yellow "fetch failed" wording must not leak into the opt-out path.
+    assert "fetch failed" not in result.stdout
+    # Local images still surface for the service that has any.
+    assert "local images:" in result.stdout
+    assert "2026.4.15" in result.stdout
+
+
+def test_list_footer_renders_yellow_on_actual_fetch_failure(monkeypatch) -> None:
+    """When the fetch genuinely failed (remote requested but errored),
+    keep the yellow "fetch failed: …" rendering — that is the signal the
+    user should actually act on.
+    """
+    service = FakeService()
+
+    def failing_versions(*, include_remote: bool) -> dict:
+        service._record(
+            "list_service_available_versions", include_remote=include_remote
+        )
+        return {
+            "openclaw": {
+                "service": "openclaw",
+                "image_repo": "ghcr.io/openclaw/openclaw",
+                "versions": None,
+                "registry": "ghcr.io",
+                "error": "network unreachable",
+                "local_versions": ["2026.4.15"],
+                "remote_requested": True,
+            },
+            "hermes": {
+                "service": "hermes",
+                "image_repo": "clawcu/hermes-agent",
+                "versions": None,
+                "registry": None,
+                "error": "auth required",
+                "local_versions": [],
+                "remote_requested": True,
+            },
+        }
+
+    service.list_service_available_versions = failing_versions  # type: ignore[assignment]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["list"])
+
+    assert result.exit_code == 0
+    assert "fetch failed: network unreachable" in result.stdout
+    assert "fetch failed: auth required" in result.stdout
+    # Opt-out wording must not appear on a genuine failure.
+    assert "--no-remote" not in result.stdout
+    assert "local images:" in result.stdout
+
+
 def test_list_command_source_all_includes_local(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)

@@ -51,7 +51,6 @@ typer.core.TyperCommand.parse_args = _parse_args_with_help  # type: ignore[assig
 
 app = typer.Typer(
     help="ClawCU manages local multi-agent instances with versioned Docker workflows.",
-    no_args_is_help=True,
     rich_markup_mode="markdown",
     add_completion=False,
 )
@@ -494,9 +493,11 @@ def _print_available_versions(payload: dict, *, limit: int = 10) -> None:
     """Render the per-service remote version block below `clawcu list`.
 
     Each row shows the most recent ``limit`` tags with the newest first.
-    When the fetch failed the error is surfaced inline and a second
-    indented line surfaces local Docker images as an offline fallback
-    so the user sees something actionable instead of just a red line.
+    When the user opted out (`--no-remote`), the row renders as a dim
+    "offline" line matching the `upgrade --list-versions` convention.
+    When the remote fetch truly failed, the error is surfaced in yellow.
+    In both offline cases a second indented line surfaces local Docker
+    images so the user still sees something actionable.
     """
     console.print()
     console.print(
@@ -509,8 +510,14 @@ def _print_available_versions(payload: dict, *, limit: int = 10) -> None:
         versions = entry.get("versions")
         local_versions = entry.get("local_versions") or []
         if versions is None:
-            error = entry.get("error") or "remote fetch skipped"
-            console.print(f"{label} [yellow]{error}[/yellow]")
+            if not entry.get("remote_requested", True):
+                # User opted out with --no-remote — dim status, not a warning.
+                console.print(
+                    f"{label} [dim]offline (remote skipped by --no-remote)[/dim]"
+                )
+            else:
+                error = entry.get("error") or "remote fetch failed"
+                console.print(f"{label} [yellow]fetch failed: {error}[/yellow]")
             if local_versions:
                 total_local = len(local_versions)
                 newest_local = list(reversed(local_versions[-limit:]))
@@ -892,6 +899,7 @@ _JSON_OPTION = typer.Option(
 
 @app.callback(invoke_without_command=True)
 def root_callback(
+    ctx: typer.Context,
     version: Annotated[
         bool,
         typer.Option("--version", help="Show the installed ClawCU version and exit."),
@@ -927,6 +935,8 @@ def root_callback(
             console.print(f"  openclaw repo : {info['openclaw_image_repo']}")
             console.print(f"  hermes repo   : {info['hermes_image_repo']}")
         raise typer.Exit()
+    if ctx.invoked_subcommand is None:
+        _show_help_and_exit(ctx)
 
 
 @app.command(
