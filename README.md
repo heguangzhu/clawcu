@@ -5,10 +5,7 @@
 
 `ClawCU` is a local-first lifecycle manager for running multiple AI agent runtimes on one machine.
 
-`v0.2.0` turns ClawCU from an OpenClaw-only tool into a multi-agent manager with two first-class services:
-
-- `openclaw`
-- `hermes`
+`v0.2.0` turned ClawCU from an OpenClaw-only tool into a multi-agent manager with two first-class services: `openclaw` and `hermes`. The `v0.2.x` cycle finishing at `v0.2.8` added an **orphan instance lifecycle** — if a managed instance's record is lost, its datadir is no longer a dead artifact: ClawCU can list it, rebuild it from a `.clawcu-instance.json` metadata sidecar, or permanently clean it up.
 
 If `OpenClaw` and `Hermes` are the runtimes, `ClawCU` is the operational layer around them.
 
@@ -35,11 +32,18 @@ ClawCU is built to solve those problems with a Docker-based workflow that favors
   - `openclaw`
   - `hermes`
 - Shared command surface:
-  - `pull`, `create`, `list`, `inspect`, `start`, `stop`, `restart`, `retry`, `recreate`, `upgrade`, `rollback`, `clone`, `logs`, `remove`, `exec`, `config`, `tui`
+  - lifecycle: `pull`, `create`, `list`, `inspect`, `start`, `stop`, `restart`, `recreate`, `upgrade`, `rollback`, `clone`, `logs`, `remove`
+  - access: `exec`, `config`, `tui`, `token`, `approve`
+  - env: `setenv`, `getenv`, `unsetenv`
+  - model configuration: `provider collect/list/show/apply/remove/models`
 - Safe upgrades with automatic snapshot protection:
   - snapshots cover both the instance data directory and the matching env location for that service
 - Clone-first experimentation:
   - copy a working instance before testing a new version
+- Orphan instance lifecycle (since `v0.2.6`, hardened in `v0.2.8`):
+  - `clawcu list --removed` surfaces datadirs whose instance records were lost
+  - `clawcu recreate <orphan>` rebuilds them with full port / version / metadata recovery from `.clawcu-instance.json`
+  - `clawcu remove <orphan> --removed` permanently deletes an orphan datadir
 - Service-aware model configuration collection and reuse:
   - collect from managed instances or local homes such as `~/.openclaw` and `~/.hermes`
 - Better operational visibility:
@@ -79,7 +83,7 @@ ClawCU is built to solve those problems with a Docker-based workflow that favors
 - Env location:
   - `<datadir>/.env`
 
-ClawCU intentionally does not force OpenClaw and Hermes into the same auth or env model in `v0.2.0`. Lifecycle is unified; service internals remain native.
+ClawCU intentionally does not force OpenClaw and Hermes into the same auth or env model. Lifecycle is unified; service internals remain native.
 
 ## Install
 
@@ -169,6 +173,7 @@ List what is running:
 clawcu list
 clawcu list --managed
 clawcu list --agents
+clawcu list --removed     # orphan datadirs whose records were lost
 ```
 
 Inspect one managed instance:
@@ -238,9 +243,36 @@ That means:
 
 If the upgrade fails, ClawCU attempts to restore the previous version and the matching env snapshot automatically.
 
+## Orphan Recovery Workflow
+
+If an instance's record is lost — registry corruption, a restored backup, an aborted `create` that left state behind — its datadir becomes an **orphan**: still on disk under `~/.clawcu`, but no longer tracked.
+
+Discover orphans:
+
+```bash
+clawcu list --removed
+```
+
+Each row shows the service / version / port recovered from the datadir's `.clawcu-instance.json` sidecar (written automatically since `v0.2.6`).
+
+Recover:
+
+```bash
+clawcu recreate <orphan>                     # auto-restore from metadata
+clawcu recreate <orphan> --version 2026.4.9  # for pre-v0.2.6 datadirs
+```
+
+Permanently delete:
+
+```bash
+clawcu remove <orphan> --removed --yes
+```
+
+In `--removed` mode, `--keep-data` / `--delete-data` are rejected — the flag already implies permanent deletion.
+
 ## Model Configuration Collection and Reuse
 
-ClawCU keeps the existing `provider` command family for compatibility, but in `v0.2.0` it should be read as model-configuration collection and reuse across services.
+ClawCU keeps the existing `provider` command family for compatibility, but it is now best read as model-configuration collection and reuse across services.
 
 Collect from all managed instances plus local homes:
 
@@ -314,18 +346,18 @@ clawcu unsetenv <instance> KEY --apply
 
 ClawCU keeps the common command surface broad, but some access commands remain service-specific.
 
-OpenClaw-only in `v0.2.0`:
+OpenClaw-only:
 
 - `clawcu token <instance>`
 - `clawcu approve <instance> [requestId]`
 
-These work because OpenClaw currently has a matching dashboard token and pairing model.
+These work because OpenClaw has a matching dashboard token and pairing model.
 
-Hermes in `v0.2.0`:
+Hermes:
 
 - has a dashboard URL surfaced by `create`, `list`, and `inspect`
 - uses `tui`, `config`, and `exec` as the main operational entrypoints
-- does not yet map to the same `token` or `approve` concepts
+- does not map to the same `token` or `approve` concepts
 
 ## Release Notes
 
