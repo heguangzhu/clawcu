@@ -33,11 +33,11 @@
 | `clawcu inspect <name> [--show-history] [--reveal]` | 以紧凑可读视图展示实例细节（摘要 / access / 快照 / 容器 / 历史）。历史默认折叠，`--show-history` 展开，或用 `clawcu --json inspect <name>` 拿到原始 JSON。`--reveal` 明文显示 token。 |
 | `clawcu start <name>` | 启动处于 stopped 状态的受管实例。 |
 | `clawcu stop <name> [--time N / -t N]` | 停止运行中实例。`--time` 是优雅关机秒数（默认 5），传给 `docker stop --time`。 |
-| `clawcu restart <name> [--no-recreate-if-config-changed]` | 重启实例。**默认**：若检测到 env 漂移或容器缺失，会升级为完整 `recreate`。传 `--no-recreate-if-config-changed` 强制走 `docker restart`。 |
+| `clawcu restart <name> [--no-recreate-if-config-changed]` | 重启实例。**默认**：若检测到环境变量漂移或容器缺失，会升级为完整 `recreate`。传 `--no-recreate-if-config-changed` 强制走 `docker restart`。 |
 | `clawcu recreate <name> [--fresh] [--timeout N] [--version <v>] [--yes]` | 按保存配置重建容器，或从遗留 datadir 恢复一个已删除的实例。自动重试 `create_failed` 状态。`--fresh` 重建前清空 datadir（破坏性，非 `--yes` 时会询问）。`--timeout` 覆盖强制删除前的优雅 stop 窗口。`--version <v>` 用于恢复不带 `.clawcu-instance.json` 的老 datadir。 |
-| `clawcu upgrade <name> [--version <v>] [--list-versions] [--remote/--no-remote] [--all-versions] [--dry-run] [--yes] [--json]` | 升级到新版本。替换容器前对 datadir 与对应 env 路径做 snapshot。`--list-versions` 列候选：实例历史 + 本地 Docker 镜像 + （`--remote`，默认开）registry v2 API 上的 release tag。remote 拉取尽力而为，失败回退到本地。`--no-remote` 完全跳过 registry。remote 段默认截到最近 10 个 tag，`--all-versions` 列全量。`--json` 总是返回全量 tag。`--dry-run` 只打印计划不动 Docker / 磁盘。正常路径先显示计划再询问，`--yes` / `-y` 跳过（非交互环境必需）。 |
+| `clawcu upgrade <name> [--version <v>] [--list-versions] [--remote/--no-remote] [--all-versions] [--dry-run] [--yes] [--json]` | 升级到新版本。替换容器前对 datadir 与对应环境变量路径做 snapshot。`--list-versions` 列候选：实例历史 + 本地 Docker 镜像 + （`--remote`，默认开）registry v2 API 上的 release tag。remote 拉取尽力而为，失败回退到本地。`--no-remote` 完全跳过 registry。remote 段默认截到最近 10 个 tag，`--all-versions` 列全量。`--json` 总是返回全量 tag。`--dry-run` 只打印计划不动 Docker / 磁盘。正常路径先显示计划再询问，`--yes` / `-y` 跳过（非交互环境必需）。 |
 | `clawcu rollback <name> [--to <version>] [--list] [--dry-run] [--yes] [--json]` | 回滚到更早的 snapshot。不带 `--to` 时回滚最近一次可逆转换。`--to <version>` 选择最近一次"回复到该版本"的历史事件。`--list` 枚举所有 snapshot 目标。`--dry-run` / `--yes` / `--json` 行为与 `upgrade` 一致。 |
-| `clawcu clone <source> --name <name> [--datadir <path>] [--port <port>] [--version <v>] [--include-secrets/--exclude-secrets]` | 把一个 source 实例复制成新的隔离实验实例。datadir 总是复制。默认 env 文件（API key / token / provider 凭据）也会复制，传 `--exclude-secrets` 以空 env 起步。`--version <v>` 在复制时切换 service 版本（安全的 "clone then upgrade"）。 |
+| `clawcu clone <source> --name <name> [--datadir <path>] [--port <port>] [--version <v>] [--include-secrets/--exclude-secrets]` | 把一个 source 实例复制成新的隔离实验实例。datadir 总是复制。默认环境变量文件（API key / token / provider 凭据）也会复制，传 `--exclude-secrets` 以空环境变量起步。`--version <v>` 在复制时切换 service 版本（安全的 "clone then upgrade"）。 |
 | `clawcu logs <name> [--follow] [--tail N] [--since DURATION]` | 显示实例日志。默认最近 200 行。`--follow` 持续流式；`--tail 0` 流式完整历史。 |
 | `clawcu remove <name> [--keep-data\|--delete-data] [--removed] [--yes]` | 别名 `rm`。移除受管实例（默认保留 datadir）。传 `--removed` 从 `clawcu list --removed` 永久删除孤儿 datadir——此模式下 `--keep-data` / `--delete-data` 会被拒绝，因 `--removed` 必定删除。 |
 
@@ -59,7 +59,7 @@
 | 命令 | 说明 |
 |------|------|
 | `clawcu config <name> [-- args...]` | 在受管容器内执行服务原生配置流程。OpenClaw 对应 `openclaw configure`，Hermes 对应 `hermes setup`。 |
-| `clawcu exec <name> <command...>` | 在受管容器内执行任意命令，注入实例 env。 |
+| `clawcu exec <name> <command...>` | 在受管容器内执行任意命令，注入实例环境变量。 |
 | `clawcu tui <name> [--agent <agent>]` | 启动原生交互流程。OpenClaw 用其 TUI，Hermes 用其交互 chat。 |
 
 ## 6. 服务相关访问命令
@@ -73,7 +73,7 @@
 
 | 命令 | 说明 |
 |------|------|
-| `clawcu setenv <name> KEY=VALUE [KEY=VALUE ...] [--from-file <path>] [--dry-run] [--reveal] [--apply]` | 向实例 env 文件写入变量。内联 `KEY=VALUE` 与 `--from-file <path>` 互斥。`--dry-run` 打印带颜色的 `+/-/~` diff，敏感值（`KEY`/`TOKEN`/`SECRET`/`PASSWORD`）默认掩码，`--reveal` 明示。`--apply` 立即 recreate 容器令 Docker 重读 env。 |
+| `clawcu setenv <name> KEY=VALUE [KEY=VALUE ...] [--from-file <path>] [--dry-run] [--reveal] [--apply]` | 向实例环境变量文件写入变量。内联 `KEY=VALUE` 与 `--from-file <path>` 互斥。`--dry-run` 打印带颜色的 `+/-/~` diff，敏感值（`KEY`/`TOKEN`/`SECRET`/`PASSWORD`）默认掩码，`--reveal` 明示。`--apply` 立即 recreate 容器令 Docker 重读环境变量。 |
 | `clawcu getenv <name> [--reveal] [--json]` | 打印实例当前环境变量。敏感值默认掩码，`--reveal` 明示。 |
 | `clawcu unsetenv <name> KEY [KEY ...] [--dry-run] [--reveal] [--apply]` | 删除环境变量。`--dry-run` 预览将移除哪些键（不存在的键标注 no-op）。`--apply` 立即 recreate。 |
 
@@ -114,7 +114,7 @@
   - OpenClaw 使用 `~/.clawcu/instances/<instance>.env`
   - Hermes 使用 `<datadir>/.env`
 - 快照行为：
-  - `upgrade` 与 `rollback` 同时保存并还原 datadir 与对应 env 路径
+  - `upgrade` 与 `rollback` 同时保存并还原 datadir 与对应环境变量路径
 - 推荐升级策略：
   - 先 `clone`、在 clone 上 `upgrade`、验证，必要时 `rollback`
 - 孤儿恢复：
