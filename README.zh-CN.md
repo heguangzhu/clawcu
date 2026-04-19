@@ -19,39 +19,6 @@
 - **每次升级前自动快照** — datadir 与环境变量同步捕获；`rollback` 从真实备份恢复
 - **先克隆再实验** — 复制一份实例，在副本上升级，主实例原地不动
 
-## 当前支持的服务
-
-### OpenClaw
-
-- 制品来源：
-  - 官方镜像仓库
-- 访问方式：
-  - Dashboard URL
-  - token
-  - 浏览器 pairing 审批
-- 通过 ClawCU 暴露的原生命令入口：
-  - `config`
-  - `tui`
-  - `token`
-  - `approve`
-- 环境变量位置：
-  - `~/.clawcu/instances/<instance>.env`
-
-### Hermes
-
-- 制品来源：
-  - 从 `clawcu/hermes-agent:<tag>` 拉取预构建 Hermes 镜像
-- 访问方式：
-  - 本地 Web Dashboard URL
-  - 通过 `tui`、`config`、`exec` 进入 CLI / chat
-- 通过 ClawCU 暴露的原生命令入口：
-  - `config`
-  - `tui`
-- 环境变量位置：
-  - `<datadir>/.env`
-
-ClawCU 有意不强行统一 OpenClaw 和 Hermes 的认证模型与环境变量落位。生命周期统一，服务内部结构保持原生。
-
 ## 安装
 
 ```bash

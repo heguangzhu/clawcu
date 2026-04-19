@@ -19,39 +19,6 @@ Running agent runtimes by hand breaks in predictable ways. ClawCU gives every ru
 - **Snapshots before every upgrade** — datadir and env both captured; `rollback` restores from real backups
 - **Clone-first experiments** — copy an instance, upgrade the copy, leave the original running
 
-## Supported Services
-
-### OpenClaw
-
-- Artifact source:
-  - official image registry
-- Access model:
-  - dashboard URL
-  - token
-  - browser pairing approval
-- Native commands exposed through ClawCU:
-  - `config`
-  - `tui`
-  - `token`
-  - `approve`
-- Env location:
-  - `~/.clawcu/instances/<instance>.env`
-
-### Hermes
-
-- Artifact source:
-  - prebuilt Hermes images pulled from `clawcu/hermes-agent:<tag>`
-- Access model:
-  - local Web Dashboard URL
-  - CLI/chat access through `tui`, `config`, and `exec`
-- Native commands exposed through ClawCU:
-  - `config`
-  - `tui`
-- Env location:
-  - `<datadir>/.env`
-
-ClawCU intentionally does not force OpenClaw and Hermes into the same auth or env model. Lifecycle is unified; service internals remain native.
-
 ## Install
 
 ```bash
