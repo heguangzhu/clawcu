@@ -2564,6 +2564,54 @@ class ClawCUService:
             return []
         return sorted(path.name for path in agents_dir.iterdir() if path.is_dir())
 
+    def active_provider_for_instance(self, name: str) -> str | None:
+        """Return the provider name that is currently the default on an
+        instance (parsed from ``agents/<agent>/agent/models.json``), or
+        ``None`` when no signal is available.
+
+        Resolution order, best → least specific:
+        1. ``agents.defaults.model.primary`` — the ``provider/model`` pair
+           the UI hands to new sessions.
+        2. First provider key in the ``models.providers`` dict.
+
+        Returns ``None`` for non-openclaw services or when models.json is
+        missing / malformed, so callers treat it as a hint, not a
+        guarantee.
+        """
+        try:
+            record = self.store.load_record(name)
+        except Exception:
+            return None
+        if record.service != "openclaw":
+            return None
+        datadir = Path(record.datadir)
+        if not datadir.exists():
+            return None
+        for agent_name in self._managed_agent_names(datadir):
+            runtime_dir = datadir / "agents" / agent_name / "agent"
+            models_path = runtime_dir / "models.json"
+            if not models_path.exists():
+                continue
+            try:
+                models_payload = self._load_json_file(models_path)
+            except Exception:
+                continue
+            config = {"models": models_payload, "agents": models_payload.get("agents", {})}
+            primary, _ = self._configured_default_agent_model(config)
+            if primary and primary != "-" and "/" in primary:
+                candidate = primary.split("/", 1)[0].strip()
+                if candidate:
+                    return candidate
+            # Fall back to the first provider in insertion order — that is
+            # typically the one the user registered first / is using, which
+            # is more useful than an alphabetical pick.
+            providers = models_payload.get("providers")
+            if isinstance(providers, dict):
+                for provider_name, payload in providers.items():
+                    if isinstance(provider_name, str) and provider_name.strip() and isinstance(payload, dict):
+                        return provider_name.strip()
+        return None
+
     def _host_healthcheck_ready(self, record: InstanceRecord) -> bool:
         adapter = self.adapter_for_record(record)
         check = getattr(adapter, "_host_healthcheck_ready", None)

@@ -13,3 +13,6 @@ build/
 data/
 tmp/
 roadmap.md
+
+# Claude / Ralph Loop local state
+.claude/

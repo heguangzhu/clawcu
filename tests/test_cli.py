@@ -2735,7 +2735,7 @@ def test_upgrade_list_versions_no_remote_suppresses_query(monkeypatch) -> None:
         (),
         {"name": "writer", "include_remote": False},
     ) in service.calls
-    assert "skipped (--no-remote)" in result.stdout
+    assert "remote skipped by --no-remote" in result.stdout
 
 
 def test_upgrade_list_versions_renders_remote_failure_warning(monkeypatch) -> None:

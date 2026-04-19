@@ -458,7 +458,15 @@ def _print_agent_table(records: list[dict]) -> None:
 
 
 _WIDE_PROVIDER_MIN_COLS = 110
+_REVEAL_PROVIDER_MIN_COLS = 130
 _API_KEY_ENV_REF = re.compile(r"^\$\{[^}]+\}$|^\$[A-Z_][A-Z0-9_]*$")
+
+_API_KEY_STATE_LABELS = {
+    "set": "[green]set[/green] = literal key captured",
+    "env-ref": "[cyan]env-ref[/cyan] = ${ENV_VAR} placeholder",
+    "empty": "[yellow]empty[/yellow] = source had the field but it was blank",
+    "missing": "unset = no apiKey field in the source",
+}
 
 
 def _provider_api_key_cell(
@@ -495,7 +503,71 @@ def _provider_api_key_cell(
     return "[green]set[/green]" if not wide else (_mask_secret(raw_key) or "-")
 
 
+def _print_provider_stacked(records: list[dict], *, reveal: bool) -> None:
+    """Key/value layout used when the terminal is too narrow to render
+    the provider table readably — most commonly triggered by ``--reveal``
+    at ~80 columns where a literal 40+ char API key crushes every other
+    column to 1 character wide. Each provider prints as a short block."""
+    console.print("[bold]ClawCU Providers[/bold]")
+    for idx, record in enumerate(records):
+        raw_key = str(record.get("api_key") or "")
+        state = record.get("api_key_state")
+        key_cell = _provider_api_key_cell(
+            raw_key,
+            reveal=reveal,
+            wide=True,  # stacked has no width pressure; show the literal key
+            state=state if isinstance(state, str) else None,
+        )
+        console.print(
+            f"[bold]{record['name']}[/bold]  [dim]({record.get('service', '-')})[/dim]"
+        )
+        console.print(f"  api_style: {record['api_style']}")
+        console.print(f"  api_key:   {key_cell}")
+        endpoint = record.get("endpoint") or "-"
+        console.print(f"  endpoint:  {endpoint}")
+        models = record.get("models") or []
+        if models:
+            console.print(f"  models:    {', '.join(models)}")
+        else:
+            console.print("  models:    -")
+        if idx != len(records) - 1:
+            console.print()
+
+
+def _print_provider_legend(records: list[dict]) -> None:
+    """Emit a legend describing only the api_key states that actually
+    appear in the current view. Listing states that aren't present
+    confuses users who then look for missing ``env-ref`` rows."""
+    states_in_view = {
+        str(r.get("api_key_state") or "").strip() for r in records
+    }
+    non_default = states_in_view - {"", "set"}
+    if not non_default:
+        return
+    # Stable order: set, env-ref, empty, missing — matches the docs.
+    ordered_states = [s for s in ("set", "env-ref", "empty", "missing")
+                      if s in states_in_view]
+    parts = [_API_KEY_STATE_LABELS[s] for s in ordered_states
+             if s in _API_KEY_STATE_LABELS]
+    if not parts:
+        return
+    console.print(
+        "[dim]API_KEY legend: "
+        + "; ".join(parts)
+        + ". Pass --reveal to see the literal values.[/dim]"
+    )
+
+
 def _print_provider_table(records: list[dict], *, wide: bool = False, reveal: bool = False) -> None:
+    # --reveal expands the API_KEY column to the literal key (40+ chars
+    # for most providers) which crushes the rest of the table below
+    # ~100 columns. Fall back to the stacked layout when the terminal
+    # can't accommodate it; the info stays readable and the user sees
+    # the full key per-line.
+    if reveal and records and console.size.width < _REVEAL_PROVIDER_MIN_COLS:
+        _print_provider_stacked(records, reveal=reveal)
+        return
+
     effective_wide = wide
     if wide and console.size.width < _WIDE_PROVIDER_MIN_COLS:
         console.print(
@@ -538,19 +610,10 @@ def _print_provider_table(records: list[dict], *, wide: bool = False, reveal: bo
         table.add_row(*row)
     console.print(table)
     # Legend line — only print it when the table actually uses one of
-    # the non-default states. Users who only see ``set`` don't need the
-    # explanation and it just adds noise.
+    # the non-default states, and only describe the states that appear
+    # in this view so users don't hunt for rows that aren't there.
     if not reveal:
-        states_in_view = {str(r.get("api_key_state") or "") for r in records}
-        if states_in_view - {"", "set"}:
-            console.print(
-                "[dim]API_KEY legend: "
-                "[green]set[/green] = literal key captured; "
-                "[cyan]env-ref[/cyan] = ${ENV_VAR} placeholder; "
-                "[yellow]empty[/yellow] = source had the field but it was blank; "
-                "unset = no apiKey field in the source. "
-                "Pass --reveal to see the literal values.[/dim]"
-            )
+        _print_provider_legend(records)
 
 
 def _print_setup_checks(checks: list[dict[str, str | bool]]) -> bool:
@@ -1691,9 +1754,9 @@ def _print_inspect_human(payload: dict, *, reveal: bool, show_history: bool) -> 
     "inspect",
     help=(
         "Show detailed state for a managed instance. Default is a compact readable view; "
-        "pass --json for the full payload. Unlike `list`, `inspect` prints the full access URL "
-        "(including the #token=... fragment) by default — use it when you want the complete state; "
-        "pass --reveal to render tokens in the human view too."
+        "pass --json for the full payload. Like `list`, `inspect` masks the dashboard token "
+        "and strips the `#token=...` fragment from the URL by default — pass --reveal to "
+        "render the raw token and keep the full URL."
     ),
     rich_help_panel=_PANEL_INFO,
 )
@@ -1705,7 +1768,13 @@ def inspect_instance(
     ] = False,
     reveal: Annotated[
         bool,
-        typer.Option("--reveal", help="Show full dashboard tokens and access URLs. Off by default for safety."),
+        typer.Option(
+            "--reveal",
+            help=(
+                "Show the raw dashboard token and keep the `#token=...` fragment on the "
+                "access URL. Off by default for safety (masked token, stripped fragment)."
+            ),
+        ),
     ] = False,
     json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
@@ -2478,8 +2547,8 @@ def recreate_instance(
 def _print_upgrade_plan(plan: dict) -> None:
     """Render an upgrade_plan payload as a compact human-readable summary."""
     table = Table(show_header=False, box=None, pad_edge=False)
-    table.add_column(style="bold cyan")
-    table.add_column()
+    table.add_column(style="bold cyan", no_wrap=True)
+    table.add_column(overflow="fold")
     table.add_row("Instance", str(plan.get("instance", "-")))
     table.add_row("Service", str(plan.get("service", "-")))
     table.add_row(
@@ -2520,9 +2589,18 @@ def _print_upgradable_versions(payload: dict, *, show_all: bool = False) -> None
         f"[bold]Instance:[/bold] {payload.get('instance', '-')}  "
         f"([dim]{payload.get('service', '-')}[/dim])"
     )
-    console.print(
-        f"[bold]Image repo:[/bold] {payload.get('image_repo', '-') or '-'}"
-    )
+    remote_requested_preview = bool(payload.get("remote_requested"))
+    image_repo_display = payload.get("image_repo", "-") or "-"
+    if not remote_requested_preview:
+        # Keep the repo on screen for reference but cross-link it to the
+        # Remote line so the two rows read as one thought instead of
+        # ``here's the registry / oh by the way we didn't ask it``.
+        console.print(
+            f"[bold]Image repo:[/bold] {image_repo_display} "
+            "[dim](remote skipped by --no-remote)[/dim]"
+        )
+    else:
+        console.print(f"[bold]Image repo:[/bold] {image_repo_display}")
     current = payload.get("current_version", "-")
     console.print(f"[bold]Current version:[/bold] {current}")
 
@@ -2557,9 +2635,10 @@ def _print_upgradable_versions(payload: dict, *, show_all: bool = False) -> None
     remote_error = payload.get("remote_error")
     remote_registry = payload.get("remote_registry")
     if not remote_requested:
-        console.print(
-            "[bold]Remote:[/bold] [dim]skipped (--no-remote)[/dim]"
-        )
+        # Already communicated inline on the Image repo row above — no
+        # separate Remote section needed when the flag disabled the
+        # registry query entirely.
+        pass
     elif remote is None:
         # Remote was asked for but failed. Show the reason so the user
         # knows why they are only seeing local/history.
@@ -2741,8 +2820,8 @@ def upgrade_instance(
 def _print_rollback_plan(plan: dict) -> None:
     """Render a rollback_plan payload as a compact human-readable summary."""
     table = Table(show_header=False, box=None, pad_edge=False)
-    table.add_column(style="bold cyan")
-    table.add_column()
+    table.add_column(style="bold cyan", no_wrap=True)
+    table.add_column(overflow="fold")
     table.add_row("Instance", str(plan.get("instance", "-")))
     table.add_row("Service", str(plan.get("service", "-")))
     table.add_row(
@@ -3059,13 +3138,30 @@ def clone_instance(
         except Exception:
             providers = []
         if providers:
-            # Show up to 3 names so the line stays scannable; if the
-            # user has more collected providers, tell them where to see
-            # the rest rather than dumping a one-line wall of commas.
-            sorted_names = sorted(entry.get("name", "?") for entry in providers)
-            head = sorted_names[:3]
-            extra = len(sorted_names) - len(head)
-            names_cell = ", ".join(head)
+            # Show up to 3 names so the line stays scannable, but promote
+            # the provider the source was actually using to the front of
+            # the list (labeled) — that's the one the user most likely
+            # wants to re-apply, and without promotion it may not even
+            # land in the 3-name window.
+            try:
+                active = service.active_provider_for_instance(source_name)
+            except Exception:
+                active = None
+            all_names = sorted(entry.get("name", "?") for entry in providers)
+            if active and active in all_names:
+                others = [n for n in all_names if n != active]
+                ordered_names = [active] + others
+                active_set = True
+            else:
+                ordered_names = all_names
+                active_set = False
+            head = ordered_names[:3]
+            extra = len(ordered_names) - len(head)
+            if active_set and head and head[0] == active:
+                head_cells = [f"{head[0]} [dim](was active on source)[/dim]"] + head[1:]
+            else:
+                head_cells = list(head)
+            names_cell = ", ".join(head_cells)
             if extra > 0:
                 names_cell += f" (+{extra} more — see `clawcu provider list`)"
             console.print(
