@@ -436,6 +436,27 @@ class OpenClawAdapter(ServiceAdapter):
             }
         ]
 
+    def removed_instance_summary(self, service, root: Path) -> dict | None:
+        config_path = root / "openclaw.json"
+        if not config_path.exists():
+            return None
+        config = service._load_json_file(config_path)
+        provider_summary = service._config_provider_summary(config)
+        version = service._config_version(config)
+        return {
+            "source": "removed",
+            "name": root.name,
+            "home": str(root),
+            "version": version,
+            "port": "-",
+            "status": "removed",
+            "access_url": "-",
+            "providers": provider_summary["providers"],
+            "models": provider_summary["models"],
+            "service": self.service_name,
+            "snapshot": "-",
+        }
+
     def local_agent_summaries(self, service) -> list[dict]:
         config_path = service._local_openclaw_home() / "openclaw.json"
         if not config_path.exists():

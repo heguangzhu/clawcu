@@ -767,6 +767,34 @@ class ClawCUService:
             summaries.extend(adapter.local_instance_summaries(self))
         return summaries
 
+    def list_removed_instance_summaries(self) -> list[dict]:
+        internal_dirs = {
+            self.store.paths.instances_dir.resolve(),
+            self.store.paths.providers_dir.resolve(),
+            self.store.paths.sources_dir.resolve(),
+            self.store.paths.logs_dir.resolve(),
+            self.store.paths.snapshots_dir.resolve(),
+        }
+        managed_datadirs = {
+            Path(record.datadir).expanduser().resolve(strict=False)
+            for record in self.store.list_records()
+        }
+        summaries: list[dict] = []
+        for child in sorted(self.store.paths.home.iterdir(), key=lambda path: path.name):
+            if not child.is_dir():
+                continue
+            resolved_child = child.resolve()
+            if resolved_child in internal_dirs or resolved_child in managed_datadirs:
+                continue
+            if child.name.startswith("."):
+                continue
+            for adapter in self.adapters.values():
+                summary = adapter.removed_instance_summary(self, child)
+                if summary is not None:
+                    summaries.append(summary)
+                    break
+        return summaries
+
     def list_local_agent_summaries(self) -> list[dict]:
         summaries: list[dict] = []
         for adapter in self.adapters.values():

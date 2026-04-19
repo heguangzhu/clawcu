@@ -1193,6 +1193,99 @@ def test_list_local_summaries_read_from_home_hermes(monkeypatch, tmp_path) -> No
     ]
 
 
+def test_list_removed_instance_summaries_detect_orphaned_default_datadirs(temp_clawcu_home) -> None:
+    service, _, _, store = make_service(temp_clawcu_home)
+    active_datadir = temp_clawcu_home / "writer"
+    active_datadir.mkdir()
+    (active_datadir / "openclaw.json").write_text("{}", encoding="utf-8")
+    store.save_record(
+        InstanceRecord(
+            service="openclaw",
+            name="writer",
+            version="2026.4.1",
+            upstream_ref="v2026.4.1",
+            image_tag="clawcu/openclaw:2026.4.1",
+            container_name="clawcu-openclaw-writer",
+            datadir=str(active_datadir),
+            port=3000,
+            cpu="1",
+            memory="2g",
+            auth_mode="token",
+            status="running",
+            created_at="2026-04-11T00:00:00+00:00",
+            updated_at="2026-04-11T00:00:00+00:00",
+            history=[],
+        )
+    )
+
+    removed_openclaw = temp_clawcu_home / "writer-old"
+    removed_openclaw.mkdir()
+    (removed_openclaw / "openclaw.json").write_text(
+        json.dumps(
+            {
+                "meta": {"lastTouchedVersion": "2026.4.0"},
+                "models": {
+                    "providers": {
+                        "openai": {
+                            "api": "openai-responses",
+                            "models": [{"id": "gpt-5", "name": "GPT-5"}],
+                        }
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    removed_hermes = temp_clawcu_home / "javis-old"
+    removed_hermes.mkdir()
+    (removed_hermes / "config.yaml").write_text(
+        "model:\n"
+        "  provider: openrouter\n"
+        "  default: anthropic/claude-sonnet-4.6\n"
+        "fallback_model:\n"
+        "  provider: openrouter\n"
+        "  model: openai/gpt-5\n",
+        encoding="utf-8",
+    )
+
+    hidden_orphan = temp_clawcu_home / ".hidden-orphan"
+    hidden_orphan.mkdir()
+    (hidden_orphan / "openclaw.json").write_text("{}", encoding="utf-8")
+    (temp_clawcu_home / "notes").mkdir()
+
+    summaries = service.list_removed_instance_summaries()
+    summary_by_name = {summary["name"]: summary for summary in summaries}
+
+    assert sorted(summary_by_name) == ["javis-old", "writer-old"]
+    assert summary_by_name["writer-old"] == {
+        "source": "removed",
+        "name": "writer-old",
+        "home": str(removed_openclaw),
+        "version": "2026.4.0",
+        "port": "-",
+        "status": "removed",
+        "access_url": "-",
+        "providers": "openai",
+        "models": "openai/gpt-5",
+        "service": "openclaw",
+        "snapshot": "-",
+    }
+    assert summary_by_name["javis-old"] == {
+        "source": "removed",
+        "name": "javis-old",
+        "home": str(removed_hermes),
+        "version": "-",
+        "port": "-",
+        "status": "removed",
+        "access_url": "-",
+        "providers": "openrouter",
+        "models": "anthropic/claude-sonnet-4.6, openrouter/openai/gpt-5",
+        "service": "hermes",
+        "snapshot": "-",
+    }
+
+
 def test_list_agent_summaries_fall_back_to_managed_agent_directories(temp_clawcu_home, tmp_path, monkeypatch) -> None:
     service, _, _, store = make_service(temp_clawcu_home)
     datadir = tmp_path / "writer"

@@ -1503,11 +1503,16 @@ def list_provider_models(
     json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
     _list_provider_models_impl(name, json_output)
-_LIST_SOURCES = ("managed", "local", "all")
+_LIST_SOURCES = ("managed", "local", "removed", "all")
 
 
 def _resolve_list_source(
-    source: str | None, *, local_flag: bool, managed_flag: bool, all_flag: bool
+    source: str | None,
+    *,
+    local_flag: bool,
+    managed_flag: bool,
+    removed_flag: bool,
+    all_flag: bool,
 ) -> str:
     """Reconcile the new --source flag with legacy --local/--managed/--all shortcuts.
 
@@ -1523,6 +1528,8 @@ def _resolve_list_source(
         return source
     if all_flag:
         return "all"
+    if removed_flag:
+        return "removed"
     if local_flag and not managed_flag:
         return "local"
     # `--managed` or no flag at all → managed (new default).
@@ -1547,7 +1554,8 @@ def _apply_list_filters(
     "list",
     help=(
         "List managed instances. By default shows ClawCU-managed instances only; "
-        "pass --source local or --source all to include ~/.openclaw / ~/.hermes pseudo-entries. "
+        "pass --source local or --source all to include ~/.openclaw / ~/.hermes pseudo-entries, "
+        "or use --removed to show orphaned instance homes left behind after record deletion. "
         "ACCESS URLs have the #token=... fragment masked by default; pass --reveal to show the literal token. "
         "Alias: `ls`."
     ),
@@ -1563,7 +1571,7 @@ def list_instances(
         str | None,
         typer.Option(
             "--source",
-            help="managed | local | all. Default: managed (hides local pseudo-instances).",
+            help="managed | local | removed | all. Default: managed (hides local pseudo-instances).",
         ),
     ] = None,
     local: Annotated[
@@ -1573,6 +1581,13 @@ def list_instances(
     managed: Annotated[
         bool,
         typer.Option("--managed", help="Shortcut for --source managed (default)."),
+    ] = False,
+    removed: Annotated[
+        bool,
+        typer.Option(
+            "--removed",
+            help="Show orphaned instance data directories under CLAWCU_HOME whose records were deleted.",
+        ),
     ] = False,
     all_sources: Annotated[
         bool,
@@ -1598,13 +1613,19 @@ def list_instances(
 ) -> None:
     _set_json_mode(json_output)
     resolved_source = _resolve_list_source(
-        source, local_flag=local, managed_flag=managed, all_flag=all_sources
+        source,
+        local_flag=local,
+        managed_flag=managed,
+        removed_flag=removed,
+        all_flag=all_sources,
     )
     effective_status = status_filter
     if running and not effective_status:
         effective_status = "running"
     elif running and effective_status and effective_status.lower() != "running":
         _exit_with_error("--running conflicts with --status; use one or the other.")
+    if agents and resolved_source == "removed":
+        _exit_with_error("--removed does not support --agents.")
     try:
         service = get_service()
         records: list[dict]
@@ -1618,6 +1639,8 @@ def list_instances(
             records = []
             if resolved_source in {"local", "all"}:
                 records.extend(service.list_local_instance_summaries())
+            if resolved_source in {"removed", "all"}:
+                records.extend(service.list_removed_instance_summaries())
             if resolved_source in {"managed", "all"}:
                 records.extend(service.list_instance_summaries(running_only=running))
     except Exception as exc:

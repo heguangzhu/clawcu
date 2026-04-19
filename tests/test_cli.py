@@ -418,6 +418,24 @@ class FakeService:
             }
         ]
 
+    def list_removed_instance_summaries(self) -> list[dict]:
+        self._record("list_removed_instance_summaries")
+        return [
+            {
+                "source": "removed",
+                "name": "writer-old",
+                "home": "/Users/test/.clawcu/writer-old",
+                "version": "2026.4.0",
+                "port": "-",
+                "status": "removed",
+                "access_url": "-",
+                "providers": "openai",
+                "models": "openai/gpt-5",
+                "service": "openclaw",
+                "snapshot": "-",
+            }
+        ]
+
     def list_local_agent_summaries(self) -> list[dict]:
         self._record("list_local_agent_summaries")
         return [
@@ -1220,8 +1238,30 @@ def test_list_command_source_all_includes_local(monkeypatch) -> None:
     assert result.exit_code == 0
     assert service.calls == [
         ("list_local_instance_summaries", (), {}),
+        ("list_removed_instance_summaries", (), {}),
         ("list_instance_summaries", (), {"running_only": False}),
     ]
+
+
+def test_list_command_removed_option_filters_to_removed(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["list", "--removed"])
+
+    assert result.exit_code == 0
+    assert "writer-old" in result.stdout
+    assert service.calls == [("list_removed_instance_summaries", (), {})]
+
+
+def test_list_command_source_removed_filters_to_removed(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["list", "--source", "removed"])
+
+    assert result.exit_code == 0
+    assert service.calls == [("list_removed_instance_summaries", (), {})]
 
 
 def test_list_command_service_filter_drops_other_services(monkeypatch) -> None:
@@ -2291,6 +2331,17 @@ def test_list_agents_source_all_includes_local_agents(monkeypatch) -> None:
         ("list_local_agent_summaries", (), {}),
         ("list_agent_summaries", (), {"running_only": False}),
     ]
+
+
+def test_list_removed_rejects_agents_view(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["list", "--removed", "--agents"])
+
+    assert result.exit_code == 1
+    assert "--removed does not support --agents." in result.stdout
+    assert service.calls == []
 
 
 def test_list_agents_managed_option_shows_managed_agent_rows(monkeypatch) -> None:

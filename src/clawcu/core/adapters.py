@@ -160,6 +160,9 @@ class ServiceAdapter(ABC):
     def local_instance_summaries(self, service: "ClawCUService") -> list[dict]:
         raise NotImplementedError
 
+    def removed_instance_summary(self, service: "ClawCUService", root: Path) -> dict | None:
+        return None
+
     @abstractmethod
     def local_agent_summaries(self, service: "ClawCUService") -> list[dict]:
         raise NotImplementedError

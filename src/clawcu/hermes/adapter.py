@@ -361,6 +361,39 @@ class HermesAdapter(ServiceAdapter):
             }
         ]
 
+    def removed_instance_summary(self, service, root: Path) -> dict | None:
+        config_path = root / "config.yaml"
+        if not config_path.exists():
+            return None
+        record = build_instance_record(
+            InstanceSpec(
+                service=self.service_name,
+                name=root.name,
+                version="-",
+                datadir=str(root),
+                port=self.default_port,
+                cpu="1",
+                memory="1g",
+                auth_mode="native",
+            ),
+            status="removed",
+            history=[],
+        )
+        summary = self.instance_provider_summary(service, record)
+        return {
+            "source": "removed",
+            "name": root.name,
+            "home": str(root),
+            "version": "-",
+            "port": "-",
+            "status": "removed",
+            "access_url": "-",
+            "providers": summary["providers"],
+            "models": summary["models"],
+            "service": self.service_name,
+            "snapshot": "-",
+        }
+
     def local_agent_summaries(self, service) -> list[dict]:
         root = service._local_hermes_home()
         if not (root / "config.yaml").exists():
