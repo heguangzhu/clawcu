@@ -74,7 +74,15 @@ clawcu create openclaw --name writer --version 2026.4.1
 clawcu tui writer
 ```
 
-Hermes follows the same pattern — replace `openclaw` with `hermes`. For the full command reference (`list` / `inspect` / `exec` / `upgrade` / `provider` …), see the [USAGE reference](release/).
+Or spin up a Hermes instance with the same shape:
+
+```bash
+clawcu pull hermes --version 2026.4.13
+clawcu create hermes --name analyst --version 2026.4.13
+clawcu tui analyst
+```
+
+For the full command reference (`list` / `inspect` / `exec` / `upgrade` / `provider` …), see the [USAGE reference](release/).
 
 ## Safe Upgrade Workflow
 

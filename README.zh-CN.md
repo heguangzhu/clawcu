@@ -74,7 +74,15 @@ clawcu create openclaw --name writer --version 2026.4.1
 clawcu tui writer
 ```
 
-Hermes 用同样的模式——把 `openclaw` 换成 `hermes`。完整命令参考（`list` / `inspect` / `exec` / `upgrade` / `provider` …）见 [USAGE 文档](release/)。
+或者用同样的模式创建一个 Hermes 实例：
+
+```bash
+clawcu pull hermes --version 2026.4.13
+clawcu create hermes --name analyst --version 2026.4.13
+clawcu tui analyst
+```
+
+完整命令参考（`list` / `inspect` / `exec` / `upgrade` / `provider` …）见 [USAGE 文档](release/)。
 
 ## 安全升级流程
 
