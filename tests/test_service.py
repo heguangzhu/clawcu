@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import stat
 import urllib.request
 from pathlib import Path
@@ -86,6 +87,17 @@ def test_check_setup_reports_running_docker_daemon(temp_clawcu_home, monkeypatch
             "hint": "",
         },
     ]
+
+
+def test_is_port_available_rejects_port_bound_on_any_interface(temp_clawcu_home) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("0.0.0.0", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+
+        assert service._is_port_available(port) is False
 
 
 def test_check_setup_reports_unreachable_docker_daemon(temp_clawcu_home, monkeypatch) -> None:
@@ -2503,6 +2515,7 @@ def test_recreate_instance_fresh_refuses_unsafe_datadir(
 
 def test_recreate_hermes_preserves_dashboard_port(temp_clawcu_home, tmp_path) -> None:
     service, docker, _, store = make_service(temp_clawcu_home)
+    service._is_port_available = lambda port: port == 9129  # type: ignore[method-assign]
     hermes_adapter = service.adapters["hermes"]
     hermes_adapter._dashboard_ready = lambda _record: True  # type: ignore[method-assign]
 

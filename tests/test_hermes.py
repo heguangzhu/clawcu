@@ -117,6 +117,7 @@ def test_collect_providers_supports_hermes_home(temp_clawcu_home, tmp_path) -> N
 
 def test_create_hermes_saves_record_and_writes_native_home(temp_clawcu_home, tmp_path) -> None:
     service, _, _, store = make_service(temp_clawcu_home)
+    service._is_port_available = lambda port: port == 9129  # type: ignore[method-assign]
     hermes_adapter = service.adapters["hermes"]
     hermes_adapter._dashboard_ready = lambda _record: True  # type: ignore[method-assign]
     datadir = tmp_path / "hermes-home"
@@ -168,6 +169,7 @@ def test_create_hermes_defaults_datadir_and_port(temp_clawcu_home) -> None:
 
 def test_hermes_run_spec_respects_image_entrypoint(temp_clawcu_home, tmp_path) -> None:
     service, _, _, _ = make_service(temp_clawcu_home)
+    service._is_port_available = lambda port: port == 9129  # type: ignore[method-assign]
     adapter = service.adapters["hermes"]
     spec = adapter.build_spec(
         service,
@@ -194,6 +196,7 @@ def test_hermes_run_spec_respects_image_entrypoint(temp_clawcu_home, tmp_path) -
 
 def test_hermes_access_info_points_to_dashboard(temp_clawcu_home, tmp_path) -> None:
     service, _, _, _ = make_service(temp_clawcu_home)
+    service._is_port_available = lambda port: port == 9129  # type: ignore[method-assign]
     adapter = service.adapters["hermes"]
     spec = adapter.build_spec(
         service,
@@ -216,6 +219,7 @@ def test_hermes_access_info_points_to_dashboard(temp_clawcu_home, tmp_path) -> N
 
 def test_list_instance_summaries_show_hermes_dashboard_port_and_access(temp_clawcu_home, tmp_path) -> None:
     service, _, _, _ = make_service(temp_clawcu_home)
+    service._is_port_available = lambda port: port == 9129  # type: ignore[method-assign]
     hermes_adapter = service.adapters["hermes"]
     hermes_adapter._dashboard_ready = lambda _record: True  # type: ignore[method-assign]
     datadir = tmp_path / "hermes-home"
