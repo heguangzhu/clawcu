@@ -31,7 +31,6 @@
 - **One CLI, two runtimes** — OpenClaw and Hermes through the same lifecycle commands
 - **Snapshots before every upgrade** — datadir and env both captured; `rollback` restores from real backups
 - **Clone-first experiments** — copy an instance, upgrade the copy, leave the original running
-- **Upgrade candidates at a glance** — `clawcu list` appends the 10 newest stable releases per service (betas filtered); `--no-remote` for offline
 
 ```text
 $ clawcu list
