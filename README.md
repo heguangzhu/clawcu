@@ -185,7 +185,7 @@ clawcu exec writer pwd
 clawcu exec analyst hermes version
 ```
 
-For the full command reference for `v0.2.0`, see [USAGE_v0.2.0.md](USAGE_v0.2.0.md).
+For the full command reference for `v0.2.0`, see [USAGE_v0.2.0.md](release/USAGE_v0.2.0.md).
 
 ## Safe Upgrade Workflow
 
@@ -329,5 +329,5 @@ Hermes in `v0.2.0`:
 
 ## Release Notes
 
-- Release notes for `v0.2.0`: [RELEASE_v0.2.0.md](RELEASE_v0.2.0.md)
-- Archived release notes for `v0.1.0`: [RELEASE_v0.1.0.md](RELEASE_v0.1.0.md)
+- Release notes for `v0.2.0`: [RELEASE_v0.2.0.md](release/RELEASE_v0.2.0.md)
+- Archived release notes for `v0.1.0`: [RELEASE_v0.1.0.md](release/RELEASE_v0.1.0.md)

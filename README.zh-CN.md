@@ -185,7 +185,7 @@ clawcu exec writer pwd
 clawcu exec analyst hermes version
 ```
 
-完整命令的使用可参考 [USAGE_v0.2.0.zh-CN.md](USAGE_v0.2.0.zh-CN.md)。
+完整命令的使用可参考 [USAGE_v0.2.0.zh-CN.md](release/USAGE_v0.2.0.zh-CN.md)。
 
 ## 安全升级流程
 
@@ -332,5 +332,5 @@ Hermes 目前不会被强行塞进和 OpenClaw 一样的 `token` / `approve` 语
 
 ## 发布说明
 
-- `v0.2.0` 发布说明：[RELEASE_v0.2.0.zh-CN.md](RELEASE_v0.2.0.zh-CN.md)
-- `v0.1.0` 归档发布说明：[RELEASE_v0.1.0.zh-CN.md](RELEASE_v0.1.0.zh-CN.md)
+- `v0.2.0` 发布说明：[RELEASE_v0.2.0.zh-CN.md](release/RELEASE_v0.2.0.zh-CN.md)
+- `v0.1.0` 归档发布说明：[RELEASE_v0.1.0.zh-CN.md](release/RELEASE_v0.1.0.zh-CN.md)
