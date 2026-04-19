@@ -163,6 +163,15 @@ class ServiceAdapter(ABC):
     def removed_instance_summary(self, service: "ClawCUService", root: Path) -> dict | None:
         return None
 
+    def removed_instance_spec(
+        self,
+        service: "ClawCUService",
+        root: Path,
+        *,
+        version: str | None = None,
+    ):
+        return None
+
     @abstractmethod
     def local_agent_summaries(self, service: "ClawCUService") -> list[dict]:
         raise NotImplementedError

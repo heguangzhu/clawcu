@@ -365,11 +365,12 @@ class HermesAdapter(ServiceAdapter):
         config_path = root / "config.yaml"
         if not config_path.exists():
             return None
+        metadata = service._load_instance_metadata(root)
         record = build_instance_record(
             InstanceSpec(
                 service=self.service_name,
                 name=root.name,
-                version="-",
+                version=str(metadata.get("version") or "-"),
                 datadir=str(root),
                 port=self.default_port,
                 cpu="1",
@@ -384,7 +385,7 @@ class HermesAdapter(ServiceAdapter):
             "source": "removed",
             "name": root.name,
             "home": str(root),
-            "version": "-",
+            "version": record.version,
             "port": "-",
             "status": "removed",
             "access_url": "-",
@@ -393,6 +394,45 @@ class HermesAdapter(ServiceAdapter):
             "service": self.service_name,
             "snapshot": "-",
         }
+
+    def removed_instance_spec(
+        self,
+        service,
+        root: Path,
+        *,
+        version: str | None = None,
+    ) -> InstanceSpec | None:
+        config_path = root / "config.yaml"
+        if not config_path.exists():
+            return None
+        metadata = service._load_instance_metadata(root)
+        resolved_version = str(version or metadata.get("version") or "").strip()
+        if not resolved_version:
+            raise ValueError(
+                f"Removed Hermes instance '{root.name}' does not record its version. "
+                f"Re-run `clawcu recreate {root.name} --version <version>` to restore it."
+            )
+        resolved_port = service._coerce_metadata_port(metadata.get("port")) or service._next_available_port(
+            self.default_port
+        )
+        resolved_dashboard_port = service._coerce_metadata_port(
+            metadata.get("dashboard_port")
+        ) or service._next_available_port(self.dashboard_default_port)
+        if resolved_dashboard_port == resolved_port:
+            resolved_dashboard_port = service._next_available_port(
+                resolved_dashboard_port + service.PORT_SEARCH_STEP
+            )
+        return InstanceSpec(
+            service=self.service_name,
+            name=root.name,
+            version=resolved_version,
+            datadir=str(root),
+            port=resolved_port,
+            cpu=str(metadata.get("cpu") or "1"),
+            memory=str(metadata.get("memory") or "2g"),
+            auth_mode=str(metadata.get("auth_mode") or self.default_auth_mode()),
+            dashboard_port=resolved_dashboard_port,
+        )
 
     def local_agent_summaries(self, service) -> list[dict]:
         root = service._local_hermes_home()

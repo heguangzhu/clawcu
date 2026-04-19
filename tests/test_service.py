@@ -2630,6 +2630,110 @@ def test_recreate_hermes_preserves_dashboard_port(temp_clawcu_home, tmp_path) ->
     assert store.load_record("scribe").dashboard_port == 9129
 
 
+def test_recreate_removed_openclaw_restores_orphaned_datadir(temp_clawcu_home, tmp_path) -> None:
+    service, docker, _, store = make_service(temp_clawcu_home)
+    datadir = temp_clawcu_home / "writer"
+    created = service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+
+    service.remove_instance("writer", delete_data=False)
+
+    removed = service.list_removed_instance_summaries()
+    assert removed == [
+        {
+            "source": "removed",
+            "name": "writer",
+            "home": str(datadir),
+            "version": "2026.4.1",
+            "port": "-",
+            "status": "removed",
+            "access_url": "-",
+            "providers": "-",
+            "models": "-",
+            "service": "openclaw",
+            "snapshot": "-",
+        }
+    ]
+
+    recreated = service.recreate_instance("writer")
+
+    assert recreated.status == "running"
+    assert recreated.service == "openclaw"
+    assert recreated.version == created.version
+    assert recreated.datadir == str(datadir)
+    assert store.load_record("writer").version == created.version
+    assert docker.commands.count(("run", "clawcu-openclaw-writer")) == 2
+
+
+def test_recreate_removed_hermes_restores_orphaned_datadir_from_saved_metadata(
+    temp_clawcu_home, tmp_path
+) -> None:
+    service, docker, _, store = make_service(temp_clawcu_home)
+    hermes_adapter = service.adapters["hermes"]
+    hermes_adapter._dashboard_ready = lambda _record: True  # type: ignore[method-assign]
+    datadir = temp_clawcu_home / "scribe"
+
+    created = service.create_hermes(
+        name="scribe",
+        version="2026.4.8",
+        datadir=str(datadir),
+        port=8652,
+        cpu="1",
+        memory="2g",
+    )
+
+    service.remove_instance("scribe", delete_data=False)
+
+    removed = service.list_removed_instance_summaries()
+    assert removed == [
+        {
+            "source": "removed",
+            "name": "scribe",
+            "home": str(datadir),
+            "version": created.version,
+            "port": "-",
+            "status": "removed",
+            "access_url": "-",
+            "providers": "openrouter",
+            "models": "anthropic/claude-sonnet-4.6",
+            "service": "hermes",
+            "snapshot": "-",
+        }
+    ]
+
+    recreated = service.recreate_instance("scribe")
+
+    assert recreated.status == "running"
+    assert recreated.service == "hermes"
+    assert recreated.version == created.version
+    assert recreated.datadir == str(datadir)
+    assert store.load_record("scribe").version == created.version
+    assert docker.commands.count(("run", "clawcu-hermes-scribe")) == 2
+
+
+def test_recreate_removed_hermes_requires_explicit_version_without_metadata(
+    temp_clawcu_home,
+) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+    root = temp_clawcu_home / "legacy-hermes"
+    root.mkdir()
+    (root / "config.yaml").write_text(
+        "model:\n"
+        "  provider: openrouter\n"
+        "  default: anthropic/claude-sonnet-4.6\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="does not record its version"):
+        service.recreate_instance("legacy-hermes")
+
+
 def test_create_openclaw_waits_for_healthcheck_until_running(temp_clawcu_home, tmp_path) -> None:
     service, docker, _, _ = make_service(temp_clawcu_home)
     service.STARTUP_POLL_INTERVAL_SECONDS = 0.0

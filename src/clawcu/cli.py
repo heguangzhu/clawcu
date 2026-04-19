@@ -2495,19 +2495,19 @@ def _do_recreate(
     *,
     fresh: bool = False,
     timeout: int | None = None,
+    version: str | None = None,
 ) -> None:
     """Unified recreate logic.
 
     Tries retry_instance first (cheap auto-port recovery path for
     create_failed records); if the service rejects it with a
     ValueError ("Only create_failed ..."), falls back to the regular
-    recreate_instance flow. When ``fresh`` or ``timeout`` is provided,
-    skip the retry shortcut and go straight to recreate — both flags
-    only make sense for a running instance.
+    recreate_instance flow. When ``fresh``, ``timeout``, or ``version``
+    is provided, skip the retry shortcut and go straight to recreate.
     """
-    if fresh or timeout is not None:
+    if fresh or timeout is not None or version is not None:
         try:
-            record = service.recreate_instance(name, fresh=fresh, timeout=timeout)
+            record = service.recreate_instance(name, fresh=fresh, timeout=timeout, version=version)
         except Exception as exc:
             _exit_with_error(str(exc))
         console.print(
@@ -2517,12 +2517,22 @@ def _do_recreate(
         return
     try:
         record = service.retry_instance(name)
+    except FileNotFoundError:
+        try:
+            record = service.recreate_instance(name, version=version)
+        except Exception as exc2:
+            _exit_with_error(str(exc2))
+        console.print(
+            f"[green]Recreated instance:[/green] {record.name} ({record.version}) on port {record.port} (status: {record.status})"
+        )
+        _print_access_url(service, record.name)
+        return
     except ValueError as exc:
         message = str(exc)
         if "create_failed" not in message:
             _exit_with_error(message)
         try:
-            record = service.recreate_instance(name)
+            record = service.recreate_instance(name, version=version)
         except Exception as exc2:
             _exit_with_error(str(exc2))
         console.print(
@@ -2540,7 +2550,7 @@ def _do_recreate(
 
 @app.command(
     "recreate",
-    help="Recreate an existing instance. Auto-retries instances in create_failed status.",
+    help="Recreate an existing instance, or recover a removed instance from its leftover datadir. Auto-retries instances in create_failed status.",
     rich_help_panel=_PANEL_LIFECYCLE,
 )
 def recreate_instance(
@@ -2560,6 +2570,13 @@ def recreate_instance(
             help="Seconds to wait for the container to stop gracefully before force-removing.",
         ),
     ] = None,
+    version: Annotated[
+        str | None,
+        typer.Option(
+            "--version",
+            help="Version to use when recreating a removed instance whose datadir no longer has an instance record.",
+        ),
+    ] = None,
     yes: Annotated[
         bool,
         typer.Option("--yes", "-y", help="Skip the confirmation prompt for --fresh."),
@@ -2574,8 +2591,11 @@ def recreate_instance(
         # there is nothing to wipe, hiding the real "not found" failure.
         try:
             service.store.load_record(name)
-        except Exception as exc:
-            _exit_with_error(str(exc))
+        except Exception:
+            try:
+                service._build_removed_instance_spec(name, version=version)
+            except Exception as exc:
+                _exit_with_error(str(exc))
         _confirm_destructive(
             f"About to wipe the datadir of instance '{name}' before recreating. "
             "All instance data under the datadir will be permanently deleted. "
@@ -2583,7 +2603,7 @@ def recreate_instance(
             "use 'clawcu rollback --list' after the wipe to see what remains.",
             yes,
         )
-    _do_recreate(service, name, fresh=fresh, timeout=timeout)
+    _do_recreate(service, name, fresh=fresh, timeout=timeout, version=version)
 
 
 def _print_upgrade_plan(plan: dict) -> None:

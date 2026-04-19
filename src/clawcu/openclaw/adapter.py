@@ -441,8 +441,9 @@ class OpenClawAdapter(ServiceAdapter):
         if not config_path.exists():
             return None
         config = service._load_json_file(config_path)
+        metadata = service._load_instance_metadata(root)
         provider_summary = service._config_provider_summary(config)
-        version = service._config_version(config)
+        version = str(metadata.get("version") or service._config_version(config) or "-")
         return {
             "source": "removed",
             "name": root.name,
@@ -456,6 +457,43 @@ class OpenClawAdapter(ServiceAdapter):
             "service": self.service_name,
             "snapshot": "-",
         }
+
+    def removed_instance_spec(
+        self,
+        service,
+        root: Path,
+        *,
+        version: str | None = None,
+    ) -> InstanceSpec | None:
+        config_path = root / "openclaw.json"
+        if not config_path.exists():
+            return None
+        metadata = service._load_instance_metadata(root)
+        resolved_version = str(
+            version
+            or metadata.get("version")
+            or service._config_version(service._load_json_file(config_path))
+            or ""
+        ).strip()
+        if not resolved_version or resolved_version == "-":
+            raise ValueError(
+                f"Removed OpenClaw instance '{root.name}' does not record a recoverable version. "
+                f"Re-run `clawcu recreate {root.name} --version <version>` to restore it."
+            )
+        resolved_port = service._coerce_metadata_port(metadata.get("port")) or service._next_available_port(
+            self.default_port
+        )
+        return InstanceSpec(
+            service=self.service_name,
+            name=root.name,
+            version=resolved_version,
+            datadir=str(root),
+            port=resolved_port,
+            cpu=str(metadata.get("cpu") or "1"),
+            memory=str(metadata.get("memory") or "2g"),
+            auth_mode=str(metadata.get("auth_mode") or self.default_auth_mode()),
+            dashboard_port=None,
+        )
 
     def local_agent_summaries(self, service) -> list[dict]:
         config_path = service._local_openclaw_home() / "openclaw.json"

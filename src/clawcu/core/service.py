@@ -24,6 +24,7 @@ from clawcu.core.subprocess_utils import CommandError, run_command
 from clawcu.core.validation import (
     build_instance_record,
     container_name_for_service,
+    image_tag_for_service,
     normalize_ref,
     normalize_service_version,
     resolve_datadir,
@@ -48,6 +49,7 @@ from clawcu.openclaw.manager import OpenClawManager
 class ClawCUService:
     DEFAULT_OPENCLAW_PORT = 18799
     DEFAULT_HERMES_PORT = 8652
+    INSTANCE_METADATA_FILENAME = ".clawcu-instance.json"
     PORT_SEARCH_STEP = 10
     PORT_SEARCH_LIMIT = 100
     STARTUP_POLL_INTERVAL_SECONDS = 10.0
@@ -768,6 +770,16 @@ class ClawCUService:
         return summaries
 
     def list_removed_instance_summaries(self) -> list[dict]:
+        summaries: list[dict] = []
+        for child in self._iter_removed_instance_roots():
+            for adapter in self.adapters.values():
+                summary = adapter.removed_instance_summary(self, child)
+                if summary is not None:
+                    summaries.append(summary)
+                    break
+        return summaries
+
+    def _iter_removed_instance_roots(self):
         internal_dirs = {
             self.store.paths.instances_dir.resolve(),
             self.store.paths.providers_dir.resolve(),
@@ -779,7 +791,6 @@ class ClawCUService:
             Path(record.datadir).expanduser().resolve(strict=False)
             for record in self.store.list_records()
         }
-        summaries: list[dict] = []
         for child in sorted(self.store.paths.home.iterdir(), key=lambda path: path.name):
             if not child.is_dir():
                 continue
@@ -788,12 +799,73 @@ class ClawCUService:
                 continue
             if child.name.startswith("."):
                 continue
-            for adapter in self.adapters.values():
-                summary = adapter.removed_instance_summary(self, child)
-                if summary is not None:
-                    summaries.append(summary)
-                    break
-        return summaries
+            yield child
+
+    def _find_removed_instance_root(self, name: str) -> Path | None:
+        for child in self._iter_removed_instance_roots():
+            if child.name == name:
+                return child
+        return None
+
+    def _instance_metadata_path(self, datadir: Path) -> Path:
+        return datadir / self.INSTANCE_METADATA_FILENAME
+
+    def _load_instance_metadata(self, datadir: Path) -> dict:
+        path = self._instance_metadata_path(datadir)
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _write_instance_metadata(self, record: InstanceRecord) -> None:
+        path = self._instance_metadata_path(Path(record.datadir))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "service": record.service,
+            "name": record.name,
+            "version": record.version,
+            "datadir": record.datadir,
+            "port": record.port,
+            "dashboard_port": record.dashboard_port,
+            "cpu": record.cpu,
+            "memory": record.memory,
+            "auth_mode": record.auth_mode,
+            "updated_at": record.updated_at,
+        }
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    def _coerce_metadata_port(self, value: object) -> int | None:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value if value > 0 else None
+        if isinstance(value, str) and value.strip().isdigit():
+            parsed = int(value.strip())
+            return parsed if parsed > 0 else None
+        return None
+
+    def _build_removed_instance_spec(self, name: str, *, version: str | None = None) -> InstanceSpec:
+        root = self._find_removed_instance_root(name)
+        if root is None:
+            raise FileNotFoundError(f"Instance '{name}' was not found.")
+        metadata = self._load_instance_metadata(root)
+        hinted_service = metadata.get("service")
+        if isinstance(hinted_service, str) and hinted_service in self.adapters:
+            adapter = self.adapters[hinted_service]
+            spec = adapter.removed_instance_spec(self, root, version=version)
+            if spec is not None:
+                return spec
+        for adapter in self.adapters.values():
+            spec = adapter.removed_instance_spec(self, root, version=version)
+            if spec is not None:
+                return spec
+        raise FileNotFoundError(f"Instance '{name}' was not found.")
 
     def list_local_agent_summaries(self) -> list[dict]:
         summaries: list[dict] = []
@@ -1170,8 +1242,22 @@ class ClawCUService:
         prepare_artifact: bool = True,
         fresh: bool = False,
         timeout: int | None = None,
+        version: str | None = None,
     ) -> InstanceRecord:
-        record = self.store.load_record(name)
+        try:
+            record = self.store.load_record(name)
+        except FileNotFoundError:
+            return self._recreate_removed_instance(
+                name,
+                prepare_artifact=prepare_artifact,
+                fresh=fresh,
+                timeout=timeout,
+                version=version,
+            )
+        if version is not None:
+            raise ValueError(
+                f"Instance '{name}' already exists. Use `clawcu upgrade {name} --version {version}` to change versions."
+            )
         adapter = self.adapter_for_record(record)
         effective_auth_mode = self._effective_auth_mode(record)
         self.reporter(
@@ -1222,6 +1308,67 @@ class ClawCUService:
             }
         )
         live_record = self._start_new_instance(spec, history=history, auto_port=False)
+        self.reporter(self._lifecycle_summary("recreated", live_record))
+        return live_record
+
+    def _recreate_removed_instance(
+        self,
+        name: str,
+        *,
+        prepare_artifact: bool,
+        fresh: bool,
+        timeout: int | None,
+        version: str | None,
+    ) -> InstanceRecord:
+        spec = self._build_removed_instance_spec(name, version=version)
+        adapter = self.adapter_for_service(spec.service)
+        self.reporter(
+            f"Recovering removed instance '{spec.name}' from {spec.datadir} "
+            f"(service={spec.service}, version {spec.version}, port {spec.port}, auth={spec.auth_mode})."
+        )
+        self.store.append_log(
+            f"recreate removed instance name={spec.name} version={spec.version} fresh={fresh} timeout={timeout}"
+        )
+        if prepare_artifact:
+            prepared_image = adapter.prepare_artifact(spec.version)
+        else:
+            prepared_image = spec.image_tag_override or image_tag_for_service(spec.service, spec.version)
+            self.reporter(
+                f"Reusing the existing image tag {prepared_image} without re-running artifact preparation."
+            )
+        container_name = container_name_for_service(spec.service, spec.name)
+        if timeout is not None:
+            try:
+                self.docker.stop_container(container_name, timeout=timeout)
+            except Exception as exc:
+                self.reporter(
+                    f"Graceful stop failed during recreate (proceeding to force-remove): {exc}"
+                )
+        self.docker.remove_container(container_name, missing_ok=True)
+        preview_record = build_instance_record(
+            replace(spec, image_tag_override=prepared_image),
+            status="removed",
+            history=[],
+        )
+        if fresh:
+            self._wipe_datadir(preview_record)
+        history = [
+            {
+                "action": "recreate_requested",
+                "timestamp": utc_now_iso(),
+                "version": spec.version,
+                "from_status": "removed",
+                "clawcu_version": clawcu_version,
+                "auth_mode": spec.auth_mode,
+                "service": spec.service,
+                "recovered_from": spec.datadir,
+            }
+        ]
+        live_record = self._start_new_instance(
+            replace(spec, image_tag_override=prepared_image),
+            history=history,
+            auto_port=True,
+        )
         self.reporter(self._lifecycle_summary("recreated", live_record))
         return live_record
 
@@ -1878,6 +2025,7 @@ class ClawCUService:
                 history=copy.deepcopy(current_history),
             )
             self.store.save_record(record)
+            self._write_instance_metadata(record)
             try:
                 adapter.configure_before_run(self, record)
                 self._run_container(record)

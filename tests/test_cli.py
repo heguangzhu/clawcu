@@ -109,6 +109,7 @@ class FakeService:
         )
         self.instance_statuses: dict[str, str] = {}
         self._missing_instance_names: set[str] = set()
+        self._removed_instance_names: set[str] = set()
 
     def _fake_load_record(self, name: str):
         if name in self._missing_instance_names:
@@ -543,6 +544,8 @@ class FakeService:
 
     def retry_instance(self, name: str) -> InstanceRecord:
         self._record("retry_instance", name=name)
+        if name in self._missing_instance_names:
+            raise FileNotFoundError(f"Instance '{name}' was not found.")
         status = self.instance_statuses.get(name, "running")
         if status != "create_failed":
             raise ValueError(
@@ -561,12 +564,26 @@ class FakeService:
         *,
         fresh: bool = False,
         timeout: int | None = None,
+        version: str | None = None,
     ) -> InstanceRecord:
-        self._record("recreate_instance", name=name, fresh=fresh, timeout=timeout)
+        self._record("recreate_instance", name=name, fresh=fresh, timeout=timeout, version=version)
         if self.reporter:
             self.reporter("Recreating instance")
         record = self._instance(name=name)
+        if version is not None:
+            record.version = version
         return record
+
+    def _build_removed_instance_spec(self, name: str, *, version: str | None = None):
+        self._record("_build_removed_instance_spec", name=name, version=version)
+        if name not in self._removed_instance_names:
+            raise FileNotFoundError(f"Instance '{name}' was not found.")
+        if version is None:
+            raise ValueError(
+                f"Removed Hermes instance '{name}' does not record its version. "
+                f"Re-run `clawcu recreate {name} --version <version>` to restore it."
+            )
+        return SimpleNamespace(name=name, version=version)
 
     def upgrade_plan(self, name: str, *, version: str) -> dict:
         self._record("upgrade_plan", name=name, version=version)
@@ -810,7 +827,7 @@ def test_root_help_lists_descriptions_for_top_level_commands() -> None:
     assert "restart" in result.stdout
     assert "Restart a managed instance." in result.stdout
     assert "recreate" in result.stdout
-    assert "Recreate an existing instance." in result.stdout
+    assert "Recreate an existing instance, or recover a removed instance" in result.stdout
     assert "Auto-retries instances in" in result.stdout
     assert "upgrade" in result.stdout
     assert "Upgrade an instance to a newer service version" in result.stdout
@@ -1560,7 +1577,7 @@ def test_setenv_command_can_recreate_instance_immediately(monkeypatch) -> None:
             "assignments": ["OPENAI_API_KEY=sk-test"],
         },
     )
-    assert service.calls[1] == ("recreate_instance", (), {"name": "writer", "fresh": False, "timeout": None})
+    assert service.calls[1] == ("recreate_instance", (), {"name": "writer", "fresh": False, "timeout": None, "version": None})
 
 
 def test_getenv_command_lists_instance_environment(monkeypatch) -> None:
@@ -1620,7 +1637,7 @@ def test_unsetenv_command_can_recreate_instance_immediately(monkeypatch) -> None
         (),
         {"name": "writer", "keys": ["OPENAI_API_KEY"]},
     )
-    assert service.calls[1] == ("recreate_instance", (), {"name": "writer", "fresh": False, "timeout": None})
+    assert service.calls[1] == ("recreate_instance", (), {"name": "writer", "fresh": False, "timeout": None, "version": None})
 
 
 def test_setenv_command_from_file_loads_assignments(monkeypatch, tmp_path) -> None:
@@ -2150,7 +2167,23 @@ def test_recreate_command_forwards_timeout_and_skips_retry(monkeypatch) -> None:
     method_names = [call[0] for call in service.calls]
     assert "retry_instance" not in method_names
     recreate_call = next(call for call in service.calls if call[0] == "recreate_instance")
-    assert recreate_call[2] == {"name": "writer", "fresh": False, "timeout": 30}
+    assert recreate_call[2] == {"name": "writer", "fresh": False, "timeout": 30, "version": None}
+
+
+def test_recreate_command_can_recover_removed_instance_with_version(monkeypatch) -> None:
+    service = FakeService()
+    service._missing_instance_names.add("writer-old")
+    service._removed_instance_names.add("writer-old")
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["recreate", "writer-old", "--version", "2026.4.8"])
+
+    assert result.exit_code == 0
+    assert "Recreated instance:" in result.stdout
+    assert service.calls == [
+        ("recreate_instance", (), {"name": "writer-old", "fresh": False, "timeout": None, "version": "2026.4.8"}),
+        ("dashboard_url", (), {"name": "writer-old"}),
+    ]
 
 
 def test_recreate_command_fresh_requires_confirm_by_default(monkeypatch) -> None:
@@ -2171,7 +2204,7 @@ def test_recreate_command_fresh_with_yes_wipes_datadir(monkeypatch) -> None:
 
     assert result.exit_code == 0
     recreate_call = next(call for call in service.calls if call[0] == "recreate_instance")
-    assert recreate_call[2] == {"name": "writer", "fresh": True, "timeout": None}
+    assert recreate_call[2] == {"name": "writer", "fresh": True, "timeout": None, "version": None}
 
 
 def test_recreate_command_fresh_validates_instance_exists_before_confirm(monkeypatch) -> None:
