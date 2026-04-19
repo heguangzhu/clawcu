@@ -3318,11 +3318,18 @@ def logs_instance(
 
 @app.command(
     "remove",
-    help="Remove an instance and optionally delete its data directory. Alias: `rm`.",
+    help="Remove a managed instance, or pass --removed to permanently delete an orphaned leftover from `list --removed`. Alias: `rm`.",
     rich_help_panel=_PANEL_LIFECYCLE,
 )
 def remove_instance(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
+    removed: Annotated[
+        bool,
+        typer.Option(
+            "--removed",
+            help="Treat NAME as an orphaned leftover from `clawcu list --removed` and permanently delete its datadir.",
+        ),
+    ] = False,
     delete_data: Annotated[
         bool,
         typer.Option(
@@ -3332,18 +3339,30 @@ def remove_instance(
     ] = False,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip the confirmation prompt.")] = False,
 ) -> None:
-    summary = (
-        f"About to remove instance '{name}' and delete its data directory."
-        if delete_data
-        else f"About to remove instance '{name}' (data directory will be kept)."
-    )
+    if removed:
+        summary = (
+            f"About to permanently delete removed instance '{name}' and its leftover data directory."
+        )
+    else:
+        summary = (
+            f"About to remove instance '{name}' and delete its data directory."
+            if delete_data
+            else f"About to remove instance '{name}' (data directory will be kept)."
+        )
     _confirm_destructive(summary, yes)
     try:
-        get_service().remove_instance(name, delete_data=delete_data)
+        service = get_service()
+        if removed:
+            service.remove_removed_instance(name)
+        else:
+            service.remove_instance(name, delete_data=delete_data)
     except Exception as exc:
         _exit_with_error(str(exc))
-    action = "and data directory" if delete_data else "but kept data directory"
-    console.print(f"[green]Removed instance:[/green] {name} {action}")
+    if removed:
+        console.print(f"[green]Removed orphaned instance data:[/green] {name}")
+    else:
+        action = "and data directory" if delete_data else "but kept data directory"
+        console.print(f"[green]Removed instance:[/green] {name} {action}")
 
 
 def _register_command_aliases() -> None:

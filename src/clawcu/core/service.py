@@ -1991,6 +1991,33 @@ class ClawCUService:
             f"remove instance name={record.name} delete_data={'yes' if delete_data else 'no'}"
         )
 
+    def remove_removed_instance(self, name: str) -> None:
+        root = self._find_removed_instance_root(name)
+        if root is None:
+            raise FileNotFoundError(
+                f"Removed instance '{name}' was not found. Run `clawcu list --removed` to see recoverable leftovers."
+            )
+        service_name: str | None = None
+        metadata = self._load_instance_metadata(root)
+        hinted_service = metadata.get("service")
+        if isinstance(hinted_service, str) and hinted_service in self.adapters:
+            service_name = hinted_service
+        if service_name is None:
+            for adapter in self.adapters.values():
+                if adapter.removed_instance_summary(self, root) is not None:
+                    service_name = adapter.service_name
+                    break
+        try:
+            if service_name is not None:
+                container_name = container_name_for_service(service_name, name)
+                self.docker.remove_container(container_name, missing_ok=True)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to remove Docker container for removed instance '{name}': {exc}"
+            ) from exc
+        shutil.rmtree(root)
+        self.store.append_log(f"remove removed-instance name={name} datadir={root}")
+
     def _next_available_port(self, start_port: int | None = None) -> int:
         port = start_port if start_port is not None else self.DEFAULT_OPENCLAW_PORT
         for _ in range(self.PORT_SEARCH_LIMIT):

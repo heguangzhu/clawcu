@@ -733,6 +733,9 @@ class FakeService:
     def remove_instance(self, name: str, *, delete_data: bool = False) -> None:
         self._record("remove_instance", name=name, delete_data=delete_data)
 
+    def remove_removed_instance(self, name: str) -> None:
+        self._record("remove_removed_instance", name=name)
+
 
 def test_pull_openclaw_command(monkeypatch) -> None:
     service = FakeService()
@@ -838,7 +841,7 @@ def test_root_help_lists_descriptions_for_top_level_commands() -> None:
     assert "logs" in result.stdout
     assert "Stream or print Docker logs for a managed instance." in result.stdout
     assert "remove" in result.stdout
-    assert "Remove an instance and optionally delete its data directory." in result.stdout
+    assert "Remove a managed instance, or pass --removed to permanently delete" in result.stdout
 
 
 def test_create_help_no_longer_exposes_auth_option() -> None:
@@ -3305,6 +3308,21 @@ def test_remove_delete_data_and_keep_data_flags(monkeypatch) -> None:
     )
 
 
+def test_remove_removed_deletes_orphaned_instance_data(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["remove", "writer-old", "--removed", "--yes"])
+
+    assert result.exit_code == 0
+    assert "Removed orphaned instance data:" in result.stdout
+    assert service.calls[-1] == (
+        "remove_removed_instance",
+        (),
+        {"name": "writer-old"},
+    )
+
+
 def test_remove_requires_confirmation_in_non_interactive(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
@@ -3314,3 +3332,14 @@ def test_remove_requires_confirmation_in_non_interactive(monkeypatch) -> None:
     assert result.exit_code == 1
     assert "--yes" in result.stdout
     assert all(call[0] != "remove_instance" for call in service.calls)
+
+
+def test_remove_removed_requires_confirmation_in_non_interactive(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["remove", "writer-old", "--removed"])
+
+    assert result.exit_code == 1
+    assert "--yes" in result.stdout
+    assert all(call[0] != "remove_removed_instance" for call in service.calls)

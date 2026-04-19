@@ -1584,6 +1584,56 @@ def test_remove_instance_preserves_record_when_container_removal_fails(temp_claw
     assert datadir.exists()
 
 
+def test_remove_removed_instance_deletes_orphaned_datadir_and_stale_container(
+    temp_clawcu_home,
+) -> None:
+    service, docker, _, store = make_service(temp_clawcu_home)
+    datadir = temp_clawcu_home / "writer"
+
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+
+    service.remove_instance("writer", delete_data=False)
+    docker.status_map["clawcu-openclaw-writer"] = "exited"
+
+    service.remove_removed_instance("writer")
+
+    assert not datadir.exists()
+    assert store.instance_path("writer").exists() is False
+    assert docker.commands[-1] == ("rm", "clawcu-openclaw-writer")
+
+
+def test_remove_removed_instance_preserves_orphaned_datadir_when_container_removal_fails(
+    temp_clawcu_home,
+) -> None:
+    service, docker, _, _ = make_service(temp_clawcu_home)
+    datadir = temp_clawcu_home / "writer"
+
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+
+    service.remove_instance("writer", delete_data=False)
+    docker.status_map["clawcu-openclaw-writer"] = "exited"
+    docker.fail_next_remove = True
+
+    with pytest.raises(RuntimeError, match="Failed to remove Docker container for removed instance"):
+        service.remove_removed_instance("writer")
+
+    assert datadir.exists()
+
+
 def test_set_instance_env_writes_instance_env_file(temp_clawcu_home, tmp_path) -> None:
     service, _, _, store = make_service(temp_clawcu_home)
     datadir = tmp_path / "writer"
