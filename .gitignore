@@ -14,5 +14,11 @@ data/
 tmp/
 roadmap.md
 
+# Build artifacts
+*.egg-info/
+
+# Internal docs (reviews, design notes) — not for public repo
+docs/internal/
+
 # Claude / Ralph Loop local state
 .claude/
