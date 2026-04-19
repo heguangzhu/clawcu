@@ -1510,6 +1510,46 @@ class ClawCUService:
             "remote_requested": include_remote,
         }
 
+    def list_service_available_versions(
+        self, *, include_remote: bool = True
+    ) -> dict:
+        """Enumerate remote release tags per service, independent of any instance.
+
+        Used by `clawcu list` to print a "what versions are out there"
+        block alongside the instance table. Each entry carries the
+        configured image repo, the filtered release-tag list (sorted
+        oldest -> newest), and — on failure — an ``error`` string so
+        the CLI can explain why a service's row is empty. The fetch is
+        best-effort; network / auth failures are caught so a red badge
+        day at the registry does not break the default `list` command.
+        """
+        out: dict[str, dict] = {}
+        for name, manager in (
+            ("openclaw", self.openclaw),
+            ("hermes", self.hermes),
+        ):
+            repo = getattr(manager, "image_repo", "") or ""
+            entry: dict = {
+                "service": name,
+                "image_repo": repo,
+                "versions": None,
+                "registry": None,
+                "error": None,
+            }
+            if include_remote and repo and hasattr(manager, "list_remote_versions"):
+                try:
+                    result = manager.list_remote_versions()
+                except Exception as exc:  # defensive — best-effort only
+                    entry["error"] = f"unexpected error: {exc}"
+                else:
+                    entry["registry"] = getattr(result, "registry", None) or None
+                    if result.ok:
+                        entry["versions"] = result.tags or []
+                    else:
+                        entry["error"] = result.error
+            out[name] = entry
+        return out
+
     def list_rollback_targets(self, name: str) -> dict:
         """Enumerate snapshot targets usable by `clawcu rollback --list`.
 

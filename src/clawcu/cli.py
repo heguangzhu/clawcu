@@ -490,6 +490,34 @@ def _print_agent_table(records: list[dict]) -> None:
     console.print(table)
 
 
+def _print_available_versions(payload: dict, *, limit: int = 10) -> None:
+    """Render the per-service remote version block below `clawcu list`.
+
+    Each row shows the most recent ``limit`` tags (newest at the right).
+    When the fetch failed the error is surfaced inline so the user knows
+    why the list is empty, rather than seeing a silently blank row.
+    """
+    console.print()
+    console.print(
+        f"[bold]Available versions[/bold] [dim](top {limit} by semver, newest →)[/dim]"
+    )
+    for name in ("openclaw", "hermes"):
+        entry = payload.get(name) or {}
+        label = f"  [cyan]{name:<9}[/cyan]"
+        versions = entry.get("versions")
+        if versions is None:
+            error = entry.get("error") or "remote fetch skipped"
+            console.print(f"{label} [yellow]{error}[/yellow]")
+            continue
+        if not versions:
+            console.print(f"{label} [dim]no release tags[/dim]")
+            continue
+        total = len(versions)
+        tail = versions[-limit:]
+        suffix = f" [dim]({total} total)[/dim]" if total > limit else ""
+        console.print(f"{label} {', '.join(tail)}{suffix}")
+
+
 _WIDE_PROVIDER_MIN_COLS = 110
 _REVEAL_PROVIDER_MIN_COLS = 130
 _API_KEY_ENV_REF = re.compile(r"^\$\{[^}]+\}$|^\$[A-Z_][A-Z0-9_]*$")
@@ -1662,6 +1690,17 @@ def list_instances(
         bool,
         typer.Option("--reveal", help="Show full dashboard tokens inside ACCESS URLs. Off by default for safety."),
     ] = False,
+    include_remote: Annotated[
+        bool,
+        typer.Option(
+            "--remote/--no-remote",
+            help=(
+                "Append a top-10 'Available versions' block per service (OpenClaw, Hermes) "
+                "fetched from the configured image registries. Default on; pass --no-remote "
+                "for a strictly offline view (CI, airgapped, slow networks)."
+            ),
+        ),
+    ] = True,
     json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
     _set_json_mode(json_output)
@@ -1718,6 +1757,27 @@ def list_instances(
         _print_agent_table(records)
     else:
         _print_instance_table(records, wide=wide, reveal=reveal)
+
+    # Versions block is a human-only footer; skip for --json (scripts
+    # already know which versions they care about), --agents (narrow
+    # per-agent view), and --removed (archival view, not an upgrade
+    # surface). Guarded with hasattr so older service implementations
+    # and test stubs without the method degrade to "silently skip".
+    if (
+        not agents
+        and resolved_source in {"managed", "local", "all"}
+        and hasattr(service, "list_service_available_versions")
+    ):
+        try:
+            versions_payload = service.list_service_available_versions(
+                include_remote=include_remote
+            )
+        except Exception as exc:
+            console.print(
+                f"[yellow]Skipped available-versions fetch: {exc}[/yellow]"
+            )
+        else:
+            _print_available_versions(versions_payload, limit=10)
 
 
 def _print_inspect_human(payload: dict, *, reveal: bool, show_history: bool) -> None:

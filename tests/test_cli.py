@@ -440,6 +440,26 @@ class FakeService:
             }
         ]
 
+    def list_service_available_versions(self, *, include_remote: bool = True) -> dict:
+        self._record("list_service_available_versions", include_remote=include_remote)
+        return {
+            "openclaw": {
+                "service": "openclaw",
+                "image_repo": "ghcr.io/openclaw/openclaw",
+                "registry": "ghcr.io",
+                "versions": [f"2026.3.{i}" for i in range(1, 11)]
+                + [f"2026.4.{i}" for i in range(1, 11)],
+                "error": None,
+            },
+            "hermes": {
+                "service": "hermes",
+                "image_repo": "clawcu/hermes-agent",
+                "registry": "registry-1.docker.io",
+                "versions": [f"2026.4.{i}" for i in range(1, 14)],
+                "error": None,
+            },
+        }
+
     def list_local_agent_summaries(self) -> list[dict]:
         self._record("list_local_agent_summaries")
         return [
@@ -1266,9 +1286,47 @@ def test_list_command_defaults_to_managed_source(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "ClawCU Instances" in result.stdout
     # Default no longer mixes local pseudo-instances into the table.
+    # The available-versions footer calls the service once more.
     assert service.calls == [
         ("list_instance_summaries", (), {"running_only": False}),
+        ("list_service_available_versions", (), {"include_remote": True}),
     ]
+    assert "Available versions" in result.stdout
+
+
+def test_list_no_remote_flag_skips_registry_fetch(monkeypatch) -> None:
+    """`--no-remote` still calls the service method but passes include_remote=False.
+
+    The service method is responsible for interpreting the flag (no
+    network I/O), so the CLI behavior is a one-argument flip.
+    """
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["list", "--no-remote"])
+
+    assert result.exit_code == 0
+    assert (
+        "list_service_available_versions",
+        (),
+        {"include_remote": False},
+    ) in service.calls
+
+
+def test_list_json_mode_skips_available_versions_footer(monkeypatch) -> None:
+    """`--json` consumers stay on the stable instance-array contract."""
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["list", "--json"])
+
+    assert result.exit_code == 0
+    assert "Available versions" not in result.stdout
+    assert (
+        "list_service_available_versions",
+        (),
+        {"include_remote": True},
+    ) not in service.calls
 
 
 def test_list_command_source_all_includes_local(monkeypatch) -> None:
@@ -1282,6 +1340,7 @@ def test_list_command_source_all_includes_local(monkeypatch) -> None:
         ("list_local_instance_summaries", (), {}),
         ("list_removed_instance_summaries", (), {}),
         ("list_instance_summaries", (), {"running_only": False}),
+        ("list_service_available_versions", (), {"include_remote": True}),
     ]
 
 
@@ -2381,7 +2440,9 @@ def test_list_running_option_is_forwarded(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert "ClawCU Instances" in result.stdout
-    assert service.calls[-1] == ("list_instance_summaries", (), {"running_only": True})
+    # list_service_available_versions trails the instance fetch in the
+    # default `list` flow; assert on the instance call specifically.
+    assert ("list_instance_summaries", (), {"running_only": True}) in service.calls
 
 
 def test_list_agents_option_shows_agent_rows(monkeypatch) -> None:
@@ -2442,7 +2503,10 @@ def test_list_local_option_filters_to_local(monkeypatch) -> None:
     result = runner.invoke(app, ["list", "--local"])
 
     assert result.exit_code == 0
-    assert service.calls == [("list_local_instance_summaries", (), {})]
+    assert service.calls == [
+        ("list_local_instance_summaries", (), {}),
+        ("list_service_available_versions", (), {"include_remote": True}),
+    ]
 
 
 def test_inspect_command_renders_human_view_by_default(monkeypatch) -> None:
