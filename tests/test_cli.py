@@ -3367,3 +3367,22 @@ def test_remove_removed_requires_confirmation_in_non_interactive(monkeypatch) ->
     assert result.exit_code == 1
     assert "--yes" in result.stdout
     assert all(call[0] != "remove_removed_instance" for call in service.calls)
+
+
+def test_remove_removed_rejects_explicit_data_flags(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    delete_result = runner.invoke(
+        app, ["remove", "writer-old", "--removed", "--delete-data", "--yes"]
+    )
+    assert delete_result.exit_code == 1
+    assert "--removed already implies permanent deletion" in delete_result.stdout
+    assert all(call[0] != "remove_removed_instance" for call in service.calls)
+
+    keep_result = runner.invoke(
+        app, ["remove", "writer-old", "--removed", "--keep-data", "--yes"]
+    )
+    assert keep_result.exit_code == 1
+    assert "--removed already implies permanent deletion" in keep_result.stdout
+    assert all(call[0] != "remove_removed_instance" for call in service.calls)

@@ -444,12 +444,13 @@ class OpenClawAdapter(ServiceAdapter):
         metadata = service._load_instance_metadata(root)
         provider_summary = service._config_provider_summary(config)
         version = str(metadata.get("version") or service._config_version(config) or "-")
+        port_value = service._coerce_metadata_port(metadata.get("port"))
         return {
             "source": "removed",
             "name": root.name,
             "home": str(root),
             "version": version,
-            "port": "-",
+            "port": port_value if port_value is not None else "-",
             "status": "removed",
             "access_url": "-",
             "providers": provider_summary["providers"],

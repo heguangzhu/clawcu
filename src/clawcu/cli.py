@@ -3346,6 +3346,7 @@ def logs_instance(
     rich_help_panel=_PANEL_LIFECYCLE,
 )
 def remove_instance(
+    ctx: typer.Context,
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
     removed: Annotated[
         bool,
@@ -3358,12 +3359,17 @@ def remove_instance(
         bool,
         typer.Option(
             "--delete-data/--keep-data",
-            help="Delete or preserve the instance data directory.",
+            help="Delete or preserve the instance data directory. Cannot be combined with --removed, which always deletes.",
         ),
     ] = False,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip the confirmation prompt.")] = False,
 ) -> None:
     if removed:
+        source = ctx.get_parameter_source("delete_data")
+        if source is not None and source.name == "COMMANDLINE":
+            _exit_with_error(
+                "--removed already implies permanent deletion; drop --delete-data/--keep-data."
+            )
         summary = (
             f"About to permanently delete removed instance '{name}' and its leftover data directory."
         )

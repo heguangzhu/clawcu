@@ -381,12 +381,13 @@ class HermesAdapter(ServiceAdapter):
             history=[],
         )
         summary = self.instance_provider_summary(service, record)
+        port_value = service._coerce_metadata_port(metadata.get("port"))
         return {
             "source": "removed",
             "name": root.name,
             "home": str(root),
             "version": record.version,
-            "port": "-",
+            "port": port_value if port_value is not None else "-",
             "status": "removed",
             "access_url": "-",
             "providers": summary["providers"],
