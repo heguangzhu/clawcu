@@ -485,7 +485,22 @@ def _provider_api_key_cell(
     the source). ``state`` is the service-layer classification; if not
     provided, we fall back to inspecting ``raw_key`` alone (coarser)."""
     if reveal:
-        return raw_key or "-"
+        if raw_key:
+            return raw_key
+        # No literal to show. Preserve the state distinction so callers
+        # using --reveal specifically to debug provisioning still see
+        # "no value because the field was blank" vs "no value because
+        # the field was absent". Without this annotation, --reveal
+        # collapses both into a flat ``-``.
+        if state == "empty":
+            return "- [dim](empty)[/dim]"
+        if state == "missing":
+            return "- [dim](unset)[/dim]"
+        if state == "env-ref":
+            # raw_key should not normally be blank when the state is
+            # env-ref, but guard for the pathological case.
+            return "- [dim](env-ref)[/dim]"
+        return "-"
     if state == "env-ref":
         return "[cyan]env-ref[/cyan]"
     if state == "empty":
@@ -507,7 +522,10 @@ def _print_provider_stacked(records: list[dict], *, reveal: bool) -> None:
     """Key/value layout used when the terminal is too narrow to render
     the provider table readably — most commonly triggered by ``--reveal``
     at ~80 columns where a literal 40+ char API key crushes every other
-    column to 1 character wide. Each provider prints as a short block."""
+    column to 1 character wide. Each provider prints as a short block
+    rendered as a two-column Table so long values fold with a proper
+    hanging indent (aligned under the value column) instead of wrapping
+    flush-left where they read as separate records."""
     console.print("[bold]ClawCU Providers[/bold]")
     for idx, record in enumerate(records):
         raw_key = str(record.get("api_key") or "")
@@ -521,15 +539,15 @@ def _print_provider_stacked(records: list[dict], *, reveal: bool) -> None:
         console.print(
             f"[bold]{record['name']}[/bold]  [dim]({record.get('service', '-')})[/dim]"
         )
-        console.print(f"  api_style: {record['api_style']}")
-        console.print(f"  api_key:   {key_cell}")
-        endpoint = record.get("endpoint") or "-"
-        console.print(f"  endpoint:  {endpoint}")
+        detail = Table(show_header=False, box=None, pad_edge=False)
+        detail.add_column(style="cyan", no_wrap=True)
+        detail.add_column(overflow="fold")
+        detail.add_row("  api_style", record["api_style"])
+        detail.add_row("  api_key", key_cell)
+        detail.add_row("  endpoint", record.get("endpoint") or "-")
         models = record.get("models") or []
-        if models:
-            console.print(f"  models:    {', '.join(models)}")
-        else:
-            console.print("  models:    -")
+        detail.add_row("  models", ", ".join(models) if models else "-")
+        console.print(detail)
         if idx != len(records) - 1:
             console.print()
 
@@ -3071,7 +3089,24 @@ def rollback_instance(
 )
 def clone_instance(
     source_name: Annotated[str, typer.Argument(help="Source instance name.")],
-    name: Annotated[str, typer.Option("--name", help="New cloned instance name.")],
+    target_name: Annotated[
+        str | None,
+        typer.Argument(
+            metavar="[TARGET]",
+            help=(
+                "Target clone name. Equivalent to --name; supplying both is "
+                "an error. Using a second positional matches the `git clone "
+                "<source> <target>` convention."
+            ),
+        ),
+    ] = None,
+    name: Annotated[
+        str | None,
+        typer.Option(
+            "--name",
+            help="New cloned instance name (alternative to the TARGET positional).",
+        ),
+    ] = None,
     datadir: Annotated[str | None, typer.Option("--datadir", help="Target cloned data directory.")] = None,
     port: Annotated[int | None, typer.Option("--port", help="Target host port.")] = None,
     version: Annotated[
@@ -3101,13 +3136,28 @@ def clone_instance(
         ),
     ] = True,
 ) -> None:
+    # Resolve the new clone name from either the TARGET positional
+    # (docker/git-style) or the original --name option. Exactly one must
+    # be set; passing both is ambiguous and we'd rather fail loud than
+    # silently pick one. The original --name form stays so pre-0.2.5
+    # scripts keep working.
+    if target_name and name:
+        _exit_with_error(
+            "Pass either the TARGET positional or --name, not both."
+        )
+    resolved_name = target_name or name
+    if not resolved_name:
+        _exit_with_error(
+            "clone needs a target name: `clawcu clone <source> <target>` or "
+            "`clawcu clone <source> --name <target>`."
+        )
     service = get_service()
     if hasattr(service, "set_reporter"):
         service.set_reporter(_print_progress)
     try:
         record = service.clone_instance(
             source_name,
-            name=name,
+            name=resolved_name,
             datadir=datadir,
             port=port,
             version=version,
@@ -3158,7 +3208,13 @@ def clone_instance(
             head = ordered_names[:3]
             extra = len(ordered_names) - len(head)
             if active_set and head and head[0] == active:
-                head_cells = [f"{head[0]} [dim](was active on source)[/dim]"] + head[1:]
+                # "first on source" is deliberately understated — the
+                # heuristic reads the source's models.json and picks
+                # ``agents.defaults.model.primary`` if set, otherwise the
+                # first entry in the providers dict. Both are "the one
+                # most likely in use" but neither is a guarantee, so the
+                # label doesn't overclaim.
+                head_cells = [f"{head[0]} [dim](first on source)[/dim]"] + head[1:]
             else:
                 head_cells = list(head)
             names_cell = ", ".join(head_cells)
@@ -3240,6 +3296,38 @@ def remove_instance(
         _exit_with_error(str(exc))
     action = "and data directory" if delete_data else "but kept data directory"
     console.print(f"[green]Removed instance:[/green] {name} {action}")
+
+
+def _register_command_aliases() -> None:
+    """Register docker-style short aliases for the most common verbs.
+
+    Aliases are marked ``hidden=True`` so ``--help`` stays terse, but
+    they show up in tab-completion and work identically to the full
+    form. Users coming from ``docker ps`` / ``git rm`` / ``kubectl get``
+    have the muscle memory — this removes the "No such command 'rm'"
+    wall without clutter.
+    """
+    aliases: list[tuple[str, str, str]] = [
+        ("rm", "remove", "Alias for `remove`."),
+        ("ls", "list", "Alias for `list`."),
+    ]
+    # Typer's CommandInfo list is populated by the @app.command() calls
+    # above. We copy the CommandInfo for each target and re-register it
+    # under the alias name with hidden=True.
+    by_name = {cmd.name: cmd for cmd in app.registered_commands if cmd.name}
+    for alias, target, help_text in aliases:
+        source = by_name.get(target)
+        if source is None:
+            continue
+        app.command(
+            alias,
+            help=help_text,
+            hidden=True,
+            rich_help_panel=source.rich_help_panel,
+        )(source.callback)
+
+
+_register_command_aliases()
 
 
 def main() -> None:

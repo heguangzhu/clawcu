@@ -1172,11 +1172,14 @@ def test_missing_required_arguments_exit_with_posix_error() -> None:
     assert result.exit_code == 1
     assert "--all" in result.output and "--instance" in result.output
 
-    # clone has --name as a required OPTION; missing it should also
-    # surface via Typer's standard missing-option error.
+    # clone accepts the clone target either as a positional or via
+    # --name. Missing BOTH exits via _exit_with_error (code 1) with a
+    # message that names both forms, not Typer's native exit-2 —
+    # because Typer doesn't know about the mutual-exclusion requirement.
     result = runner.invoke(app, ["clone", "writer"])
-    assert result.exit_code == 2
-    assert "Missing option" in result.output
+    assert result.exit_code == 1
+    assert "TARGET" in result.output or "target name" in result.output.lower()
+    assert "--name" in result.output
 
 
 def test_required_options_render_in_help_with_asterisk() -> None:
