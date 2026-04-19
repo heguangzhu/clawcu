@@ -5,9 +5,27 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "clawcu"
 version = "0.2.8"
-description = "ClawCU: a local multi-agent lifecycle manager"
+description = "ClawCU: a local multi-agent lifecycle manager for OpenClaw and Hermes"
 readme = "README.md"
 requires-python = ">=3.11"
+authors = [{ name = "Michael He", email = "heguangzhu@gmail.com" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["docker", "openclaw", "hermes", "agent", "cli", "lifecycle"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Build Tools",
+  "Topic :: System :: Installation/Setup",
+  "Topic :: Utilities",
+]
 dependencies = [
   "PyYAML>=6.0,<7.0",
   "rich>=13.7.0,<14.0.0",
@@ -18,6 +36,12 @@ dependencies = [
 dev = [
   "pytest>=8.2.0,<9.0.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/heguangzhu/clawcu"
+Repository = "https://github.com/heguangzhu/clawcu"
+Changelog = "https://github.com/heguangzhu/clawcu/blob/main/CHANGELOG.md"
+Issues = "https://github.com/heguangzhu/clawcu/issues"
 
 [project.scripts]
 clawcu = "clawcu.cli:main"
