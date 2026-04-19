@@ -177,33 +177,6 @@ That means:
 
 If the upgrade fails, ClawCU attempts to restore the previous version and the matching env snapshot automatically.
 
-## Orphan Recovery Workflow
-
-If an instance's record is lost — registry corruption, a restored backup, an aborted `create` that left state behind — its datadir becomes an **orphan**: still on disk under `~/.clawcu`, but no longer tracked.
-
-Discover orphans:
-
-```bash
-clawcu list --removed
-```
-
-Each row shows the service / version / port recovered from the datadir's `.clawcu-instance.json` sidecar.
-
-Recover:
-
-```bash
-clawcu recreate <orphan>                     # auto-restore from metadata
-clawcu recreate <orphan> --version 2026.4.9  # when metadata is missing
-```
-
-Permanently delete:
-
-```bash
-clawcu remove <orphan> --removed --yes
-```
-
-In `--removed` mode, `--keep-data` / `--delete-data` are rejected — the flag already implies permanent deletion.
-
 ## Model Configuration Collection and Reuse
 
 ClawCU keeps the existing `provider` command family for compatibility, but it is now best read as model-configuration collection and reuse across services.

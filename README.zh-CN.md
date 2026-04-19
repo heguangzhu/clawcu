@@ -177,33 +177,6 @@ clawcu rollback analyst-upgrade-test
 
 如果升级失败，ClawCU 会尝试自动恢复旧版本和对应的环境变量快照。
 
-## 孤儿实例恢复流程
-
-如果实例的记录丢失了——比如 registry 损坏、还原了一份备份、或者一次中断的 `create` 遗留了状态——它的 datadir 会成为**孤儿**：仍然在 `~/.clawcu` 下，但已经不被 ClawCU 跟踪。
-
-发现孤儿：
-
-```bash
-clawcu list --removed
-```
-
-每一行会显示从 datadir 里 `.clawcu-instance.json` 元数据还原出的 service / version / port。
-
-恢复：
-
-```bash
-clawcu recreate <orphan>                     # 按元数据自动还原
-clawcu recreate <orphan> --version 2026.4.9  # 元数据缺失时显式钉版本
-```
-
-永久删除：
-
-```bash
-clawcu remove <orphan> --removed --yes
-```
-
-在 `--removed` 模式下，`--keep-data` / `--delete-data` 会被拒绝——该 flag 已隐含"永久删除"语义。
-
 ## 模型配置收集与复用
 
 为了兼容已有命令面，ClawCU 仍然保留 `provider` 这组命令；但现在它的最佳读法是跨服务的模型配置收集与复用。
