@@ -3,7 +3,7 @@
 🌐 Language:
 [English](README.md) | [中文](README.zh-CN.md)
 
-`ClawCU` 是一个面向本地多 AI Agent Runtime 的生命周期管理工具，适合在同一台机器上稳定运行多个实例。目前支持两类一等公民服务：[OpenClaw](https://github.com/openclaw/openclaw) 和 [Hermes Agent](https://github.com/NousResearch/hermes-agent)。
+`ClawCU` 是一个面向本地多 AI Agent Runtime 的生命周期管理工具，适合在同一台机器上稳定运行多个实例。目前支持：[OpenClaw](https://github.com/openclaw/openclaw) 和 [Hermes Agent](https://github.com/NousResearch/hermes-agent)。
 
 ## 为什么需要 ClawCU
 
