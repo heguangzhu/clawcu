@@ -22,14 +22,19 @@ from clawcu import __version__
 from clawcu.core.registry import is_semver_release_tag
 from clawcu.service import ClawCUService
 
-# Show full help on missing-option errors so users see every flag in one go,
-# not just whichever required option happened to fail first. Click's default
-# prints a one-line usage + "Try --help", which leaves the user one more
+# When a command with required options gets no CLI args at all, show help
+# and exit 0 — the user was asking "what does this command take?", not
+# invoking it. When the user DID pass some args but still missed a required
+# one, show help followed by the targeted error (exit 2). Click's default
+# prints only a one-line usage + "Try --help", which leaves users one more
 # guessing round away from a working command.
 _original_parse_args = typer.core.TyperCommand.parse_args
 
 
 def _parse_args_with_help(self, ctx, args):  # type: ignore[no-untyped-def]
+    if not args and any(getattr(p, "required", False) for p in self.params):
+        click.echo(ctx.get_help())
+        ctx.exit(0)
     try:
         return _original_parse_args(self, ctx, args)
     except click.MissingParameter as exc:

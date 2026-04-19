@@ -1154,22 +1154,25 @@ def test_empty_service_groups_show_help_instead_of_error() -> None:
     assert "Missing command" not in create_result.stdout
     assert "Missing command" not in pull_result.stdout
 
-    # `provider models` is now a leaf command that takes a provider name
-    # directly (v0.2 dropped the trailing `list` level). Missing the name
-    # surfaces the standard Typer "Missing argument 'NAME'" error.
+    # `provider models` is a leaf command that takes a provider name
+    # directly (v0.2 dropped the trailing `list` level). Bare invocation
+    # with no args shows help (exit 0) — the user is asking "what does
+    # this take?", not invoking.
     provider_models_result = runner.invoke(app, ["provider", "models"])
-    assert provider_models_result.exit_code == 2
-    assert "Missing argument" in provider_models_result.output
+    assert provider_models_result.exit_code == 0
+    assert "Usage:" in provider_models_result.output
 
 
-def test_missing_required_arguments_exit_with_posix_error() -> None:
-    """Commands with required positional args / options error cleanly.
+def test_bare_invoke_with_required_params_shows_help() -> None:
+    """`clawcu <cmd>` with no args shows help when the command requires args.
 
-    Post v0.2, ClawCU uses Typer's native required-option enforcement
-    instead of the old "show help, exit 0 on no args" behavior. That
-    makes `--help` output distinguish required from optional via the
-    `*` gutter marker, at the cost of switching missing-arg behavior
-    from "print help" to "print error + exit 2" — standard POSIX CLI.
+    A bare invocation is a "what does this take?" query, not a real
+    invocation — so the CLI prints full help (exit 0) rather than a
+    cryptic one-line usage + exit 2. Typer's `*` gutter marker still
+    distinguishes required from optional in the rendered help.
+
+    Partial invocations (some args, still missing a required one) keep
+    POSIX-style exit 2, covered by the separate test below.
     """
     commands_missing_name = [
         "inspect",
@@ -1193,34 +1196,50 @@ def test_missing_required_arguments_exit_with_posix_error() -> None:
     ]
     for command in commands_missing_name:
         result = runner.invoke(app, command.split())
-        assert result.exit_code == 2, (
-            f"{command!r} should exit 2 on missing required arg, got "
+        assert result.exit_code == 0, (
+            f"{command!r} should exit 0 and show help on bare invoke, got "
             f"{result.exit_code}: {result.stdout}"
         )
-        # Typer's standard "Missing argument 'NAME'" error. Ensures the
-        # user sees WHICH arg is missing, not a wall of help text.
-        assert "Missing argument" in result.output or "Missing option" in result.output, (
-            f"{command!r} should surface a 'Missing' error: {result.output}"
+        assert "Usage:" in result.output, (
+            f"{command!r} should print Usage help: {result.output}"
         )
 
-    # provider apply has two positional args; both should be surfaced.
+    # provider apply has two required positional args — bare invoke still
+    # shows help, same as the single-arg commands above.
     result = runner.invoke(app, ["provider", "apply"])
-    assert result.exit_code == 2
+    assert result.exit_code == 0
+    assert "Usage:" in result.output
 
-    # provider collect has three mutually-exclusive scope flags; a clean
-    # error is preferable to an exit-2 help dump.
+    # provider collect has three mutually-exclusive scope flags but no
+    # `required=True` params, so it reaches the command body and surfaces
+    # the mutual-exclusion error (exit 1).
     result = runner.invoke(app, ["provider", "collect"])
     assert result.exit_code == 1
     assert "--all" in result.output and "--instance" in result.output
 
     # clone accepts the clone target either as a positional or via
-    # --name. Missing BOTH exits via _exit_with_error (code 1) with a
-    # message that names both forms, not Typer's native exit-2 —
-    # because Typer doesn't know about the mutual-exclusion requirement.
+    # --name. `clone writer` passes an arg, so we hit the command body
+    # and get the internal validation error (exit 1) — not the bare-
+    # invoke help path.
     result = runner.invoke(app, ["clone", "writer"])
     assert result.exit_code == 1
     assert "TARGET" in result.output or "target name" in result.output.lower()
     assert "--name" in result.output
+
+
+def test_partial_invoke_missing_required_option_shows_help_and_error() -> None:
+    """Partial args with a missing required option prints help + error (exit 2).
+
+    Distinct from the bare-invoke path: here the user clearly intended to
+    run the command but forgot a required option. We print full help
+    (so every flag is visible) followed by a targeted
+    `Error: Missing option '--X'` line, and exit 2 for POSIX conformance.
+    """
+    result = runner.invoke(app, ["create", "hermes", "--name", "demo"])
+    assert result.exit_code == 2
+    assert "Usage:" in result.output
+    assert "Missing option" in result.output
+    assert "--version" in result.output
 
 
 def test_required_options_render_in_help_with_asterisk() -> None:
