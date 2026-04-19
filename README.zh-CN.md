@@ -21,14 +21,18 @@
 
 ## 安装
 
+需要 Python 3.11+ 和一个正在运行的 Docker daemon。
+
 ```bash
-uv tool install .
+pip install clawcu
 ```
 
-或者：
+或者用隔离环境安装 CLI：
 
 ```bash
-pipx install .
+pipx install clawcu
+# 或
+uv tool install clawcu
 ```
 
 ## 快速开始

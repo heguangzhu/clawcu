@@ -21,14 +21,18 @@ Running agent runtimes by hand breaks in predictable ways. ClawCU gives every ru
 
 ## Install
 
+Requires Python 3.11+ and a running Docker daemon.
+
 ```bash
-uv tool install .
+pip install clawcu
 ```
 
-or
+or, for isolated CLI installs:
 
 ```bash
-pipx install .
+pipx install clawcu
+# or
+uv tool install clawcu
 ```
 
 ## Quick Start
