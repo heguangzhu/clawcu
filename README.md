@@ -31,6 +31,7 @@
 - **One CLI, two runtimes** — OpenClaw and Hermes through the same lifecycle commands
 - **Snapshots before every upgrade** — datadir and env both captured; `rollback` restores from real backups
 - **Clone-first experiments** — copy an instance, upgrade the copy, leave the original running
+- **Upgrade candidates at a glance** — `clawcu list` appends the 10 newest stable releases per service (betas filtered); `--no-remote` for offline
 
 ```text
 $ clawcu list
@@ -40,6 +41,11 @@ $ clawcu list
 │ writer          │ openclaw │ 2026.4.1  │ 18799 │ running │ 127.0.0.1:18799 │
 │ analyst         │ hermes   │ 2026.4.13 │ 9129  │ running │ 127.0.0.1:9129  │
 └─────────────────┴──────────┴───────────┴───────┴─────────┴─────────────────┘
+
+Available versions (top 10 by semver, newest first)
+  openclaw  2026.4.15, 2026.4.14, 2026.4.12, 2026.4.11, 2026.4.10, 2026.4.9,
+            2026.4.8, 2026.4.7, 2026.4.5, 2026.4.2
+  hermes    2026.4.16, 2026.4.13, 2026.4.8, 2026.4.3, 2026.3.30
 ```
 
 ## Install
