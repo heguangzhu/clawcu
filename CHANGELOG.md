@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provider bundle provenance via `.clawcu-instance.json` metadata.
 - Active provider as a first-class field.
 
+## [0.2.10] - 2026-04-19
+
+### Added
+- `clawcu list` caches the "Available versions" registry fetch at `<clawcu_home>/cache/available_versions.json`, valid for the local calendar day. Subsequent runs on the same day are served from cache; a new day, a changed `image_repo`, or `--no-remote` triggers a refetch. Failures are never cached so transient outages do not linger.
+- When the registry fetch fails (network down, DNS, auth) or `--no-remote` is set, the footer surfaces local Docker images as an offline fallback on a continuation line under the error, so the user sees actionable candidates instead of just a red error.
+
 ## [0.2.9] - 2026-04-19
 
 ### Added
@@ -54,7 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 - OpenClaw lifecycle management: pull, create, list, inspect, start/stop, upgrade, rollback, clone, snapshots.
 
-[Unreleased]: https://github.com/heguangzhu/clawcu/compare/v0.2.9...HEAD
+[Unreleased]: https://github.com/heguangzhu/clawcu/compare/v0.2.10...HEAD
+[0.2.10]: https://github.com/heguangzhu/clawcu/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/heguangzhu/clawcu/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/heguangzhu/clawcu/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/heguangzhu/clawcu/compare/v0.2.6...v0.2.7
