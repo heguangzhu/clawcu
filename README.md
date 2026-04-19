@@ -18,8 +18,6 @@ Running agent runtimes by hand breaks in predictable ways. ClawCU gives every ru
 - **One CLI, two runtimes** — OpenClaw and Hermes through the same lifecycle commands
 - **Snapshots before every upgrade** — datadir and env both captured; `rollback` restores from real backups
 - **Clone-first experiments** — copy an instance, upgrade the copy, leave the original running
-- **Self-describing datadirs** — a lost record doesn't mean lost state; `list --removed` + `recreate` bring it back
-- **Collect-once model configs** — pull API keys and models from one instance or local home, apply them anywhere
 
 ## Supported Services
 
