@@ -32,7 +32,7 @@ pull_app = typer.Typer(
         "**Examples:**\n\n"
         "```\n"
         "clawcu pull openclaw --version 2026.4.15\n"
-        "clawcu pull hermes --version 1.0.0\n"
+        "clawcu pull hermes --version 2026.4.13\n"
         "clawcu pull --service openclaw --version 2026.4.15  # alt form\n"
         "```"
     ),
@@ -46,7 +46,7 @@ create_app = typer.Typer(
         "**Examples:**\n\n"
         "```\n"
         "clawcu create openclaw --name demo --version 2026.4.15\n"
-        "clawcu create hermes --name agent --version 1.0.0\n"
+        "clawcu create hermes --name agent --version 2026.4.13\n"
         "clawcu create --service openclaw --name demo --version 2026.4.15  # alt form\n"
         "```"
     ),
