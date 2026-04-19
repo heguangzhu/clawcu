@@ -12,7 +12,6 @@ Running agent runtimes by hand is powerful, but it gets fragile quickly:
 - upgrades can break a previously working setup
 - experiments are risky when they share the same live instance
 - rollback is painful without a clean snapshot boundary
-- local configuration becomes harder to reason about as you add more instances and more than one runtime
 
 ClawCU is built to solve those problems with a Docker-based workflow that favors:
 
