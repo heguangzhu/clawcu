@@ -3,11 +3,7 @@
 🌐 Language:
 [English](README.md) | [中文](README.zh-CN.md)
 
-`ClawCU` is a local-first lifecycle manager for running multiple AI agent runtimes on one machine.
-
-`v0.2.0` turned ClawCU from an OpenClaw-only tool into a multi-agent manager with two first-class services: `openclaw` and `hermes`. The `v0.2.x` cycle finishing at `v0.2.8` added an **orphan instance lifecycle** — if a managed instance's record is lost, its datadir is no longer a dead artifact: ClawCU can list it, rebuild it from a `.clawcu-instance.json` metadata sidecar, or permanently clean it up.
-
-If `OpenClaw` and `Hermes` are the runtimes, `ClawCU` is the operational layer around them.
+`ClawCU` is a local-first lifecycle manager for running multiple AI agent runtimes on one machine. It currently supports two first-class services: `openclaw` and `hermes`.
 
 ## Why ClawCU
 
@@ -40,7 +36,7 @@ ClawCU is built to solve those problems with a Docker-based workflow that favors
   - snapshots cover both the instance data directory and the matching env location for that service
 - Clone-first experimentation:
   - copy a working instance before testing a new version
-- Orphan instance lifecycle (since `v0.2.6`, hardened in `v0.2.8`):
+- Orphan instance lifecycle:
   - `clawcu list --removed` surfaces datadirs whose instance records were lost
   - `clawcu recreate <orphan>` rebuilds them with full port / version / metadata recovery from `.clawcu-instance.json`
   - `clawcu remove <orphan> --removed` permanently deletes an orphan datadir
@@ -253,13 +249,13 @@ Discover orphans:
 clawcu list --removed
 ```
 
-Each row shows the service / version / port recovered from the datadir's `.clawcu-instance.json` sidecar (written automatically since `v0.2.6`).
+Each row shows the service / version / port recovered from the datadir's `.clawcu-instance.json` sidecar.
 
 Recover:
 
 ```bash
 clawcu recreate <orphan>                     # auto-restore from metadata
-clawcu recreate <orphan> --version 2026.4.9  # for pre-v0.2.6 datadirs
+clawcu recreate <orphan> --version 2026.4.9  # when metadata is missing
 ```
 
 Permanently delete:
