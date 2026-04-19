@@ -51,6 +51,9 @@ def test_actionable_hint_matches_canonical_service_errors() -> None:
     assert _actionable_hint_for(
         "Instance 'writer' has no rollback snapshot for version 2026.4.1."
     ) == "Run `clawcu rollback <name> --list` to see available rollback targets."
+    assert _actionable_hint_for(
+        "Removed instance 'writer-old' was not found. Run `clawcu list --removed` to see recoverable leftovers."
+    ) == "Run `clawcu list --removed` to see recoverable leftovers."
 
 
 def test_provider_api_key_cell_distinguishes_unset_set_and_env_ref() -> None:
@@ -841,7 +844,7 @@ def test_root_help_lists_descriptions_for_top_level_commands() -> None:
     assert "logs" in result.stdout
     assert "Stream or print Docker logs for a managed instance." in result.stdout
     assert "remove" in result.stdout
-    assert "Remove a managed instance, or pass --removed to permanently delete" in result.stdout
+    assert "Remove a managed instance, or pass --removed to permanently" in result.stdout
 
 
 def test_create_help_no_longer_exposes_auth_option() -> None:
@@ -1354,6 +1357,27 @@ def test_list_command_rejects_unknown_source(monkeypatch) -> None:
 
     assert result.exit_code == 1
     assert "Unknown --source 'bogus'" in result.stdout
+
+
+def test_list_command_rejects_conflicting_source_flags(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["list", "--local", "--removed"])
+    assert result.exit_code == 1
+    assert "--removed cannot be combined with --local/--managed/--all" in result.stdout
+
+    result = runner.invoke(app, ["list", "--source", "managed", "--removed"])
+    assert result.exit_code == 1
+    assert "--removed cannot be combined with --source managed" in result.stdout
+
+    result = runner.invoke(app, ["list", "--source", "managed", "--local"])
+    assert result.exit_code == 1
+    assert "--local cannot be combined with --source managed" in result.stdout
+
+    result = runner.invoke(app, ["list", "--source", "removed", "--all"])
+    assert result.exit_code == 1
+    assert "--all cannot be combined with --source removed" in result.stdout
 
 
 def test_provider_collect_command_accepts_source_selection(monkeypatch) -> None:

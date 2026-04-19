@@ -83,6 +83,10 @@ _HINT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         "Run `clawcu provider list` to see collected providers.",
     ),
     (
+        re.compile(r"[Rr]emoved instance '[^']+' was not found"),
+        "Run `clawcu list --removed` to see recoverable leftovers.",
+    ),
+    (
         re.compile(r"[Ii]nstance '[^']+' was not found"),
         "Run `clawcu list` to see managed instances.",
     ),
@@ -1525,7 +1529,27 @@ def _resolve_list_source(
             _exit_with_error(
                 f"Unknown --source '{source}'. Expected one of: {', '.join(_LIST_SOURCES)}."
             )
+        if removed_flag and source != "removed":
+            _exit_with_error(
+                f"--removed cannot be combined with --source {source}; drop one of them."
+            )
+        if local_flag and source not in {"local", "all"}:
+            _exit_with_error(
+                f"--local cannot be combined with --source {source}; drop one of them."
+            )
+        if managed_flag and source not in {"managed", "all"}:
+            _exit_with_error(
+                f"--managed cannot be combined with --source {source}; drop one of them."
+            )
+        if all_flag and source != "all":
+            _exit_with_error(
+                f"--all cannot be combined with --source {source}; drop one of them."
+            )
         return source
+    if removed_flag and (local_flag or managed_flag or all_flag):
+        _exit_with_error(
+            "--removed cannot be combined with --local/--managed/--all; drop one of them."
+        )
     if all_flag:
         return "all"
     if removed_flag:
