@@ -1544,7 +1544,16 @@ class ClawCUService:
                 else:
                     entry["registry"] = getattr(result, "registry", None) or None
                     if result.ok:
-                        entry["versions"] = result.tags or []
+                        # Drop prerelease tags (`-beta.1`, `-rc.2`, `-alpha`, …)
+                        # from the "available versions" surface. Both services
+                        # use `YYYY.M.P` for stable releases and append a
+                        # hyphenated suffix for prereleases, so a simple
+                        # "no hyphen" rule is exact enough. upgrade's own
+                        # `--list-versions` still sees the full tag set via
+                        # list_upgradable_versions for testers who want them.
+                        entry["versions"] = [
+                            tag for tag in (result.tags or []) if "-" not in tag
+                        ]
                     else:
                         entry["error"] = result.error
             out[name] = entry

@@ -3254,6 +3254,54 @@ def test_list_upgradable_versions_skips_remote_when_disabled(
     assert openclaw.list_remote_versions_calls == []
 
 
+def test_list_service_available_versions_filters_prerelease_tags(
+    temp_clawcu_home,
+) -> None:
+    from tests.support import _FakeRemoteTagResult
+
+    service, _, openclaw, _ = make_service(temp_clawcu_home)
+    openclaw.remote_result = _FakeRemoteTagResult(
+        tags=[
+            "2026.4.10",
+            "2026.4.12-beta.1",
+            "2026.4.12",
+            "2026.4.15-beta.2",
+            "2026.4.15",
+        ],
+        registry="ghcr.io",
+    )
+    service.hermes.remote_result = _FakeRemoteTagResult(
+        tags=["2026.4.8", "2026.4.9-rc.1", "2026.4.13"],
+        registry="registry-1.docker.io",
+    )
+
+    payload = service.list_service_available_versions()
+
+    # Prereleases (anything with a hyphen suffix) are dropped — the
+    # `list` footer is an "install candidates" surface, not a tester
+    # surface.
+    assert payload["openclaw"]["versions"] == [
+        "2026.4.10",
+        "2026.4.12",
+        "2026.4.15",
+    ]
+    assert payload["hermes"]["versions"] == ["2026.4.8", "2026.4.13"]
+
+
+def test_list_service_available_versions_skips_when_include_remote_false(
+    temp_clawcu_home,
+) -> None:
+    service, _, openclaw, _ = make_service(temp_clawcu_home)
+
+    payload = service.list_service_available_versions(include_remote=False)
+
+    assert payload["openclaw"]["versions"] is None
+    assert payload["hermes"]["versions"] is None
+    # No network side effects when disabled.
+    assert openclaw.list_remote_versions_calls == []
+    assert service.hermes.list_remote_versions_calls == []
+
+
 def test_rollback_restores_snapshot_data_and_instance_env(temp_clawcu_home, tmp_path) -> None:
     service, _, _, store = make_service(temp_clawcu_home)
     messages: list[str] = []
