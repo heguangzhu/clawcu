@@ -7,19 +7,11 @@
 
 ## Why ClawCU
 
-Running agent runtimes by hand is powerful, but it gets fragile quickly:
+Running agent runtimes by hand breaks in predictable ways. ClawCU gives every runtime:
 
-- upgrades can break a previously working setup
-- experiments are risky when they share the same live instance
-- rollback is painful without a clean snapshot boundary
-
-ClawCU is built to solve those problems with a Docker-based workflow that favors:
-
-- explicit versioning
-- isolated local instances
-- clone-first experimentation
-- safe upgrade and rollback paths
-- practical observability for services, access URLs, models, env files, and snapshots
+- **Isolated** — its own container, datadir, and env
+- **Reversible** — every upgrade is snapshotted; rollback is one command
+- **Repeatable** — clone first, test second, promote only if it works
 
 ## Highlights
 
