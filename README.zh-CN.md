@@ -15,29 +15,11 @@
 
 ## 核心亮点
 
-- 一套生命周期工具，同时管理两类服务：
-  - `openclaw`
-  - `hermes`
-- 尽可能统一的命令面：
-  - 生命周期：`pull`、`create`、`list`、`inspect`、`start`、`stop`、`restart`、`recreate`、`upgrade`、`rollback`、`clone`、`logs`、`remove`
-  - 访问：`exec`、`config`、`tui`、`token`、`approve`
-  - 环境变量：`setenv`、`getenv`、`unsetenv`
-  - 模型配置:`provider collect/list/show/apply/remove/models`
-- 安全升级：
-  - 升级前自动创建快照，快照同时覆盖数据目录和该服务对应的环境变量文件
-- 先克隆再实验：
-  - 先复制一个工作中的实例，再验证新版本
-- 孤儿实例生命周期：
-  - `clawcu list --removed` 显示记录已丢失的 datadir
-  - `clawcu recreate <orphan>` 从 `.clawcu-instance.json` 元数据完整还原端口 / 版本 / 服务
-  - `clawcu remove <orphan> --removed` 永久删除孤儿 datadir
-- 服务感知的模型配置收集与复用：
-  - 可从托管实例或本地 `~/.openclaw`、`~/.hermes` 收集模型配置信息
-- 更顺手的日常运维体验：
-  - 就绪等待
-  - 分步进度输出
-  - `create`、`list`、`inspect` 直接展示访问地址
-  - `list`、`inspect` 展示快照摘要
+- **一套 CLI，两个运行时** — OpenClaw 和 Hermes 共用同一套生命周期命令
+- **每次升级前自动快照** — datadir 与环境变量同步捕获；`rollback` 从真实备份恢复
+- **先克隆再实验** — 复制一份实例，在副本上升级，主实例原地不动
+- **datadir 自描述** — 记录丢失 ≠ 状态丢失；`list --removed` + `recreate` 还原端口与版本
+- **一次采集，到处复用** — 从任意实例或本地 home 采集 API key 和模型，应用到任何新实例
 
 ## 当前支持的服务
 

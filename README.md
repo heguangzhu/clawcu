@@ -15,29 +15,11 @@ Running agent runtimes by hand breaks in predictable ways. ClawCU gives every ru
 
 ## Highlights
 
-- One lifecycle tool for two services:
-  - `openclaw`
-  - `hermes`
-- Shared command surface:
-  - lifecycle: `pull`, `create`, `list`, `inspect`, `start`, `stop`, `restart`, `recreate`, `upgrade`, `rollback`, `clone`, `logs`, `remove`
-  - access: `exec`, `config`, `tui`, `token`, `approve`
-  - env: `setenv`, `getenv`, `unsetenv`
-  - model configuration: `provider collect/list/show/apply/remove/models`
-- Safe upgrades with automatic snapshot protection:
-  - snapshots cover both the instance data directory and the matching env location for that service
-- Clone-first experimentation:
-  - copy a working instance before testing a new version
-- Orphan instance lifecycle:
-  - `clawcu list --removed` surfaces datadirs whose instance records were lost
-  - `clawcu recreate <orphan>` rebuilds them with full port / version / metadata recovery from `.clawcu-instance.json`
-  - `clawcu remove <orphan> --removed` permanently deletes an orphan datadir
-- Service-aware model configuration collection and reuse:
-  - collect from managed instances or local homes such as `~/.openclaw` and `~/.hermes`
-- Better operational visibility:
-  - readiness waits
-  - progress output
-  - access URLs in `create`, `list`, and `inspect`
-  - snapshot summaries in `list` and `inspect`
+- **One CLI, two runtimes** — OpenClaw and Hermes through the same lifecycle commands
+- **Snapshots before every upgrade** — datadir and env both captured; `rollback` restores from real backups
+- **Clone-first experiments** — copy an instance, upgrade the copy, leave the original running
+- **Self-describing datadirs** — a lost record doesn't mean lost state; `list --removed` + `recreate` bring it back
+- **Collect-once model configs** — pull API keys and models from one instance or local home, apply them anywhere
 
 ## Supported Services
 
