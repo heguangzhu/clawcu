@@ -12,6 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provider bundle provenance via `.clawcu-instance.json` metadata.
 - Active provider as a first-class field.
 
+## [0.2.9] - 2026-04-19
+
+### Added
+- `clawcu list` appends an "Available versions" footer with the 10 most recent stable releases per service (OpenClaw, Hermes), newest first. Prereleases (`-beta`, `-rc`, `-alpha`) are filtered; `upgrade --list-versions` still exposes them for testers. Skipped in `--json` / `--agents` / `--removed` views; pass `--no-remote` for a strictly offline render.
+
+### Fixed
+- `clawcu <cmd>` with no args now prints full help and exits 0 when the command requires arguments — it's a "what does this take?" query, not a failed invocation. Partial invocations (some args, still missing a required one) keep POSIX exit 2 but now print the full help alongside the `Missing option` error so every flag is visible.
+
 ## [0.2.8] - 2026-04-19
 
 ### Added
@@ -46,7 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 - OpenClaw lifecycle management: pull, create, list, inspect, start/stop, upgrade, rollback, clone, snapshots.
 
-[Unreleased]: https://github.com/heguangzhu/clawcu/compare/v0.2.8...HEAD
+[Unreleased]: https://github.com/heguangzhu/clawcu/compare/v0.2.9...HEAD
+[0.2.9]: https://github.com/heguangzhu/clawcu/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/heguangzhu/clawcu/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/heguangzhu/clawcu/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/heguangzhu/clawcu/compare/v0.2.0...v0.2.6
