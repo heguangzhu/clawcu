@@ -18,7 +18,7 @@ from clawcu.a2a.card import (
     role_for_service,
     skills_for_service,
 )
-from clawcu.a2a.client import A2AClientError, send_via_registry
+from clawcu.a2a.client import DEFAULT_SEND_TIMEOUT, A2AClientError, send_via_registry
 from clawcu.a2a.detect import detect_plugin_or_none, port_already_bound
 from clawcu.a2a.registry import make_cards_provider, serve_registry_forever
 from clawcu.service import ClawCUService
@@ -326,6 +326,10 @@ def send_command(
         str,
         typer.Option("--from", help="Self name reported in the message envelope."),
     ] = "clawcu-cli",
+    timeout: Annotated[
+        float,
+        typer.Option("--timeout", help="Seconds to wait for the LLM reply."),
+    ] = DEFAULT_SEND_TIMEOUT,
 ) -> None:
     """Look up TARGET in the registry and POST a message to its bridge."""
     try:
@@ -334,6 +338,7 @@ def send_command(
             sender=sender,
             target=to,
             message=message,
+            send_timeout=timeout,
         )
     except A2AClientError as exc:
         console.print(f"[bold red]Error:[/bold red] {exc}")

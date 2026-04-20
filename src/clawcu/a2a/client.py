@@ -9,6 +9,7 @@ from typing import Any
 from clawcu.a2a.card import AgentCard
 
 DEFAULT_TIMEOUT = 5.0
+DEFAULT_SEND_TIMEOUT = 60.0
 
 
 class A2AClientError(RuntimeError):
@@ -86,13 +87,14 @@ def send_via_registry(
     sender: str,
     target: str,
     message: str,
-    timeout: float = DEFAULT_TIMEOUT,
+    lookup_timeout: float = DEFAULT_TIMEOUT,
+    send_timeout: float = DEFAULT_SEND_TIMEOUT,
 ) -> dict[str, Any]:
-    card = lookup_agent(registry_url, target, timeout=timeout)
+    card = lookup_agent(registry_url, target, timeout=lookup_timeout)
     return post_message(
         card.endpoint,
         sender=sender,
         target=target,
         message=message,
-        timeout=timeout,
+        timeout=send_timeout,
     )
