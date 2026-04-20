@@ -26,6 +26,7 @@ from clawcu.a2a.client import (
     post_message,
     send_via_registry,
 )
+from clawcu.a2a.detect import detect_plugin_or_none
 from clawcu.a2a.registry import (
     build_registry_server,
     cards_from_service,
@@ -633,3 +634,277 @@ def test_cache_state_does_not_leak_between_providers():
     p2 = make_cards_provider(Svc("two"), ttl=5.0, timeout=0.05)
     assert p1()[0].name == "one"
     assert p2()[0].name == "two"
+
+
+# ---------- D8: bridge UX ----------
+
+
+def test_bridge_serve_virtual_instance_with_full_overrides(monkeypatch, temp_clawcu_home):
+    class EmptyService:
+        def list_instances(self, *, running_only=False):  # noqa: ARG002
+            return []
+
+        def adapter_for_record(self, record):  # noqa: ARG002
+            raise AssertionError("virtual bridge should not touch adapters")
+
+    monkeypatch.setattr("clawcu.a2a.cli.ClawCUService", lambda: EmptyService())
+
+    captured: dict[str, Any] = {}
+
+    def fake_serve(card, *, host, port, reply_fn):
+        captured["card"] = card
+        captured["host"] = host
+        captured["port"] = port
+        raise KeyboardInterrupt  # exit the serve loop cleanly
+
+    monkeypatch.setattr("clawcu.a2a.cli.serve_bridge_forever", fake_serve)
+
+    result = runner.invoke(
+        app,
+        [
+            "a2a",
+            "bridge",
+            "serve",
+            "--instance",
+            "virtual",
+            "--role",
+            "demo",
+            "--skills",
+            "chat,analysis",
+            "--endpoint",
+            "http://example.test/a2a/send",
+            "--port",
+            "12345",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["port"] == 12345
+    card = captured["card"]
+    assert card.name == "virtual"
+    assert card.role == "demo"
+    assert card.skills == ["chat", "analysis"]
+    assert card.endpoint == "http://example.test/a2a/send"
+
+
+def test_bridge_serve_unknown_instance_without_overrides_fails(monkeypatch, temp_clawcu_home):
+    class EmptyService:
+        def list_instances(self, *, running_only=False):  # noqa: ARG002
+            return []
+
+    monkeypatch.setattr("clawcu.a2a.cli.ClawCUService", lambda: EmptyService())
+    result = runner.invoke(app, ["a2a", "bridge", "serve", "--instance", "ghost"])
+    assert result.exit_code == 1
+    assert "--role" in result.output
+    assert "--skills" in result.output
+    assert "--endpoint" in result.output
+
+
+def test_bridge_serve_default_port_uses_display_port(monkeypatch, temp_clawcu_home):
+    record = FakeRecord(name="writer", service="openclaw", port=0)
+
+    class FakeService:
+        def list_instances(self, *, running_only=False):  # noqa: ARG002
+            return [record]
+
+        def adapter_for_record(self, r):  # noqa: ARG002
+            return _FixedPortAdapter(18839)
+
+    monkeypatch.setattr("clawcu.a2a.cli.ClawCUService", lambda: FakeService())
+
+    captured: dict[str, Any] = {}
+
+    def fake_serve(card, *, host, port, reply_fn):
+        captured["card"] = card
+        captured["port"] = port
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("clawcu.a2a.cli.serve_bridge_forever", fake_serve)
+
+    result = runner.invoke(app, ["a2a", "bridge", "serve", "--instance", "writer"])
+    assert result.exit_code == 0, result.output
+    assert captured["port"] == 18839
+    assert captured["card"].endpoint == "http://127.0.0.1:18839/a2a/send"
+
+
+def test_bridge_serve_overrides_on_managed_instance(monkeypatch, temp_clawcu_home):
+    record = FakeRecord(name="writer", service="openclaw", port=0)
+
+    class FakeService:
+        def list_instances(self, *, running_only=False):  # noqa: ARG002
+            return [record]
+
+        def adapter_for_record(self, r):  # noqa: ARG002
+            return _FixedPortAdapter(18839)
+
+    monkeypatch.setattr("clawcu.a2a.cli.ClawCUService", lambda: FakeService())
+
+    captured: dict[str, Any] = {}
+
+    def fake_serve(card, *, host, port, reply_fn):
+        captured["card"] = card
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("clawcu.a2a.cli.serve_bridge_forever", fake_serve)
+
+    result = runner.invoke(
+        app,
+        [
+            "a2a",
+            "bridge",
+            "serve",
+            "--instance",
+            "writer",
+            "--role",
+            "custom role",
+            "--skills",
+            "one,two",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["card"].role == "custom role"
+    assert captured["card"].skills == ["one", "two"]
+
+
+# ---------- D9: clawcu a2a up ----------
+
+
+def test_detect_plugin_or_none_success():
+    card_payload = {
+        "name": "alpha",
+        "role": "plugin",
+        "skills": ["s"],
+        "endpoint": "http://127.0.0.1:18819/a2a/send",
+    }
+    server, thread = _start_well_known_server(body=json.dumps(card_payload).encode())
+    try:
+        _, port = server.server_address
+        record = FakeRecord(name="alpha", service="openclaw", port=0)
+        service = _FakeService([record], port_map={"alpha": port})
+        sleeps: list[float] = []
+        got = detect_plugin_or_none(
+            record,
+            service=service,
+            timeout=1.0,
+            attempts=3,
+            retry_delay=0.01,
+            sleep=sleeps.append,
+        )
+        assert got is not None
+        assert got.role == "plugin"
+        # first attempt succeeded → no sleeps
+        assert sleeps == []
+    finally:
+        _stop(server, thread)
+
+
+def test_detect_plugin_or_none_retries_then_gives_up():
+    record = FakeRecord(name="ghost", service="openclaw", port=0)
+    service = _FakeService([record], port_map={"ghost": 1})  # refused
+    sleeps: list[float] = []
+    got = detect_plugin_or_none(
+        record,
+        service=service,
+        timeout=0.05,
+        attempts=3,
+        retry_delay=0.5,
+        sleep=sleeps.append,
+    )
+    assert got is None
+    # Three attempts, sleep between first two pairs → two sleeps total.
+    assert sleeps == [0.5, 0.5]
+
+
+def test_detect_plugin_or_none_single_attempt():
+    record = FakeRecord(name="ghost", service="openclaw", port=0)
+    service = _FakeService([record], port_map={"ghost": 1})
+    sleeps: list[float] = []
+    got = detect_plugin_or_none(
+        record,
+        service=service,
+        timeout=0.05,
+        attempts=1,
+        retry_delay=99.0,
+        sleep=sleeps.append,
+    )
+    assert got is None
+    assert sleeps == []
+
+
+def test_a2a_up_starts_echo_bridges_for_instances_without_plugin(monkeypatch, temp_clawcu_home):
+    # One instance with a real plugin at a live server, one instance with
+    # an unreachable probe port → expect one echo bridge started.
+    plugin_payload = {
+        "name": "writer",
+        "role": "plugin role",
+        "skills": ["chat"],
+        "endpoint": "http://127.0.0.1:1/a2a/send",
+    }
+    plugin_server, plugin_thread = _start_well_known_server(
+        body=json.dumps(plugin_payload).encode()
+    )
+    try:
+        _, plugin_port = plugin_server.server_address
+
+        # Pick a free port for the echo bridge by opening and closing a socket.
+        import socket
+
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            bridge_port = s.getsockname()[1]
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            registry_port = s.getsockname()[1]
+
+        writer = FakeRecord(name="writer", service="openclaw", port=0)
+        ghost = FakeRecord(name="ghost", service="hermes", port=0)
+
+        class Svc:
+            def list_instances(self, *, running_only=False):  # noqa: ARG002
+                return [writer, ghost]
+
+            def adapter_for_record(self, record):
+                return _FixedPortAdapter(
+                    plugin_port if record.name == "writer" else bridge_port
+                )
+
+        monkeypatch.setattr("clawcu.a2a.cli.ClawCUService", lambda: Svc())
+
+        # Stop the registry promptly so the test doesn't hang. We hit
+        # /agents once from a background thread, then send KeyboardInterrupt
+        # via a monkeypatched serve_registry_forever.
+        agents_capture: dict[str, Any] = {}
+
+        def fake_registry_serve(provider, *, host, port, on_ready=None):
+            # Call provider() exactly to prove the up command wired it.
+            agents_capture["cards"] = list(provider())
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(
+            "clawcu.a2a.cli.serve_registry_forever", fake_registry_serve
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "a2a",
+                "up",
+                "--registry-port",
+                str(registry_port),
+                "--probe-timeout",
+                "0.5",
+                "--probe-attempts",
+                "1",
+                "--probe-delay",
+                "0.0",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "OK" in result.output and "writer" in result.output
+        assert "WARN" in result.output and "ghost" in result.output
+        # provider returned cards for both instances, ghost card came from
+        # the echo bridge we started.
+        by_name = {c.name: c for c in agents_capture["cards"]}
+        assert set(by_name) == {"writer", "ghost"}
+        assert by_name["writer"].role == "plugin role"
+    finally:
+        _stop(plugin_server, plugin_thread)
