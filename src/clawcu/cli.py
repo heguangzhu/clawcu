@@ -21,6 +21,7 @@ from rich.table import Table
 from typer.main import get_command
 
 from clawcu import __version__
+from clawcu.a2a.cli import a2a_app
 from clawcu.dashboard.server import _dashboard_is_healthy, serve_dashboard
 from clawcu.core.registry import is_semver_release_tag
 from clawcu.service import ClawCUService
@@ -92,6 +93,7 @@ provider_app = typer.Typer(
 app.add_typer(pull_app, name="pull", rich_help_panel="Setup")
 app.add_typer(create_app, name="create", rich_help_panel="Lifecycle")
 app.add_typer(provider_app, name="provider", rich_help_panel="Providers")
+app.add_typer(a2a_app, name="a2a", rich_help_panel="A2A")
 console = Console()
 _DISPLAY_DATE_RE = re.compile(r"(\d{4}\.\d{1,2}\.\d{1,2})")
 
