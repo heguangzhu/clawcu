@@ -12,7 +12,7 @@ from typing import Any, Callable, Iterable
 from clawcu.a2a.card import (
     AgentCard,
     card_from_record,
-    display_port_for_record,
+    plugin_port_candidates,
 )
 
 CardProvider = Callable[[], Iterable[AgentCard]]
@@ -23,21 +23,7 @@ DEFAULT_CARDS_TTL_SECONDS = 5.0
 _log = logging.getLogger("clawcu.a2a.registry")
 
 
-def try_fetch_plugin_card(
-    record: Any,
-    *,
-    service: Any = None,
-    host: str = "127.0.0.1",
-    timeout: float = DEFAULT_PLUGIN_FETCH_TIMEOUT,
-) -> AgentCard | None:
-    """Best-effort GET of a running plugin's self-reported AgentCard.
-
-    Returns ``None`` on any failure (timeout, non-200, non-JSON, schema
-    mismatch) so the caller can fall back to a service-type placeholder.
-    Failures log at INFO with the URL + reason; success is silent.
-    """
-    port = display_port_for_record(record, service=service)
-    url = f"http://{host}:{port}/.well-known/agent-card.json"
+def _fetch_card_at(url: str, timeout: float) -> AgentCard | None:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
             if response.status != 200:
@@ -62,6 +48,29 @@ def try_fetch_plugin_card(
     except (ValueError, TypeError, AttributeError) as exc:
         _log.info("plugin card fetch bad schema: url=%s reason=%s", url, exc)
         return None
+
+
+def try_fetch_plugin_card(
+    record: Any,
+    *,
+    service: Any = None,
+    host: str = "127.0.0.1",
+    timeout: float = DEFAULT_PLUGIN_FETCH_TIMEOUT,
+) -> AgentCard | None:
+    """Best-effort GET of a running plugin's self-reported AgentCard.
+
+    Probes each candidate port in order (display_port, then the sidecar slot
+    for services that run the plugin next to a gateway); first successful
+    fetch wins. Returns ``None`` when every candidate fails so the caller
+    can fall back to a service-type placeholder. Per-candidate failures log
+    at INFO with the URL + reason; success is silent.
+    """
+    for port in plugin_port_candidates(record, service=service):
+        url = f"http://{host}:{port}/.well-known/agent-card.json"
+        card = _fetch_card_at(url, timeout)
+        if card is not None:
+            return card
+    return None
 
 
 def _build_cards(service: Any, host: str, timeout: float) -> list[AgentCard]:

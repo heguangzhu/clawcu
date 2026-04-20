@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socket
 import time
 from typing import Any, Callable
 
@@ -36,3 +37,25 @@ def detect_plugin_or_none(
 def describe_probe(record: Any, *, service: Any, host: str = "127.0.0.1") -> str:
     port = display_port_for_record(record, service=service)
     return f"http://{host}:{port}/.well-known/agent-card.json"
+
+
+def port_already_bound(port: int, *, timeout: float = 0.1) -> bool:
+    """Return True if anything already accepts TCP connects on ``port``.
+
+    Checks both IPv4 and IPv6 localhost. Docker-for-Mac binds ``*:PORT`` on
+    IPv6, while ``ThreadingHTTPServer(("127.0.0.1", PORT), ...)`` succeeds
+    on IPv4 even when that IPv6 socket is live — the two address families
+    do not collide. Probing both prevents that shadowing.
+    """
+    for family, addr in (
+        (socket.AF_INET, ("127.0.0.1", port)),
+        (socket.AF_INET6, ("::1", port, 0, 0)),
+    ):
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as s:
+                s.settimeout(timeout)
+                if s.connect_ex(addr) == 0:
+                    return True
+        except OSError:
+            continue
+    return False

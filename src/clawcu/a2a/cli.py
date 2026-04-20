@@ -19,7 +19,7 @@ from clawcu.a2a.card import (
     skills_for_service,
 )
 from clawcu.a2a.client import A2AClientError, send_via_registry
-from clawcu.a2a.detect import detect_plugin_or_none
+from clawcu.a2a.detect import detect_plugin_or_none, port_already_bound
 from clawcu.a2a.registry import make_cards_provider, serve_registry_forever
 from clawcu.service import ClawCUService
 
@@ -267,6 +267,12 @@ def up_command(
 
         echo_card = card_from_record(record, service=service, host=host)
         port = display_port_for_record(record, service=service)
+        if port_already_bound(port):
+            console.print(
+                f"[yellow]WARN[/yellow] {record.name}: port :{port} already "
+                f"in use by another listener, skipping echo bridge"
+            )
+            continue
         console.print(
             f"[yellow]WARN[/yellow] {record.name}: plugin not detected, "
             f"starting echo bridge on :{port}"
@@ -275,10 +281,10 @@ def up_command(
             server = build_bridge_server(echo_card, host=host, port=port, reply_fn=echo_reply)
         except OSError as exc:
             console.print(
-                f"[bold red]Error:[/bold red] {record.name}: cannot bind :{port} ({exc})."
+                f"[yellow]WARN[/yellow] {record.name}: cannot bind :{port} ({exc}), "
+                f"skipping echo bridge"
             )
-            _shutdown_servers(bridge_servers, bridge_threads)
-            raise typer.Exit(code=1)
+            continue
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         bridge_servers.append((record.name, server))

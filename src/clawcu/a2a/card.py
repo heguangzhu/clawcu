@@ -26,6 +26,15 @@ _SERVICE_DEFAULT_DISPLAY_PORT: dict[str, int] = {
     "hermes": 9129,
 }
 
+# OpenClaw's container occupies display_port with its gateway UI, so the
+# plugin sidecar binds display_port + 1 (see proto/openclaw-plugin/INSTALL.md).
+# Hermes binds display_port directly. Order matters: probed in sequence,
+# first hit wins, so the "true plugin" path precedes the sidecar fallback.
+_SERVICE_PLUGIN_PORT_OFFSETS: dict[str, tuple[int, ...]] = {
+    "openclaw": (0, 1),
+    "hermes": (0,),
+}
+
 
 @dataclass(frozen=True)
 class AgentCard:
@@ -105,6 +114,27 @@ def display_port_for_record(record: Any, *, service: Any = None) -> int:
     if isinstance(port, int) and port > 0:
         return port
     return DEFAULT_BRIDGE_PORT
+
+
+def plugin_port_candidates(record: Any, *, service: Any = None) -> list[int]:
+    """Ports to probe when discovering a plugin's self-reported AgentCard.
+
+    Callers should try these in order and take the first live card. OpenClaw
+    returns ``[display_port, display_port + 1]`` because the container itself
+    occupies display_port with its gateway UI and the Node sidecar binds the
+    neighbor port; Hermes returns just ``[display_port]``. Duplicates are
+    removed while preserving order so an adapter-reported port that already
+    matches the sidecar slot doesn't get probed twice.
+    """
+    base = display_port_for_record(record, service=service)
+    service_name = getattr(record, "service", "") or ""
+    offsets = _SERVICE_PLUGIN_PORT_OFFSETS.get(service_name, (0,))
+    ordered: list[int] = []
+    for offset in offsets:
+        port = base + offset
+        if port not in ordered:
+            ordered.append(port)
+    return ordered
 
 
 def plugin_endpoint_for(

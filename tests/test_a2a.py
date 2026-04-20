@@ -908,3 +908,237 @@ def test_a2a_up_starts_echo_bridges_for_instances_without_plugin(monkeypatch, te
         assert by_name["writer"].role == "plugin role"
     finally:
         _stop(plugin_server, plugin_thread)
+
+
+# ---------- fix-up: neighbor-port federation + bind-probe ----------
+
+
+def test_try_fetch_plugin_card_tries_neighbor_port_for_openclaw():
+    # Only the neighbor port (display_port + 1) serves a card — matches the
+    # real OpenClaw sidecar layout where the container itself occupies
+    # display_port with its gateway UI.
+    card_payload = {
+        "name": "james.simons",
+        "role": "openclaw sidecar",
+        "skills": ["chat"],
+        "endpoint": "http://127.0.0.1:18820/a2a/send",
+    }
+    server, thread = _start_well_known_server(body=json.dumps(card_payload).encode())
+    try:
+        _, sidecar_port = server.server_address
+        display_port = sidecar_port - 1
+        record = FakeRecord(name="james.simons", service="openclaw", port=0)
+        service = _FakeService([record], port_map={"james.simons": display_port})
+        got = try_fetch_plugin_card(record, service=service, timeout=1.0)
+        assert got is not None
+        assert got.role == "openclaw sidecar"
+        # The fetched card is whatever the sidecar self-reports; the probe
+        # did not rewrite its endpoint. Proves the neighbor port was hit.
+        assert got.endpoint == "http://127.0.0.1:18820/a2a/send"
+    finally:
+        _stop(server, thread)
+
+
+def test_try_fetch_plugin_card_prefers_display_port_over_neighbor():
+    # Both ports respond with distinct cards; display_port must win because
+    # the true plugin (gateway-in-process) always takes precedence over the
+    # sidecar fallback.
+    display_payload = {
+        "name": "james.simons",
+        "role": "gateway-in-process",
+        "skills": ["chat"],
+        "endpoint": "http://127.0.0.1:18819/a2a/send",
+    }
+    sidecar_payload = {
+        "name": "james.simons",
+        "role": "sidecar",
+        "skills": ["chat"],
+        "endpoint": "http://127.0.0.1:18820/a2a/send",
+    }
+    display_server, display_thread = _start_well_known_server(
+        body=json.dumps(display_payload).encode()
+    )
+    sidecar_server = sidecar_thread = None
+    try:
+        _, display_port = display_server.server_address
+
+        # Pin the sidecar to display_port + 1. If the OS refuses, skip.
+        sidecar_port = display_port + 1
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, format, *args):  # noqa: A002
+                return
+
+            def do_GET(self):  # noqa: N802
+                if self.path != "/.well-known/agent-card.json":
+                    self.send_response(404)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                raw = json.dumps(sidecar_payload).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        try:
+            sidecar_server = ThreadingHTTPServer(("127.0.0.1", sidecar_port), Handler)
+        except OSError:
+            pytest.skip(f"neighbor port :{sidecar_port} unavailable on this host")
+        sidecar_thread = threading.Thread(
+            target=sidecar_server.serve_forever, daemon=True
+        )
+        sidecar_thread.start()
+
+        record = FakeRecord(name="james.simons", service="openclaw", port=0)
+        service = _FakeService([record], port_map={"james.simons": display_port})
+        got = try_fetch_plugin_card(record, service=service, timeout=1.0)
+        assert got is not None
+        assert got.role == "gateway-in-process"
+    finally:
+        _stop(display_server, display_thread)
+        if sidecar_server is not None:
+            _stop(sidecar_server, sidecar_thread)
+
+
+def test_a2a_up_skips_echo_bridge_when_port_already_bound(
+    monkeypatch, temp_clawcu_home, caplog
+):
+    import socket as _socket
+
+    # Bind a socket on a random free IPv4 localhost port and hold it open
+    # while `a2a up` runs. The echo bridge must notice and step aside.
+    holder = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    holder.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+    holder.bind(("127.0.0.1", 0))
+    holder.listen(128)
+    held_port = holder.getsockname()[1]
+    try:
+        with _socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            registry_port = s.getsockname()[1]
+
+        ghost = FakeRecord(name="ghost", service="openclaw", port=0)
+
+        class Svc:
+            def list_instances(self, *, running_only=False):  # noqa: ARG002
+                return [ghost]
+
+            def adapter_for_record(self, record):  # noqa: ARG002
+                # display_port → held port; neighbor (held+1) won't respond
+                # either, so detect_plugin_or_none returns None → up tries
+                # to start an echo bridge on held_port.
+                return _FixedPortAdapter(held_port)
+
+        monkeypatch.setattr("clawcu.a2a.cli.ClawCUService", lambda: Svc())
+
+        bind_calls: list[int] = []
+        original_build = build_bridge_server
+
+        def spy_build(card, *, host, port, reply_fn):
+            bind_calls.append(port)
+            return original_build(card, host=host, port=port, reply_fn=reply_fn)
+
+        monkeypatch.setattr("clawcu.a2a.cli.build_bridge_server", spy_build)
+
+        def fake_registry_serve(provider, *, host, port, on_ready=None):  # noqa: ARG001
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(
+            "clawcu.a2a.cli.serve_registry_forever", fake_registry_serve
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "a2a",
+                "up",
+                "--registry-port",
+                str(registry_port),
+                "--probe-timeout",
+                "0.2",
+                "--probe-attempts",
+                "1",
+                "--probe-delay",
+                "0.0",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "already in use" in result.output
+        assert "ghost" in result.output
+        # No bridge was built on the held port (or any port at all — only
+        # one instance was under test).
+        assert bind_calls == []
+    finally:
+        holder.close()
+
+
+def test_a2a_up_skips_echo_bridge_when_ipv6_bound(monkeypatch, temp_clawcu_home):
+    import socket as _socket
+
+    if not _socket.has_ipv6:
+        pytest.skip("IPv6 not available on this host")
+    try:
+        holder = _socket.socket(_socket.AF_INET6, _socket.SOCK_STREAM)
+    except OSError:
+        pytest.skip("cannot create IPv6 socket")
+    try:
+        holder.bind(("::1", 0))
+    except OSError:
+        holder.close()
+        pytest.skip("IPv6 localhost unavailable")
+    holder.listen(128)
+    held_port = holder.getsockname()[1]
+    try:
+        with _socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            registry_port = s.getsockname()[1]
+
+        ghost = FakeRecord(name="ghost", service="openclaw", port=0)
+
+        class Svc:
+            def list_instances(self, *, running_only=False):  # noqa: ARG002
+                return [ghost]
+
+            def adapter_for_record(self, record):  # noqa: ARG002
+                return _FixedPortAdapter(held_port)
+
+        monkeypatch.setattr("clawcu.a2a.cli.ClawCUService", lambda: Svc())
+
+        bind_calls: list[int] = []
+        original_build = build_bridge_server
+
+        def spy_build(card, *, host, port, reply_fn):
+            bind_calls.append(port)
+            return original_build(card, host=host, port=port, reply_fn=reply_fn)
+
+        monkeypatch.setattr("clawcu.a2a.cli.build_bridge_server", spy_build)
+
+        def fake_registry_serve(provider, *, host, port, on_ready=None):  # noqa: ARG001
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(
+            "clawcu.a2a.cli.serve_registry_forever", fake_registry_serve
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "a2a",
+                "up",
+                "--registry-port",
+                str(registry_port),
+                "--probe-timeout",
+                "0.2",
+                "--probe-attempts",
+                "1",
+                "--probe-delay",
+                "0.0",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "already in use" in result.output
+        assert bind_calls == []
+    finally:
+        holder.close()
