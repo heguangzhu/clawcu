@@ -17,6 +17,15 @@ _SERVICE_ROLES: dict[str, str] = {
     "hermes": "Hermes local analyst",
 }
 
+# Fallback for when the adapter pipeline cannot be reached — design-2 D5
+# anchors these as the canonical plugin-exposure ports. Kept in sync with
+# the adapter defaults manually; prefer display_port_for_record when a
+# ClawCUService is in hand.
+_SERVICE_DEFAULT_DISPLAY_PORT: dict[str, int] = {
+    "openclaw": 18819,
+    "hermes": 9129,
+}
+
 
 @dataclass(frozen=True)
 class AgentCard:
@@ -74,14 +83,52 @@ def bridge_endpoint_for(record: Any, *, host: str = "127.0.0.1") -> str:
     return f"http://{host}:{bridge_port_for(record)}/a2a/send"
 
 
-def card_from_record(record: Any, *, host: str = "127.0.0.1") -> AgentCard:
+def display_port_for_record(record: Any, *, service: Any = None) -> int:
+    """Resolve the port a plugin would expose on.
+
+    Prefers ``service.adapter_for_record(record).display_port(service, record)``
+    when a ClawCUService is in hand; falls back to the service-type default
+    map and finally to ``record.port``. The fallback keeps unit tests that
+    pass lightweight fakes working without instantiating the full service.
+    """
+    if service is not None:
+        try:
+            adapter = service.adapter_for_record(record)
+            return int(adapter.display_port(service, record))
+        except Exception:  # noqa: BLE001 — best-effort, fall back
+            pass
+    service_name = getattr(record, "service", "") or ""
+    default = _SERVICE_DEFAULT_DISPLAY_PORT.get(service_name)
+    if default is not None:
+        return default
+    port = getattr(record, "port", None)
+    if isinstance(port, int) and port > 0:
+        return port
+    return DEFAULT_BRIDGE_PORT
+
+
+def plugin_endpoint_for(
+    record: Any,
+    *,
+    service: Any = None,
+    host: str = "127.0.0.1",
+) -> str:
+    return f"http://{host}:{display_port_for_record(record, service=service)}/a2a/send"
+
+
+def card_from_record(
+    record: Any,
+    *,
+    service: Any = None,
+    host: str = "127.0.0.1",
+) -> AgentCard:
     name = getattr(record, "name", None)
-    service = getattr(record, "service", "") or ""
+    svc = getattr(record, "service", "") or ""
     if not isinstance(name, str) or not name:
         raise ValueError("record.name is required to build an AgentCard")
     return AgentCard(
         name=name,
-        role=role_for_service(service),
-        skills=skills_for_service(service),
-        endpoint=bridge_endpoint_for(record, host=host),
+        role=role_for_service(svc),
+        skills=skills_for_service(svc),
+        endpoint=plugin_endpoint_for(record, service=service, host=host),
     )

@@ -26,7 +26,13 @@ from clawcu.a2a.client import (
     post_message,
     send_via_registry,
 )
-from clawcu.a2a.registry import build_registry_server, run_registry_in_thread
+from clawcu.a2a.registry import (
+    build_registry_server,
+    cards_from_service,
+    make_cards_provider,
+    run_registry_in_thread,
+    try_fetch_plugin_card,
+)
 from clawcu.cli import app
 
 runner = CliRunner()
@@ -106,13 +112,36 @@ def test_skills_for_service_has_placeholder_map():
     assert skills_for_service("unknown") == ["chat"]
 
 
-def test_card_from_record_uses_bridge_port():
+def test_card_from_record_uses_display_port_fallback_map():
     record = FakeRecord(name="alpha", service="openclaw", port=18799)
     card = card_from_record(record)
     assert card.name == "alpha"
     assert card.skills == ["chat", "tools"]
-    assert card.endpoint == bridge_endpoint_for(record)
-    assert card.endpoint.endswith(f":{bridge_port_for(record)}/a2a/send")
+    # Without a service handle, card_from_record falls back to the
+    # service-type default map (openclaw → 18819), not record.port and not
+    # the deprecated bridge port (record.port + 1000).
+    assert card.endpoint == "http://127.0.0.1:18819/a2a/send"
+
+
+def test_card_from_record_prefers_adapter_display_port():
+    class FakeAdapter:
+        def display_port(self, service, record):  # noqa: ARG002
+            return 27000
+
+    class FakeService:
+        def adapter_for_record(self, record):  # noqa: ARG002
+            return FakeAdapter()
+
+    record = FakeRecord(name="alpha", service="openclaw", port=18799)
+    card = card_from_record(record, service=FakeService())
+    assert card.endpoint == "http://127.0.0.1:27000/a2a/send"
+
+
+def test_bridge_endpoint_helper_unchanged():
+    # bridge_endpoint_for is the old record.port+1000 rule, retained for
+    # bridge serve's internal use. display_port is the registry/card rule.
+    record = FakeRecord(name="alpha", service="openclaw", port=18799)
+    assert bridge_endpoint_for(record).endswith(f":{bridge_port_for(record)}/a2a/send")
 
 
 # ---------- Registry ----------
@@ -369,3 +398,238 @@ def test_cli_a2a_send_unknown_target_fails():
         ],
     )
     assert result.exit_code == 1
+
+
+# ---------- D5: plugin federation ----------
+
+
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+def _start_well_known_server(
+    *,
+    status: int = 200,
+    body: bytes | None = None,
+    delay: float = 0.0,
+    content_type: str = "application/json",
+):
+    """Tiny http.server that replies to GET /.well-known/agent-card.json."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):  # noqa: A002
+            return
+
+        def do_GET(self):  # noqa: N802
+            if delay:
+                time.sleep(delay)
+            if self.path != "/.well-known/agent-card.json":
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            payload = body if body is not None else b"{}"
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread
+
+
+def _stop(server, thread):
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=2)
+
+
+class _FixedPortAdapter:
+    def __init__(self, port: int) -> None:
+        self._port = port
+
+    def display_port(self, service, record):  # noqa: ARG002
+        return self._port
+
+
+class _FakeService:
+    def __init__(self, records, *, port_map: dict[str, int] | None = None):
+        self._records = list(records)
+        self._port_map = dict(port_map or {})
+
+    def list_instances(self, *, running_only: bool = False):  # noqa: ARG002
+        return list(self._records)
+
+    def adapter_for_record(self, record):
+        port = self._port_map.get(record.name, getattr(record, "port", 0))
+        return _FixedPortAdapter(port)
+
+
+def test_try_fetch_plugin_card_success():
+    card_payload = {
+        "name": "alpha",
+        "role": "real plugin role",
+        "skills": ["s1", "s2"],
+        "endpoint": "http://127.0.0.1:18819/a2a/send",
+    }
+    server, thread = _start_well_known_server(body=json.dumps(card_payload).encode())
+    try:
+        _, port = server.server_address
+        record = FakeRecord(name="alpha", service="openclaw", port=0)
+        service = _FakeService([record], port_map={"alpha": port})
+        got = try_fetch_plugin_card(record, service=service, timeout=1.0)
+        assert got is not None
+        assert got.role == "real plugin role"
+        assert got.skills == ["s1", "s2"]
+    finally:
+        _stop(server, thread)
+
+
+def test_try_fetch_plugin_card_timeout_returns_none():
+    server, thread = _start_well_known_server(delay=0.3, body=b"{}")
+    try:
+        _, port = server.server_address
+        record = FakeRecord(name="alpha", service="openclaw", port=0)
+        service = _FakeService([record], port_map={"alpha": port})
+        got = try_fetch_plugin_card(record, service=service, timeout=0.05)
+        assert got is None
+    finally:
+        _stop(server, thread)
+
+
+def test_try_fetch_plugin_card_404_returns_none():
+    server, thread = _start_well_known_server(status=404, body=b"nope")
+    try:
+        _, port = server.server_address
+        record = FakeRecord(name="alpha", service="openclaw", port=0)
+        service = _FakeService([record], port_map={"alpha": port})
+        got = try_fetch_plugin_card(record, service=service, timeout=1.0)
+        assert got is None
+    finally:
+        _stop(server, thread)
+
+
+def test_try_fetch_plugin_card_bad_schema_returns_none():
+    server, thread = _start_well_known_server(body=b'{"name": "only-name"}')
+    try:
+        _, port = server.server_address
+        record = FakeRecord(name="alpha", service="openclaw", port=0)
+        service = _FakeService([record], port_map={"alpha": port})
+        assert try_fetch_plugin_card(record, service=service, timeout=1.0) is None
+    finally:
+        _stop(server, thread)
+
+
+def test_try_fetch_plugin_card_malformed_json_returns_none():
+    server, thread = _start_well_known_server(body=b"not-json-at-all")
+    try:
+        _, port = server.server_address
+        record = FakeRecord(name="alpha", service="openclaw", port=0)
+        service = _FakeService([record], port_map={"alpha": port})
+        assert try_fetch_plugin_card(record, service=service, timeout=1.0) is None
+    finally:
+        _stop(server, thread)
+
+
+def test_try_fetch_plugin_card_unreachable_returns_none():
+    # Port 1 is reserved/refused on every host. Exercises the URLError path.
+    record = FakeRecord(name="ghost", service="openclaw", port=0)
+    service = _FakeService([record], port_map={"ghost": 1})
+    assert try_fetch_plugin_card(record, service=service, timeout=0.2) is None
+
+
+def test_cards_from_service_mixes_plugin_and_fallback():
+    plugin_card = {
+        "name": "alpha",
+        "role": "real plugin role",
+        "skills": ["s1"],
+        "endpoint": "http://127.0.0.1:18819/a2a/send",
+    }
+    server, thread = _start_well_known_server(body=json.dumps(plugin_card).encode())
+    try:
+        _, plugin_port = server.server_address
+        alpha = FakeRecord(name="alpha", service="openclaw", port=0)
+        beta = FakeRecord(name="beta", service="hermes", port=0)
+        service = _FakeService(
+            [alpha, beta],
+            port_map={"alpha": plugin_port, "beta": 1},  # beta unreachable
+        )
+        cards = cards_from_service(service, timeout=1.0)
+        by_name = {c.name: c for c in cards}
+        assert by_name["alpha"].role == "real plugin role"
+        assert by_name["alpha"].skills == ["s1"]
+        # beta had no plugin → fallback role/skills from service-type map
+        assert by_name["beta"].role == "Hermes local analyst"
+        assert by_name["beta"].skills == ["chat", "analysis"]
+    finally:
+        _stop(server, thread)
+
+
+def test_make_cards_provider_caches_within_ttl():
+    alpha = FakeRecord(name="alpha", service="openclaw", port=0)
+    call_count = {"n": 0}
+
+    class CountingService:
+        def list_instances(self, *, running_only: bool = False):  # noqa: ARG002
+            call_count["n"] += 1
+            return [alpha]
+
+        def adapter_for_record(self, record):  # noqa: ARG002
+            return _FixedPortAdapter(1)  # unreachable → fallback path
+
+    now_state = {"t": 0.0}
+
+    def fake_now():
+        return now_state["t"]
+
+    provider = make_cards_provider(
+        CountingService(), ttl=5.0, now=fake_now, timeout=0.05
+    )
+    first = provider()
+    second = provider()  # within TTL → no refetch
+    assert first == second
+    assert call_count["n"] == 1
+
+    now_state["t"] = 10.0  # past TTL
+    third = provider()
+    assert third == first
+    assert call_count["n"] == 2
+
+
+def test_make_cards_provider_ttl_zero_disables_cache():
+    alpha = FakeRecord(name="alpha", service="openclaw", port=0)
+    call_count = {"n": 0}
+
+    class CountingService:
+        def list_instances(self, *, running_only: bool = False):  # noqa: ARG002
+            call_count["n"] += 1
+            return [alpha]
+
+        def adapter_for_record(self, record):  # noqa: ARG002
+            return _FixedPortAdapter(1)
+
+    provider = make_cards_provider(CountingService(), ttl=0.0, timeout=0.05)
+    provider()
+    provider()
+    assert call_count["n"] == 2
+
+
+def test_cache_state_does_not_leak_between_providers():
+    alpha = FakeRecord(name="alpha", service="openclaw", port=0)
+
+    class Svc:
+        def __init__(self, label):
+            self.label = label
+
+        def list_instances(self, *, running_only: bool = False):  # noqa: ARG002
+            return [FakeRecord(name=self.label, service="openclaw", port=0)]
+
+        def adapter_for_record(self, record):  # noqa: ARG002
+            return _FixedPortAdapter(1)
+
+    p1 = make_cards_provider(Svc("one"), ttl=5.0, timeout=0.05)
+    p2 = make_cards_provider(Svc("two"), ttl=5.0, timeout=0.05)
+    assert p1()[0].name == "one"
+    assert p2()[0].name == "two"

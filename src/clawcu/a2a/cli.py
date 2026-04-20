@@ -14,7 +14,7 @@ from clawcu.a2a.card import (
     card_from_record,
 )
 from clawcu.a2a.client import A2AClientError, send_via_registry
-from clawcu.a2a.registry import cards_from_service, serve_registry_forever
+from clawcu.a2a.registry import make_cards_provider, serve_registry_forever
 from clawcu.service import ClawCUService
 
 a2a_app = typer.Typer(
@@ -68,10 +68,10 @@ def card_command(
         if not matches:
             console.print(f"[bold red]Error:[/bold red] instance '{name}' not found.")
             raise typer.Exit(code=1)
-        card = card_from_record(matches[0], host=host)
+        card = card_from_record(matches[0], service=service, host=host)
         console.print_json(card.to_json())
         return
-    cards = [card_from_record(r, host=host).to_dict() for r in records]
+    cards = [card_from_record(r, service=service, host=host).to_dict() for r in records]
     console.print_json(json.dumps(cards))
 
 
@@ -82,10 +82,7 @@ def registry_serve(
 ) -> None:
     """Serve /agents and /agents/{name} over HTTP (stdlib-only)."""
     service = _get_service()
-
-    def provider() -> list[AgentCard]:
-        return cards_from_service(service, host=host)
-
+    provider = make_cards_provider(service, host=host)
     console.print(f"[bold]A2A registry[/bold] listening on http://{host}:{port}")
     try:
         serve_registry_forever(provider, host=host, port=port)

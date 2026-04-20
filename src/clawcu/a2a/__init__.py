@@ -5,6 +5,9 @@ from clawcu.a2a.card import (
     bridge_endpoint_for,
     bridge_port_for,
     card_from_record,
+    display_port_for_record,
+    plugin_endpoint_for,
+    role_for_service,
     skills_for_service,
 )
 
@@ -15,5 +18,8 @@ __all__ = [
     "bridge_endpoint_for",
     "bridge_port_for",
     "card_from_record",
+    "display_port_for_record",
+    "plugin_endpoint_for",
+    "role_for_service",
     "skills_for_service",
 ]
