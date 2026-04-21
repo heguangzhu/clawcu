@@ -90,9 +90,21 @@ provider_app = typer.Typer(
     help="Collect and reuse model configuration assets from managed instances and local homes.",
     add_completion=False,
 )
+hermes_app = typer.Typer(
+    help="Hermes-specific instance operations.",
+    subcommand_metavar="COMMAND",
+    add_completion=False,
+)
+hermes_identity_app = typer.Typer(
+    help="Manage the SOUL.md persona file for a hermes instance.",
+    subcommand_metavar="ACTION",
+    add_completion=False,
+)
+hermes_app.add_typer(hermes_identity_app, name="identity")
 app.add_typer(pull_app, name="pull", rich_help_panel="Setup")
 app.add_typer(create_app, name="create", rich_help_panel="Lifecycle")
 app.add_typer(provider_app, name="provider", rich_help_panel="Providers")
+app.add_typer(hermes_app, name="hermes", rich_help_panel="Lifecycle")
 app.add_typer(a2a_app, name="a2a", rich_help_panel="A2A")
 console = Console()
 _DISPLAY_DATE_RE = re.compile(r"(\d{4}\.\d{1,2}\.\d{1,2})")
@@ -1069,6 +1081,7 @@ def _do_create(
     port: int | None,
     cpu: str,
     memory: str,
+    a2a: bool = False,
     apply_provider: str | None = None,
     apply_agent: str = "main",
     apply_persist: bool = False,
@@ -1083,11 +1096,11 @@ def _do_create(
     try:
         if service_name == "openclaw":
             record = service.create_openclaw(
-                name=name, version=version, image=image, datadir=datadir, port=port, cpu=cpu, memory=memory,
+                name=name, version=version, image=image, datadir=datadir, port=port, cpu=cpu, memory=memory, a2a=a2a,
             )
         else:
             record = service.create_hermes(
-                name=name, version=version, image=image, datadir=datadir, port=port, cpu=cpu, memory=memory,
+                name=name, version=version, image=image, datadir=datadir, port=port, cpu=cpu, memory=memory, a2a=a2a,
             )
     except Exception as exc:
         _exit_with_error(str(exc))
@@ -1155,6 +1168,24 @@ _APPLY_PERSIST_OPTION = typer.Option(
         "instance env file (matches `provider apply --persist`)."
     ),
 )
+_A2A_OPTION = typer.Option(
+    "--a2a",
+    help=(
+        "Bake the A2A sidecar into the instance image so it speaks the A2A v0 "
+        "protocol (AgentCard + /a2a/send) on a neighbor port. The base image "
+        "is wrapped with the clawcu.a2a.sidecar_plugin assets for the service; the "
+        "result is tagged clawcu/{service}-a2a:{base}-plugin{clawcu-version}."
+    ),
+)
+_A2A_TRISTATE_OPTION = typer.Option(
+    "--a2a/--no-a2a",
+    help=(
+        "Toggle the A2A flavor when recreating. Omit to preserve the instance's "
+        "current flavor; pass --a2a to switch to the baked a2a image, or "
+        "--no-a2a to drop back to the stock image. Flipping the flag re-runs "
+        "artifact preparation."
+    ),
+)
 
 
 @create_app.callback(invoke_without_command=True)
@@ -1177,6 +1208,7 @@ def create_callback(
     port: Annotated[int | None, typer.Option("--port", help="Host port exposed for the instance.")] = None,
     cpu: Annotated[str, typer.Option("--cpu", help="Docker CPU limit.")] = "1",
     memory: Annotated[str, typer.Option("--memory", help="Docker memory limit.")] = "2g",
+    a2a: Annotated[bool, _A2A_OPTION] = False,
     apply_provider: Annotated[str | None, _APPLY_PROVIDER_OPTION] = None,
     apply_agent: Annotated[str, _APPLY_AGENT_OPTION] = "main",
     apply_persist: Annotated[bool, _APPLY_PERSIST_OPTION] = False,
@@ -1195,6 +1227,7 @@ def create_callback(
             port=port,
             cpu=cpu,
             memory=memory,
+            a2a=a2a,
             apply_provider=apply_provider,
             apply_agent=apply_agent,
             apply_persist=apply_persist,
@@ -1244,6 +1277,7 @@ def create_openclaw(
     ] = None,
     cpu: Annotated[str, typer.Option("--cpu", help="Docker CPU limit.")] = "1",
     memory: Annotated[str, typer.Option("--memory", help="Docker memory limit.")] = "2g",
+    a2a: Annotated[bool, _A2A_OPTION] = False,
     apply_provider: Annotated[str | None, _APPLY_PROVIDER_OPTION] = None,
     apply_agent: Annotated[str, _APPLY_AGENT_OPTION] = "main",
     apply_persist: Annotated[bool, _APPLY_PERSIST_OPTION] = False,
@@ -1257,6 +1291,7 @@ def create_openclaw(
         port=port,
         cpu=cpu,
         memory=memory,
+        a2a=a2a,
         apply_provider=apply_provider,
         apply_agent=apply_agent,
         apply_persist=apply_persist,
@@ -1284,6 +1319,7 @@ def create_hermes(
     ] = None,
     cpu: Annotated[str, typer.Option("--cpu", help="Docker CPU limit.")] = "1",
     memory: Annotated[str, typer.Option("--memory", help="Docker memory limit.")] = "2g",
+    a2a: Annotated[bool, _A2A_OPTION] = False,
     apply_provider: Annotated[str | None, _APPLY_PROVIDER_OPTION] = None,
     apply_agent: Annotated[str, _APPLY_AGENT_OPTION] = "main",
     apply_persist: Annotated[bool, _APPLY_PERSIST_OPTION] = False,
@@ -1297,9 +1333,39 @@ def create_hermes(
         port=port,
         cpu=cpu,
         memory=memory,
+        a2a=a2a,
         apply_provider=apply_provider,
         apply_agent=apply_agent,
         apply_persist=apply_persist,
+    )
+
+
+@hermes_identity_app.command(
+    "set",
+    help=(
+        "Install a file as the persona (SOUL.md) for a hermes instance.\n\n"
+        "The file is copied into the instance's datadir where the container's "
+        "HERMES_HOME mount makes it `$HERMES_HOME/SOUL.md`. Hermes "
+        "re-reads it on every chat turn — no restart required."
+    ),
+)
+def hermes_identity_set(
+    name: Annotated[str, typer.Argument(help="Managed hermes instance name.")],
+    source: Annotated[str, typer.Argument(help="Path to a local markdown/text file.")],
+) -> None:
+    service = get_service()
+    try:
+        result = service.set_hermes_identity(name, source)
+    except ValueError as exc:
+        _exit_with_error(str(exc))
+    except FileNotFoundError as exc:
+        _exit_with_error(str(exc))
+    console.print(
+        f"[green]Installed persona[/green] for [bold]{result['instance']}[/bold]: "
+        f"{result['source']} -> {result['target']} ({result['bytes']} bytes)."
+    )
+    console.print(
+        "[dim]Next chat turn will pick it up automatically; no restart needed.[/dim]"
     )
 
 
@@ -2732,18 +2798,22 @@ def _do_recreate(
     fresh: bool = False,
     timeout: int | None = None,
     version: str | None = None,
+    a2a: bool | None = None,
 ) -> None:
     """Unified recreate logic.
 
     Tries retry_instance first (cheap auto-port recovery path for
     create_failed records); if the service rejects it with a
     ValueError ("Only create_failed ..."), falls back to the regular
-    recreate_instance flow. When ``fresh``, ``timeout``, or ``version``
-    is provided, skip the retry shortcut and go straight to recreate.
+    recreate_instance flow. When ``fresh``, ``timeout``, ``version``,
+    or ``a2a`` is provided, skip the retry shortcut and go straight to
+    recreate so the toggles take effect.
     """
-    if fresh or timeout is not None or version is not None:
+    if fresh or timeout is not None or version is not None or a2a is not None:
         try:
-            record = service.recreate_instance(name, fresh=fresh, timeout=timeout, version=version)
+            record = service.recreate_instance(
+                name, fresh=fresh, timeout=timeout, version=version, a2a=a2a,
+            )
         except Exception as exc:
             _exit_with_error(str(exc))
         console.print(
@@ -2755,7 +2825,7 @@ def _do_recreate(
         record = service.retry_instance(name)
     except FileNotFoundError:
         try:
-            record = service.recreate_instance(name, version=version)
+            record = service.recreate_instance(name, version=version, a2a=a2a)
         except Exception as exc2:
             _exit_with_error(str(exc2))
         console.print(
@@ -2768,7 +2838,7 @@ def _do_recreate(
         if "create_failed" not in message:
             _exit_with_error(message)
         try:
-            record = service.recreate_instance(name, version=version)
+            record = service.recreate_instance(name, version=version, a2a=a2a)
         except Exception as exc2:
             _exit_with_error(str(exc2))
         console.print(
@@ -2813,6 +2883,7 @@ def recreate_instance(
             help="Version to use when recreating a removed instance whose datadir no longer has an instance record.",
         ),
     ] = None,
+    a2a: Annotated[bool | None, _A2A_TRISTATE_OPTION] = None,
     yes: Annotated[
         bool,
         typer.Option("--yes", "-y", help="Skip the confirmation prompt for --fresh."),
@@ -2839,7 +2910,7 @@ def recreate_instance(
             "use 'clawcu rollback --list' after the wipe to see what remains.",
             yes,
         )
-    _do_recreate(service, name, fresh=fresh, timeout=timeout, version=version)
+    _do_recreate(service, name, fresh=fresh, timeout=timeout, version=version, a2a=a2a)
 
 
 def _print_upgrade_plan(plan: dict) -> None:

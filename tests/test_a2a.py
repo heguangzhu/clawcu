@@ -6,6 +6,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Iterable
 
 import pytest
@@ -1074,6 +1075,553 @@ def test_a2a_up_skips_echo_bridge_when_port_already_bound(
         holder.close()
 
 
+# ---------- iter 4: native-agent routing (P0-3 regression) ----------
+
+
+def _make_openclaw_record(tmp_path, *, a2a_enabled: bool = True):
+    """Build an InstanceRecord against a temp datadir for adapter tests."""
+    from clawcu.models import InstanceRecord
+
+    datadir = tmp_path / "inst"
+    datadir.mkdir()
+    return InstanceRecord(
+        service="openclaw",
+        name="writer",
+        version="2026.4.12",
+        datadir=str(datadir),
+        port=18799,
+        cpu="1",
+        memory="2g",
+        auth_mode="token",
+        a2a_enabled=a2a_enabled,
+        upstream_ref="ghcr.io/openclaw/openclaw:2026.4.12",
+        image_tag="clawcu/openclaw-a2a:2026.4.12-plugin0.2.10",
+        container_name="clawcu-openclaw-writer",
+        status="created",
+        created_at="2026-04-21T00:00:00Z",
+        updated_at="2026-04-21T00:00:00Z",
+    )
+
+
+class _StubService:
+    """Minimal ClawCUService stand-in for the adapter config/run-spec path."""
+
+    def __init__(self, env_file: Path | None = None):
+        self.messages: list[str] = []
+        self.reporter = self.messages.append
+
+        class _Store:
+            def __init__(self, env_file: Path | None):
+                self._env_file = env_file
+
+            def instance_env_path(self, name):  # noqa: ARG002
+                return self._env_file or Path("/tmp/nonexistent-env-file")
+
+        self.store = _Store(env_file)
+
+    def _make_runtime_tree_writable(self, datadir):
+        return None
+
+
+def test_openclaw_adapter_writes_chat_completions_flag_when_a2a_enabled(tmp_path):
+    from clawcu.openclaw.adapter import OpenClawAdapter
+
+    # configure_before_run / run_spec don't touch the manager — only the
+    # image-build path does — so we can skip constructing a real one.
+    adapter = OpenClawAdapter(manager=None)
+    record = _make_openclaw_record(tmp_path, a2a_enabled=True)
+    adapter.configure_before_run(_StubService(), record)
+
+    cfg = json.loads((Path(record.datadir) / "openclaw.json").read_text())
+    assert (
+        cfg["gateway"]["http"]["endpoints"]["chatCompletions"]["enabled"] is True
+    ), "a2a_enabled must flip the gateway chatCompletions endpoint on"
+
+
+def test_openclaw_adapter_omits_chat_completions_flag_when_a2a_disabled(tmp_path):
+    from clawcu.openclaw.adapter import OpenClawAdapter
+
+    # configure_before_run / run_spec don't touch the manager — only the
+    # image-build path does — so we can skip constructing a real one.
+    adapter = OpenClawAdapter(manager=None)
+    record = _make_openclaw_record(tmp_path, a2a_enabled=False)
+    adapter.configure_before_run(_StubService(), record)
+
+    cfg = json.loads((Path(record.datadir) / "openclaw.json").read_text())
+    endpoints = cfg.get("gateway", {}).get("http", {}).get("endpoints", {})
+    assert "chatCompletions" not in endpoints, (
+        "non-a2a instances must not expose the OpenAI-compat endpoint"
+    )
+
+
+def test_openclaw_adapter_run_spec_exposes_gateway_port_when_a2a(tmp_path):
+    from clawcu.openclaw.adapter import OpenClawAdapter
+
+    # configure_before_run / run_spec don't touch the manager — only the
+    # image-build path does — so we can skip constructing a real one.
+    adapter = OpenClawAdapter(manager=None)
+    record = _make_openclaw_record(tmp_path, a2a_enabled=True)
+    spec = adapter.run_spec(_StubService(), record)
+
+    assert spec.extra_env["A2A_GATEWAY_PORT"] == str(adapter.internal_port), (
+        "sidecar needs A2A_GATEWAY_PORT to reach the in-container gateway"
+    )
+    assert spec.extra_env["A2A_SIDECAR_NAME"] == "writer"
+    host_ports = [host for host, _ in spec.additional_ports]
+    assert record.port + 1 in host_ports, (
+        "sidecar must be published on record.port + 1 for neighbor-port federation"
+    )
+
+
+def _make_hermes_record(tmp_path, *, a2a_enabled: bool = True):
+    from clawcu.models import InstanceRecord
+
+    datadir = tmp_path / "inst"
+    datadir.mkdir()
+    return InstanceRecord(
+        service="hermes",
+        name="scribe",
+        version="v0.10.0",
+        datadir=str(datadir),
+        port=8652,
+        cpu="1",
+        memory="2g",
+        auth_mode="native",
+        dashboard_port=9129,
+        a2a_enabled=a2a_enabled,
+        upstream_ref="ghcr.io/openclaw/hermes-agent:v0.10.0",
+        image_tag="clawcu/hermes-agent-a2a:v0.10.0-plugin0.2.10",
+        container_name="clawcu-hermes-scribe",
+        status="created",
+        created_at="2026-04-21T00:00:00Z",
+        updated_at="2026-04-21T00:00:00Z",
+    )
+
+
+class _StubServiceHermes:
+    """Stub for hermes adapter — provides the env loader helpers it calls."""
+
+    def __init__(self):
+        self.messages: list[str] = []
+        self.reporter = self.messages.append
+
+    def _load_env_file(self, path):  # noqa: ARG002
+        return {}
+
+    def _dump_env_file(self, values):
+        return "\n".join(f"{k}={v}" for k, v in values.items()) + "\n"
+
+    def _make_runtime_tree_writable(self, datadir):  # noqa: ARG002
+        return None
+
+
+def test_hermes_adapter_scaffolds_soul_md_when_a2a_enabled(tmp_path):
+    from clawcu.hermes.adapter import HermesAdapter, HERMES_SOUL_FILENAME
+
+    adapter = HermesAdapter(manager=None)
+    record = _make_hermes_record(tmp_path, a2a_enabled=True)
+    stub = _StubServiceHermes()
+    adapter.configure_before_run(stub, record)
+
+    soul_path = Path(record.datadir) / HERMES_SOUL_FILENAME
+    assert soul_path.exists(), (
+        "a2a-enabled hermes instances must have a SOUL.md placeholder at datadir "
+        "so the persona-injection contract is documented and usable"
+    )
+    assert "persona" in soul_path.read_text().lower()
+    assert any("SOUL.md" in m for m in stub.messages), (
+        "reporter should mention SOUL.md so the user knows where to edit"
+    )
+
+
+def test_hermes_adapter_does_not_scaffold_soul_md_when_a2a_disabled(tmp_path):
+    from clawcu.hermes.adapter import HermesAdapter, HERMES_SOUL_FILENAME
+
+    adapter = HermesAdapter(manager=None)
+    record = _make_hermes_record(tmp_path, a2a_enabled=False)
+    adapter.configure_before_run(_StubServiceHermes(), record)
+
+    soul_path = Path(record.datadir) / HERMES_SOUL_FILENAME
+    assert not soul_path.exists()
+
+
+def test_hermes_adapter_preserves_user_soul_md(tmp_path):
+    from clawcu.hermes.adapter import HermesAdapter, HERMES_SOUL_FILENAME
+
+    adapter = HermesAdapter(manager=None)
+    record = _make_hermes_record(tmp_path, a2a_enabled=True)
+    soul_path = Path(record.datadir) / HERMES_SOUL_FILENAME
+    soul_path.write_text("# Custom\nYou are Scribe.\n", encoding="utf-8")
+
+    adapter.configure_before_run(_StubServiceHermes(), record)
+
+    assert "You are Scribe." in soul_path.read_text(), (
+        "an existing user-authored SOUL.md must never be overwritten"
+    )
+
+
+def test_openclaw_adapter_run_spec_no_a2a_ports_when_disabled(tmp_path):
+    from clawcu.openclaw.adapter import OpenClawAdapter
+
+    # configure_before_run / run_spec don't touch the manager — only the
+    # image-build path does — so we can skip constructing a real one.
+    adapter = OpenClawAdapter(manager=None)
+    record = _make_openclaw_record(tmp_path, a2a_enabled=False)
+    spec = adapter.run_spec(_StubService(), record)
+
+    assert spec.extra_env == {}
+    assert spec.additional_ports == []
+
+
+def test_openclaw_adapter_run_spec_sets_gateway_ready_path_to_healthz(tmp_path):
+    # Review-7 P2-E: each adapter declares its own readiness path so the
+    # sidecar stays gateway-agnostic. OpenClaw's gateway serves /healthz.
+    from clawcu.openclaw.adapter import OpenClawAdapter
+
+    adapter = OpenClawAdapter(manager=None)
+    record = _make_openclaw_record(tmp_path, a2a_enabled=True)
+    spec = adapter.run_spec(_StubService(), record)
+
+    assert spec.extra_env["A2A_GATEWAY_READY_PATH"] == "/healthz"
+
+
+def test_hermes_adapter_run_spec_sets_gateway_ready_path_to_health(tmp_path):
+    # Review-7 P2-E mirror of the openclaw test: hermes' API server serves
+    # /health, and the adapter has to tell the (gateway-agnostic) sidecar.
+    from clawcu.hermes.adapter import HermesAdapter
+
+    adapter = HermesAdapter(manager=None)
+    record = _make_hermes_record(tmp_path, a2a_enabled=True)
+    # The stub's bare _load_env_file returns {}, so we bypass it with one
+    # that behaves like the real service: auto-fills API_SERVER_KEY.
+    stub = _StubServiceHermes()
+    stub._load_env_file = lambda path: {"API_SERVER_KEY": "test-key"}  # type: ignore[method-assign]
+    spec = adapter.run_spec(stub, record)
+
+    assert spec.extra_env["A2A_GATEWAY_READY_PATH"] == "/health"
+
+
+def test_openclaw_adapter_run_spec_sets_sidecar_log_dir_under_mount(tmp_path):
+    # Review-10 P2-C: the adapter points the sidecar at a log dir that lives
+    # inside the datadir bind-mount, so logs survive `clawcu recreate`.
+    from clawcu.openclaw.adapter import OpenClawAdapter
+
+    adapter = OpenClawAdapter(manager=None)
+    record = _make_openclaw_record(tmp_path, a2a_enabled=True)
+    spec = adapter.run_spec(_StubService(), record)
+
+    # Must sit under the openclaw mount_target so it lands on the host datadir.
+    assert spec.extra_env["A2A_SIDECAR_LOG_DIR"] == "/home/node/.openclaw/logs"
+
+
+def test_openclaw_adapter_run_spec_omits_sidecar_log_dir_without_a2a(tmp_path):
+    # When a2a is disabled the sidecar isn't running, so the log-dir env
+    # must not leak — it's a sidecar-only concern.
+    from clawcu.openclaw.adapter import OpenClawAdapter
+
+    adapter = OpenClawAdapter(manager=None)
+    record = _make_openclaw_record(tmp_path, a2a_enabled=False)
+    spec = adapter.run_spec(_StubService(), record)
+
+    assert "A2A_SIDECAR_LOG_DIR" not in spec.extra_env
+
+
+def test_openclaw_adapter_run_spec_sets_thread_dir_under_mount(tmp_path):
+    # Review-13 P1-C: the adapter points the sidecar at a thread-history
+    # directory living inside the datadir mount, so threaded conversations
+    # survive `clawcu recreate`.
+    from clawcu.openclaw.adapter import OpenClawAdapter
+
+    adapter = OpenClawAdapter(manager=None)
+    record = _make_openclaw_record(tmp_path, a2a_enabled=True)
+    spec = adapter.run_spec(_StubService(), record)
+
+    assert spec.extra_env["A2A_THREAD_DIR"] == "/home/node/.openclaw/threads"
+
+
+def test_openclaw_adapter_run_spec_omits_thread_dir_without_a2a(tmp_path):
+    # When a2a is off, thread storage is a sidecar-only concern and must
+    # not leak into the container env.
+    from clawcu.openclaw.adapter import OpenClawAdapter
+
+    adapter = OpenClawAdapter(manager=None)
+    record = _make_openclaw_record(tmp_path, a2a_enabled=False)
+    spec = adapter.run_spec(_StubService(), record)
+
+    assert "A2A_THREAD_DIR" not in spec.extra_env
+
+
+def test_openclaw_adapter_does_not_shadow_user_a2a_thread_max_history(tmp_path):
+    # Review-13 P1-C: like A2A_MODEL (review-12 P2-B), the history cap is
+    # intentionally user-tunable via the instance env file. Adapter must
+    # NOT inject A2A_THREAD_MAX_HISTORY_PAIRS in extra_env — otherwise
+    # --env would overlay the env-file value.
+    from clawcu.openclaw.adapter import OpenClawAdapter
+
+    adapter = OpenClawAdapter(manager=None)
+    record = _make_openclaw_record(tmp_path, a2a_enabled=True)
+    spec = adapter.run_spec(_StubService(), record)
+
+    assert "A2A_THREAD_MAX_HISTORY_PAIRS" not in spec.extra_env
+
+
+def test_openclaw_adapter_does_not_shadow_user_a2a_model_env(tmp_path):
+    """Review-12 P2-B: the sidecar hardcodes the openclaw gateway default
+    (``model = "openclaw"``), but users can redirect A2A traffic to a
+    specific agent by putting ``A2A_MODEL=openclaw/<agentId>`` in the
+    instance env file. Docker reads --env-file first and then overlays
+    --env, so the adapter must NOT inject A2A_MODEL in ``extra_env`` —
+    otherwise we'd silently shadow the user's env-file override.
+    """
+    from clawcu.openclaw.adapter import OpenClawAdapter
+
+    adapter = OpenClawAdapter(manager=None)
+    record = _make_openclaw_record(tmp_path, a2a_enabled=True)
+    spec = adapter.run_spec(_StubService(), record)
+
+    assert "A2A_MODEL" not in spec.extra_env, (
+        "A2A_MODEL must be controllable via the user's env file; the adapter "
+        "must not shadow it with an explicit --env entry"
+    )
+
+
+def test_hermes_adapter_does_not_shadow_user_hermes_model_env(tmp_path):
+    """Review-12 P2-B mirror: hermes sidecar defaults to HERMES_MODEL=hermes-agent
+    but users can point at a different model via the env file. Adapter
+    must not set it in extra_env (which would override the env-file value).
+    """
+    from clawcu.hermes.adapter import HermesAdapter
+
+    adapter = HermesAdapter(manager=None)
+    record = _make_hermes_record(tmp_path, a2a_enabled=True)
+    stub = _StubServiceHermes()
+    stub._load_env_file = lambda path: {"API_SERVER_KEY": "test-key"}  # type: ignore[method-assign]
+    spec = adapter.run_spec(stub, record)
+
+    assert "HERMES_MODEL" not in spec.extra_env
+
+
+def test_hermes_adapter_run_spec_sets_sidecar_log_dir_under_mount(tmp_path):
+    # Review-10 P2-C mirror of the openclaw test.
+    from clawcu.hermes.adapter import HermesAdapter
+
+    adapter = HermesAdapter(manager=None)
+    record = _make_hermes_record(tmp_path, a2a_enabled=True)
+    stub = _StubServiceHermes()
+    stub._load_env_file = lambda path: {"API_SERVER_KEY": "test-key"}  # type: ignore[method-assign]
+    spec = adapter.run_spec(stub, record)
+
+    assert spec.extra_env["A2A_SIDECAR_LOG_DIR"] == "/opt/data/logs"
+
+
+def test_hermes_adapter_run_spec_sets_thread_dir_under_mount(tmp_path):
+    # Review-14 P1-C (hermes mirror of iter 13): the adapter points the
+    # sidecar at a thread-history directory inside the /opt/data mount,
+    # so threaded conversations survive `clawcu recreate`.
+    from clawcu.hermes.adapter import HermesAdapter
+
+    adapter = HermesAdapter(manager=None)
+    record = _make_hermes_record(tmp_path, a2a_enabled=True)
+    stub = _StubServiceHermes()
+    stub._load_env_file = lambda path: {"API_SERVER_KEY": "test-key"}  # type: ignore[method-assign]
+    spec = adapter.run_spec(stub, record)
+
+    assert spec.extra_env["A2A_THREAD_DIR"] == "/opt/data/threads"
+
+
+def test_hermes_adapter_run_spec_omits_thread_dir_without_a2a(tmp_path):
+    # Without a2a the sidecar isn't running, so A2A_THREAD_DIR must not
+    # leak into the container env.
+    from clawcu.hermes.adapter import HermesAdapter
+
+    adapter = HermesAdapter(manager=None)
+    record = _make_hermes_record(tmp_path, a2a_enabled=False)
+    stub = _StubServiceHermes()
+    stub._load_env_file = lambda path: {"API_SERVER_KEY": "test-key"}  # type: ignore[method-assign]
+    spec = adapter.run_spec(stub, record)
+
+    assert "A2A_THREAD_DIR" not in spec.extra_env
+
+
+def test_hermes_adapter_does_not_shadow_user_a2a_thread_max_history(tmp_path):
+    # Like A2A_MODEL (review-12 P2-B), the history cap is user-tunable via
+    # the instance env file. Adapter must NOT inject it in extra_env —
+    # docker --env would overlay the env-file value.
+    from clawcu.hermes.adapter import HermesAdapter
+
+    adapter = HermesAdapter(manager=None)
+    record = _make_hermes_record(tmp_path, a2a_enabled=True)
+    stub = _StubServiceHermes()
+    stub._load_env_file = lambda path: {"API_SERVER_KEY": "test-key"}  # type: ignore[method-assign]
+    spec = adapter.run_spec(stub, record)
+
+    assert "A2A_THREAD_MAX_HISTORY_PAIRS" not in spec.extra_env
+
+
+def _load_hermes_sidecar_module():
+    """Load the hermes sidecar as a module without adding a package __init__."""
+    import importlib.util
+
+    path = (
+        Path(__file__).resolve().parent.parent
+        / "src"
+        / "clawcu"
+        / "a2a"
+        / "sidecar_plugin"
+        / "hermes"
+        / "sidecar.py"
+    )
+    spec = importlib.util.spec_from_file_location("_hermes_sidecar_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_hermes_sidecar_wait_for_gateway_ready_succeeds_when_health_live(monkeypatch):
+    mod = _load_hermes_sidecar_module()
+    # Reset the cache so prior tests don't short-circuit.
+    monkeypatch.setattr(mod, "_GATEWAY_READY_UNTIL", 0.0, raising=False)
+
+    class _OKHandler(BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw):
+            return
+
+        def do_GET(self):  # noqa: N802
+            if self.path != "/health":
+                self.send_response(404)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            body = b'{"status":"ok"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _OKHandler)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        host, port = srv.server_address
+        monkeypatch.setenv("HERMES_API_HOST", host)
+        monkeypatch.setenv("HERMES_API_PORT", str(port))
+        monkeypatch.setenv("A2A_GATEWAY_READY_DEADLINE_S", "2")
+        monkeypatch.setenv("A2A_GATEWAY_READY_PROBE_S", "1")
+        cfg = mod.Config()
+        assert mod.wait_for_gateway_ready(cfg) is True
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=2)
+
+
+def test_hermes_sidecar_honors_a2a_gateway_ready_path_env(monkeypatch):
+    # Review-7 P2-E: sidecar must probe whatever path the adapter declared,
+    # not a hardcoded /health. This test points the sidecar at /custompath
+    # and asserts that's what ends up in the HTTP request URL.
+    mod = _load_hermes_sidecar_module()
+    monkeypatch.setattr(mod, "_GATEWAY_READY_UNTIL", 0.0, raising=False)
+
+    probed_paths: list[str] = []
+
+    class _PathProbingHandler(BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw):
+            return
+
+        def do_GET(self):  # noqa: N802
+            probed_paths.append(self.path)
+            body = b'{"status":"ok"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _PathProbingHandler)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        host, port = srv.server_address
+        monkeypatch.setenv("HERMES_API_HOST", host)
+        monkeypatch.setenv("HERMES_API_PORT", str(port))
+        monkeypatch.setenv("A2A_GATEWAY_READY_DEADLINE_S", "2")
+        monkeypatch.setenv("A2A_GATEWAY_READY_PROBE_S", "1")
+        monkeypatch.setenv("A2A_GATEWAY_READY_PATH", "/custompath")
+        cfg = mod.Config()
+        assert mod.wait_for_gateway_ready(cfg) is True
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=2)
+
+    assert probed_paths == ["/custompath"], (
+        f"sidecar ignored A2A_GATEWAY_READY_PATH; probed {probed_paths!r}"
+    )
+
+
+def test_hermes_sidecar_wait_for_gateway_ready_times_out_when_unreachable(monkeypatch):
+    mod = _load_hermes_sidecar_module()
+    monkeypatch.setattr(mod, "_GATEWAY_READY_UNTIL", 0.0, raising=False)
+    # Port 1 is refused on every host.
+    monkeypatch.setenv("HERMES_API_HOST", "127.0.0.1")
+    monkeypatch.setenv("HERMES_API_PORT", "1")
+    monkeypatch.setenv("A2A_GATEWAY_READY_DEADLINE_S", "0.3")
+    monkeypatch.setenv("A2A_GATEWAY_READY_PROBE_S", "0.1")
+    monkeypatch.setenv("A2A_GATEWAY_READY_POLL_S", "0.05")
+    cfg = mod.Config()
+    assert mod.wait_for_gateway_ready(cfg) is False
+
+
+def test_hermes_sidecar_call_hermes_sends_system_prompt_and_parses_reply(monkeypatch):
+    mod = _load_hermes_sidecar_module()
+
+    monkeypatch.setenv("A2A_SYSTEM_PROMPT", "be terse")
+    monkeypatch.setenv("HERMES_API_HOST", "127.0.0.1")
+    monkeypatch.setenv("HERMES_API_PORT", "9999")
+    monkeypatch.setenv("API_SERVER_KEY", "secret-token")
+    monkeypatch.setenv("HERMES_MODEL", "hermes-agent")
+
+    captured: dict[str, Any] = {}
+
+    class _FakeResponse:
+        def __init__(self, payload: bytes):
+            self._payload = payload
+
+        def read(self):
+            return self._payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return None
+
+    def fake_urlopen(req, timeout=None):  # noqa: ARG001
+        captured["url"] = req.full_url
+        captured["headers"] = {k.lower(): v for k, v in req.header_items()}
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        payload = {
+            "choices": [{"message": {"content": "hi from hermes"}}]
+        }
+        return _FakeResponse(json.dumps(payload).encode("utf-8"))
+
+    monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
+
+    cfg = mod.Config()
+    reply = mod.call_hermes(cfg, "ping", "peer-agent")
+    assert reply == "hi from hermes"
+    assert captured["url"].endswith("/v1/chat/completions")
+    assert captured["headers"]["authorization"] == "Bearer secret-token"
+    body = captured["body"]
+    assert body["model"] == "hermes-agent"
+    assert body["stream"] is False
+    assert body["messages"][0] == {"role": "system", "content": "be terse"}
+    assert body["messages"][-1]["role"] == "user"
+    assert "[from agent 'peer-agent']" in body["messages"][-1]["content"]
+    assert body["messages"][-1]["content"].endswith("ping")
+
+
 def test_a2a_up_skips_echo_bridge_when_ipv6_bound(monkeypatch, temp_clawcu_home):
     import socket as _socket
 
@@ -1142,3 +1690,465 @@ def test_a2a_up_skips_echo_bridge_when_ipv6_bound(monkeypatch, temp_clawcu_home)
         assert bind_calls == []
     finally:
         holder.close()
+
+
+# ---------------------------------------------------------------------------
+# Iter 6 — plugin fingerprint defeats image-tag staleness under editable-install
+# ---------------------------------------------------------------------------
+
+
+def test_plugin_fingerprint_is_stable_and_short():
+    """plugin_fingerprint is deterministic for the current working tree."""
+    from clawcu.a2a.sidecar_plugin import plugin_fingerprint, plugin_source_sha
+
+    first = plugin_fingerprint("hermes", "9.9.9")
+    second = plugin_fingerprint("hermes", "9.9.9")
+    assert first == second
+    assert first.startswith("9.9.9.")
+    sha_part = first.split(".", 3)[-1]
+    # sha_part is the 10-char hex from plugin_source_sha.
+    assert len(sha_part) == 10
+    assert sha_part == plugin_source_sha("hermes")
+    assert all(c in "0123456789abcdef" for c in sha_part)
+
+
+def test_plugin_fingerprint_differs_per_service():
+    """openclaw and hermes have different sidecar sources → different shas."""
+    from clawcu.a2a.sidecar_plugin import plugin_fingerprint
+
+    assert plugin_fingerprint("openclaw", "1.0.0") != plugin_fingerprint(
+        "hermes", "1.0.0"
+    )
+
+
+def test_plugin_source_sha_ignores_pycache_and_pyc(tmp_path, monkeypatch):
+    """Review-8 P2-H: runtime-generated bytecode must not shift the fingerprint.
+
+    If an import side-effect (e.g. CLI help path that touches the hermes
+    sidecar module) materialises ``__pycache__/sidecar.cpython-*.pyc``
+    inside the plugin tree, the image tag would churn on every dev run and
+    we'd re-bake for no reason. This test writes fake bytecode into a copy
+    of the plugin tree, then asserts the sha matches the pristine copy.
+    """
+    import shutil
+
+    from clawcu.a2a import sidecar_plugin as plugin_mod
+
+    real_source = plugin_mod.plugin_source_dir("hermes")
+    baseline_sha = plugin_mod.plugin_source_sha("hermes")
+
+    # Clone the plugin tree into tmp_path, add bytecode/garbage, point
+    # plugin_source_dir at the clone, and recompute.
+    fake_root = tmp_path / "plugin"
+    fake_root.mkdir()
+    fake_hermes = fake_root / "hermes"
+    shutil.copytree(real_source, fake_hermes)
+
+    pycache = fake_hermes / "__pycache__"
+    pycache.mkdir(exist_ok=True)
+    (pycache / "sidecar.cpython-312.pyc").write_bytes(b"compiled bytecode garbage\0")
+    # Also a .pyc at top level (belt & suspenders).
+    (fake_hermes / "stale.pyc").write_bytes(b"more garbage")
+
+    monkeypatch.setattr(plugin_mod, "_PLUGIN_ROOT", fake_root)
+    perturbed_sha = plugin_mod.plugin_source_sha("hermes")
+
+    assert perturbed_sha == baseline_sha, (
+        "plugin_source_sha must ignore __pycache__ and .pyc so transient "
+        "bytecode doesn't force image rebuilds"
+    )
+
+
+def test_plugin_source_sha_still_reacts_to_real_source_edits(tmp_path, monkeypatch):
+    """Positive control for P2-H filter: a real file edit must change the sha.
+
+    Without this, an over-eager filter could silently swallow real changes
+    (e.g. someone adds ``*.py`` to the ignore list and breaks the contract).
+    """
+    import shutil
+
+    from clawcu.a2a import sidecar_plugin as plugin_mod
+
+    real_source = plugin_mod.plugin_source_dir("hermes")
+
+    fake_root = tmp_path / "plugin"
+    fake_root.mkdir()
+    fake_hermes = fake_root / "hermes"
+    shutil.copytree(real_source, fake_hermes)
+
+    monkeypatch.setattr(plugin_mod, "_PLUGIN_ROOT", fake_root)
+    baseline = plugin_mod.plugin_source_sha("hermes")
+
+    # Touch a real source file.
+    sidecar = fake_hermes / "sidecar.py"
+    sidecar.write_text(sidecar.read_text(encoding="utf-8") + "\n# perturbation\n", encoding="utf-8")
+    perturbed = plugin_mod.plugin_source_sha("hermes")
+
+    assert perturbed != baseline, (
+        "editing a real sidecar file must still change the fingerprint"
+    )
+
+
+def test_openclaw_dockerfile_copies_whole_sidecar_dir():
+    """Review-11 guard: the sidecar is split into multiple .js modules
+    (server / readiness / ratelimit / logsink) and server.js ``require``s
+    its siblings at ``__dirname``. If the Dockerfile copied only
+    server.js, the runtime would crash on module resolution even though
+    unit tests would pass. The cheapest enforcement is: every *.js file
+    in ``sidecar/`` must appear in a ``COPY`` directive — and the
+    simplest way to guarantee that is to copy the directory, not
+    individual files.
+    """
+    from clawcu.a2a import sidecar_plugin as plugin_mod
+
+    source_dir = plugin_mod.plugin_source_dir("openclaw")
+    dockerfile = (source_dir / "Dockerfile").read_text(encoding="utf-8")
+    sidecar_dir = source_dir / "sidecar"
+    js_files = sorted(p.name for p in sidecar_dir.glob("*.js"))
+    assert js_files, "test preconditions broken: no sidecar .js files found"
+
+    copy_lines = [
+        line.strip()
+        for line in dockerfile.splitlines()
+        if line.lstrip().startswith("COPY") and "sidecar" in line
+    ]
+    joined = "\n".join(copy_lines)
+    # Either the whole directory is copied (preferred), or every file is.
+    directory_copy = "sidecar/ /opt/a2a" in joined or "sidecar /opt/a2a" in joined
+    per_file = all(f"sidecar/{name}" in joined for name in js_files)
+    assert directory_copy or per_file, (
+        f"Dockerfile must COPY all sidecar .js files; "
+        f"found COPY lines:\n{joined}\n"
+        f"expected files: {js_files}"
+    )
+
+
+def test_a2a_image_tag_embeds_source_sha_not_raw_version(tmp_path, monkeypatch):
+    """Tag component after ``plugin`` is ``<ver>.<sha>``, not bare ``<ver>``.
+
+    Regression against review-5 P0-c: when clawcu is editable-installed and
+    the user bumps ``__version__`` without reinstalling, the old code path
+    produced a stale tag because ``clawcu.__version__`` stayed pinned to the
+    install metadata. Including the plugin source sha makes the tag change
+    whenever the sidecar code changes, regardless of version staleness.
+    """
+    from clawcu.a2a.builder import a2a_image_tag
+    from clawcu.a2a.sidecar_plugin import plugin_source_sha
+
+    tag = a2a_image_tag("hermes", "v2026.4.13", "0.2.11")
+    sha = plugin_source_sha("hermes")
+    assert tag == f"clawcu/hermes-agent-a2a:v2026.4.13-plugin0.2.11.{sha}"
+    # Must NOT be the old bare-version tag format.
+    assert tag != "clawcu/hermes-agent-a2a:v2026.4.13-plugin0.2.11"
+
+
+# ---------------------------------------------------------------------------
+# Iter 6 — gateway-ready cache invalidation on upstream failure (P1-A)
+# ---------------------------------------------------------------------------
+
+
+def test_hermes_sidecar_invalidate_gateway_ready_resets_cache():
+    """invalidate_gateway_ready_cache drops the TTL so next call re-probes.
+
+    Review-4 P1-A: the 5-minute TTL was too eager — a gateway that went
+    sick would keep getting blind pushes for up to 5 minutes before the next
+    probe. The sidecar now explicitly invalidates after upstream failures
+    that suggest the gateway is unhealthy (URLError, 5xx HTTPError).
+    """
+    sidecar_mod = _load_hermes_sidecar_module()
+    # Prime the cache: pretend we just saw a 200 /health.
+    sidecar_mod._GATEWAY_READY_UNTIL = 9e18  # far future
+    assert sidecar_mod._GATEWAY_READY_UNTIL > 0
+    sidecar_mod.invalidate_gateway_ready_cache()
+    assert sidecar_mod._GATEWAY_READY_UNTIL == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Iter 7 — `clawcu hermes identity set` CLI contract (review-5 P1-E)
+# ---------------------------------------------------------------------------
+
+
+def test_hermes_identity_set_writes_soul_md_to_datadir(tmp_path):
+    """set_hermes_identity copies source into ``<datadir>/SOUL.md`` verbatim."""
+    from clawcu.core.models import InstanceRecord
+
+    source = tmp_path / "my-persona.md"
+    source.write_text("# My Scribe\n\nSign off with ZZZZ.\n", encoding="utf-8")
+    datadir = tmp_path / "datadir"
+    datadir.mkdir()
+
+    record = InstanceRecord(
+        name="scribe",
+        service="hermes",
+        version="2026.4.13",
+        port=8642,
+        datadir=str(datadir),
+        cpu="1",
+        memory="2g",
+        auth_mode="token",
+        upstream_ref="v2026.4.13",
+        image_tag="clawcu/hermes-agent:v2026.4.13",
+        container_name="clawcu-hermes-scribe",
+        status="running",
+        created_at="2026-04-21T00:00:00Z",
+        updated_at="2026-04-21T00:00:00Z",
+        a2a_enabled=True,
+    )
+
+    class _Store:
+        def load_record(self_, name):  # noqa: N805
+            assert name == "scribe"
+            return record
+
+        def append_log(self_, _line):  # noqa: N805
+            pass
+
+    class _Service:
+        store = _Store()
+
+    from clawcu.core.service import ClawCUService
+
+    result = ClawCUService.set_hermes_identity(_Service(), "scribe", source)
+    written = (datadir / "SOUL.md").read_text(encoding="utf-8")
+    assert written == "# My Scribe\n\nSign off with ZZZZ.\n"
+    assert result["target"] == str(datadir / "SOUL.md")
+    assert result["bytes"] == len(written)
+    assert result["instance"] == "scribe"
+
+
+def test_hermes_identity_set_rejects_non_hermes_service(tmp_path):
+    from clawcu.core.models import InstanceRecord
+
+    source = tmp_path / "p.md"
+    source.write_text("x\n", encoding="utf-8")
+    record = InstanceRecord(
+        name="jim",
+        service="openclaw",
+        version="2026.4.12",
+        port=18789,
+        datadir=str(tmp_path),
+        cpu="1",
+        memory="2g",
+        auth_mode="token",
+        upstream_ref="2026.4.12",
+        image_tag="clawcu/openclaw-a2a:2026.4.12",
+        container_name="clawcu-openclaw-jim",
+        status="running",
+        created_at="2026-04-21T00:00:00Z",
+        updated_at="2026-04-21T00:00:00Z",
+        a2a_enabled=False,
+    )
+
+    class _Store:
+        def load_record(self_, _n):  # noqa: N805
+            return record
+
+        def append_log(self_, _l):  # noqa: N805
+            pass
+
+    class _Service:
+        store = _Store()
+
+    from clawcu.core.service import ClawCUService
+
+    with pytest.raises(ValueError, match="only available for hermes"):
+        ClawCUService.set_hermes_identity(_Service(), "jim", source)
+
+
+def test_hermes_identity_set_rejects_empty_file(tmp_path):
+    from clawcu.core.models import InstanceRecord
+
+    source = tmp_path / "empty.md"
+    source.write_text("   \n\n", encoding="utf-8")
+    record = InstanceRecord(
+        name="scribe",
+        service="hermes",
+        version="2026.4.13",
+        port=8642,
+        datadir=str(tmp_path),
+        cpu="1",
+        memory="2g",
+        auth_mode="token",
+        upstream_ref="v2026.4.13",
+        image_tag="clawcu/hermes-agent:v2026.4.13",
+        container_name="clawcu-hermes-scribe",
+        status="running",
+        created_at="2026-04-21T00:00:00Z",
+        updated_at="2026-04-21T00:00:00Z",
+        a2a_enabled=True,
+    )
+
+    class _Store:
+        def load_record(self_, _n):  # noqa: N805
+            return record
+
+        def append_log(self_, _l):  # noqa: N805
+            pass
+
+    class _Service:
+        store = _Store()
+
+    from clawcu.core.service import ClawCUService
+
+    with pytest.raises(ValueError, match="empty"):
+        ClawCUService.set_hermes_identity(_Service(), "scribe", source)
+
+
+def test_hermes_sidecar_wait_for_gateway_ready_uses_cache_until_invalidated(
+    monkeypatch,
+):
+    """wait_for_gateway_ready short-circuits while cache valid; re-probes after invalidation."""
+    sidecar_mod = _load_hermes_sidecar_module()
+
+    probe_calls = {"n": 0}
+
+    def fake_probe(_cfg):
+        probe_calls["n"] += 1
+        return True
+
+    monkeypatch.setattr(sidecar_mod, "_probe_gateway_ready", fake_probe)
+    monkeypatch.setenv("HERMES_API_HOST", "127.0.0.1")
+    monkeypatch.setenv("HERMES_API_PORT", "1")
+    monkeypatch.setenv("A2A_GATEWAY_READY_DEADLINE_S", "2")
+    monkeypatch.setenv("A2A_GATEWAY_READY_POLL_S", "0.01")
+    cfg = sidecar_mod.Config()
+
+    # Reset module-level cache first; pristine state.
+    sidecar_mod._GATEWAY_READY_UNTIL = 0.0
+
+    # 1st call → probes once, caches success.
+    assert sidecar_mod.wait_for_gateway_ready(cfg) is True
+    assert probe_calls["n"] == 1
+
+    # 2nd call → cache hit, no new probe.
+    assert sidecar_mod.wait_for_gateway_ready(cfg) is True
+    assert probe_calls["n"] == 1
+
+    # Invalidate → next call re-probes.
+    sidecar_mod.invalidate_gateway_ready_cache()
+    assert sidecar_mod.wait_for_gateway_ready(cfg) is True
+    assert probe_calls["n"] == 2
+
+
+# -- Review-14 P1-C hermes ThreadStore unit tests ----------------------------
+# Parallel of tests/sidecar_thread.test.js (node --test). We reuse the
+# `_load_hermes_sidecar_module` harness so the class is tested in the same
+# shape it runs in production (inline in sidecar.py, no separate module).
+
+
+def test_hermes_thread_store_disabled_when_dir_empty():
+    mod = _load_hermes_sidecar_module()
+    store = mod.ThreadStore(storage_dir="")
+    assert store.enabled is False
+    assert store.load_history("peer", "tid") == []
+    assert store.append_turn("peer", "tid", "hi", "hello") is False
+
+
+def test_hermes_thread_store_load_missing_returns_empty(tmp_path):
+    mod = _load_hermes_sidecar_module()
+    store = mod.ThreadStore(storage_dir=str(tmp_path))
+    assert store.load_history("peer-a", "tid-1") == []
+
+
+def test_hermes_thread_store_roundtrip_preserves_order(tmp_path):
+    mod = _load_hermes_sidecar_module()
+    store = mod.ThreadStore(storage_dir=str(tmp_path))
+    assert store.append_turn("peer-a", "tid-1", "hi", "hello") is True
+    assert store.append_turn("peer-a", "tid-1", "how are you", "fine") is True
+    history = store.load_history("peer-a", "tid-1")
+    assert history == [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+        {"role": "user", "content": "how are you"},
+        {"role": "assistant", "content": "fine"},
+    ]
+
+
+def test_hermes_thread_store_caps_at_max_history_pairs(tmp_path):
+    mod = _load_hermes_sidecar_module()
+    store = mod.ThreadStore(storage_dir=str(tmp_path), max_history_pairs=2)
+    for i in range(5):
+        store.append_turn("peer-a", "tid-1", f"u{i}", f"a{i}")
+    history = store.load_history("peer-a", "tid-1")
+    # 2 pairs = last 4 messages.
+    assert history == [
+        {"role": "user", "content": "u3"},
+        {"role": "assistant", "content": "a3"},
+        {"role": "user", "content": "u4"},
+        {"role": "assistant", "content": "a4"},
+    ]
+
+
+def test_hermes_thread_store_rejects_path_traversal(tmp_path):
+    mod = _load_hermes_sidecar_module()
+    store = mod.ThreadStore(storage_dir=str(tmp_path))
+    attempts = [
+        ("../escape", "tid"),
+        ("peer", "../escape"),
+        ("peer/sub", "tid"),
+        ("peer", "tid/sub"),
+        ("..", "tid"),
+        ("peer", ".."),
+        ("", "tid"),
+        ("peer", ""),
+    ]
+    for peer, tid in attempts:
+        assert store.append_turn(peer, tid, "x", "y") is False
+        assert store.load_history(peer, tid) == []
+    # Sibling directories of tmp_path must be untouched — nothing escaped.
+    parent_children = [p.name for p in tmp_path.parent.iterdir()]
+    assert not any(name.startswith("escape") for name in parent_children)
+
+
+def test_hermes_thread_store_per_peer_isolation(tmp_path):
+    mod = _load_hermes_sidecar_module()
+    store = mod.ThreadStore(storage_dir=str(tmp_path))
+    store.append_turn("peer-a", "tid-1", "A-msg", "A-reply")
+    store.append_turn("peer-b", "tid-1", "B-msg", "B-reply")
+    assert store.load_history("peer-a", "tid-1") == [
+        {"role": "user", "content": "A-msg"},
+        {"role": "assistant", "content": "A-reply"},
+    ]
+    assert store.load_history("peer-b", "tid-1") == [
+        {"role": "user", "content": "B-msg"},
+        {"role": "assistant", "content": "B-reply"},
+    ]
+
+
+def test_hermes_thread_store_skips_corrupt_lines(tmp_path):
+    mod = _load_hermes_sidecar_module()
+    store = mod.ThreadStore(storage_dir=str(tmp_path))
+    store.append_turn("peer-a", "tid-1", "hi", "hello")
+    # Corrupt the jsonl file by hand.
+    file_path = tmp_path / "peer-a" / "tid-1.jsonl"
+    with open(file_path, "a", encoding="utf-8") as fh:
+        fh.write("this is not json\n")
+    store.append_turn("peer-a", "tid-1", "still there?", "yes")
+    history = store.load_history("peer-a", "tid-1")
+    assert history == [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+        {"role": "user", "content": "still there?"},
+        {"role": "assistant", "content": "yes"},
+    ]
+
+
+def test_hermes_thread_store_rejects_non_string_content(tmp_path):
+    mod = _load_hermes_sidecar_module()
+    store = mod.ThreadStore(storage_dir=str(tmp_path))
+    assert store.append_turn("peer-a", "tid-1", 42, "ok") is False  # type: ignore[arg-type]
+    assert store.append_turn("peer-a", "tid-1", "ok", None) is False  # type: ignore[arg-type]
+    assert store.load_history("peer-a", "tid-1") == []
+
+
+def test_hermes_safe_id_contract():
+    mod = _load_hermes_sidecar_module()
+    assert mod.safe_id("0194c3f0-7d1a-7a3e-8b8e-7e0e7a1f6d42") == "0194c3f0-7d1a-7a3e-8b8e-7e0e7a1f6d42"
+    assert mod.safe_id("peer.name_01") == "peer.name_01"
+    assert mod.safe_id("") is None
+    assert mod.safe_id(".") is None
+    assert mod.safe_id("..") is None
+    assert mod.safe_id("peer/with/slash") is None
+    assert mod.safe_id("peer with space") is None
+    assert mod.safe_id(None) is None
+    assert mod.safe_id("x" * 129) is None  # length cap at 128

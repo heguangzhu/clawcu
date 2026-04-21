@@ -55,6 +55,54 @@ HERMES_MODEL_ENV_ALLOWLIST = {
 HERMES_EXECUTABLE = "hermes"
 HERMES_EXEC_PATH = f"/opt/hermes/.venv/bin:/opt/hermes:{os.environ.get('PATH', '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin')}"
 
+# Persona contract: Hermes reads $HERMES_HOME/SOUL.md on every turn (see
+# hermes-agent agent/prompt_builder.py::load_soul_md). Our run_spec sets
+# HERMES_HOME=/opt/data and mounts record.datadir onto /opt/data, so a file
+# at <datadir>/SOUL.md lands exactly where load_soul_md expects it. This is
+# the Hermes equivalent of OpenClaw's <datadir>/workspace/IDENTITY.md path.
+HERMES_SOUL_FILENAME = "SOUL.md"
+_HERMES_SOUL_PLACEHOLDER = """\
+# Hermes Agent Persona
+
+Hermes reads this file verbatim on every turn and prepends it to the agent's
+system prompt (see `agent/prompt_builder.py::load_soul_md` in hermes-agent).
+Clawcu mounts it to `$HERMES_HOME/SOUL.md` inside the container.
+
+Edit freely — Hermes reloads on the next turn, no restart needed. Delete the
+file to fall back to Hermes' built-in `DEFAULT_AGENT_IDENTITY`.
+
+---
+
+## Minimal example / 最小示例
+
+Replace everything below with your own persona. Keep it short — this text is
+layered on *top* of Hermes' built-in system prompt, so you don't need to
+re-spell the assistant's base rules; focus on identity and voice.
+
+> You are "Scribe", a concise research assistant.
+>
+> - Keep replies under five sentences unless the user asks for more.
+> - When asked for code, always wrap it in fenced blocks.
+> - If you're uncertain, say so in one sentence before answering.
+
+## 最小示例 (中文)
+
+把下面内容换成你自己的 persona 即可. 文字会被叠在 Hermes 自带 system
+prompt *之上*, 不需要重写助手的基础规则 — 只写身份和语气.
+
+> 你是 "抄写员", 一个简洁的研究助手.
+>
+> - 除非用户要求详细回答, 回复控制在五句话以内.
+> - 给代码时始终用 fenced code block 包裹.
+> - 如果不确定, 先用一句话说明, 再回答问题.
+
+## A2A signature tip
+
+If you rely on A2A federation and want to verify the persona layer is
+active end-to-end, add a short mandatory signature line (e.g. `— Scribe`)
+and check inbound replies contain it.
+"""
+
 
 class HermesAdapter(ServiceAdapter):
     service_name = "hermes"
@@ -115,16 +163,48 @@ class HermesAdapter(ServiceAdapter):
         env_path = self.env_path(service, record)
         env_values = service._load_env_file(env_path)
         profile_home = self.profile_home_path(service, record)
+        extra_env: dict[str, str] = {
+            "HERMES_HOME": "/opt/data",
+            "API_SERVER_ENABLED": "true",
+            "API_SERVER_HOST": "0.0.0.0",
+            "API_SERVER_KEY": env_values["API_SERVER_KEY"],
+        }
+        # When the a2a plugin is baked in, the sidecar binds the dashboard
+        # internal port (9119) — which Hermes itself does not use. So the
+        # existing dashboard_port → 9119 mapping already exposes the A2A
+        # sidecar to the host; we just need to tell the sidecar what name
+        # and advertised endpoint to report.
+        if record.a2a_enabled:
+            advertised_port = record.dashboard_port or self.dashboard_default_port
+            extra_env.update(
+                {
+                    "A2A_SELF_NAME": record.name,
+                    "A2A_BIND_PORT": str(self.dashboard_internal_port),
+                    "A2A_ADVERTISE_HOST": "127.0.0.1",
+                    "A2A_ADVERTISE_PORT": str(advertised_port),
+                    # Hermes' API server exposes readiness at /health. The
+                    # sidecar is gateway-agnostic (review-7 P2-E): the
+                    # adapter declares the path so the same sidecar code
+                    # can wrap gateways that use /healthz instead.
+                    "A2A_GATEWAY_READY_PATH": "/health",
+                    # Review-10 P2-C: tee sidecar logs into the datadir
+                    # mount so they survive `clawcu recreate`. Host sees
+                    # them at <record.datadir>/logs/a2a-sidecar.log.
+                    "A2A_SIDECAR_LOG_DIR": "/opt/data/logs",
+                    # Review-14 P1-C: per-peer / per-thread conversation
+                    # history. Mirror of openclaw iter 13: when the peer
+                    # sends thread_id, the sidecar reads/appends
+                    # <dir>/<peer>/<thread_id>.jsonl so the agent sees
+                    # continuous context. Lives under the /opt/data mount
+                    # so threads survive `clawcu recreate`.
+                    "A2A_THREAD_DIR": "/opt/data/threads",
+                }
+            )
         return ContainerRunSpec(
             internal_port=self.internal_port,
             mount_target="/opt/data",
             env_file=str(env_path) if env_path.exists() else None,
-            extra_env={
-                "HERMES_HOME": "/opt/data",
-                "API_SERVER_ENABLED": "true",
-                "API_SERVER_HOST": "0.0.0.0",
-                "API_SERVER_KEY": env_values["API_SERVER_KEY"],
-            },
+            extra_env=extra_env,
             # The Hermes Docker image already uses an entrypoint that executes
             # `hermes "$@"`, so we only pass the subcommand here.
             command=["gateway", "run"],
@@ -159,6 +239,17 @@ class HermesAdapter(ServiceAdapter):
         if not env_values.get("API_SERVER_KEY"):
             env_values["API_SERVER_KEY"] = secrets.token_hex(32)
         env_path.write_text(service._dump_env_file(env_values), encoding="utf-8")
+        # For a2a-enabled instances scaffold a SOUL.md placeholder on first
+        # configure so the A2A peer gets an identifiable persona from turn 1.
+        # We never overwrite an existing SOUL.md — that's the user's content.
+        if getattr(record, "a2a_enabled", False):
+            soul_path = datadir / HERMES_SOUL_FILENAME
+            if not soul_path.exists():
+                soul_path.write_text(_HERMES_SOUL_PLACEHOLDER, encoding="utf-8")
+                service.reporter(
+                    f"Wrote Hermes persona placeholder to {soul_path}. "
+                    "Edit this file to customize the agent's identity; Hermes reloads it on each turn."
+                )
         service._make_runtime_tree_writable(datadir)
 
     def wait_for_readiness(self, service, record: InstanceRecord) -> InstanceRecord:

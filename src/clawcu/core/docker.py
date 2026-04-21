@@ -73,6 +73,7 @@ class DockerManager:
         preferred_variant: str | None = None,
         dockerfile: str | Path | None = None,
         build_contexts: dict[str, str | Path] | None = None,
+        build_args: dict[str, str] | None = None,
     ) -> None:
         command = ["docker", "build"]
         if dockerfile:
@@ -80,6 +81,9 @@ class DockerManager:
         if build_contexts:
             for name, path in sorted(build_contexts.items()):
                 command.extend(["--build-context", f"{name}={path}"])
+        if build_args:
+            for name, value in sorted(build_args.items()):
+                command.extend(["--build-arg", f"{name}={value}"])
         command.extend(["-t", image_tag, "."])
         self.runner(command, cwd=source_dir, capture_output=False)
 

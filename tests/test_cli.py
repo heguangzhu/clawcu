@@ -600,8 +600,16 @@ class FakeService:
         fresh: bool = False,
         timeout: int | None = None,
         version: str | None = None,
+        a2a: bool | None = None,
     ) -> InstanceRecord:
-        self._record("recreate_instance", name=name, fresh=fresh, timeout=timeout, version=version)
+        self._record(
+            "recreate_instance",
+            name=name,
+            fresh=fresh,
+            timeout=timeout,
+            version=version,
+            a2a=a2a,
+        )
         if self.reporter:
             self.reporter("Recreating instance")
         record = self._instance(name=name)
@@ -1806,7 +1814,7 @@ def test_setenv_command_can_recreate_instance_immediately(monkeypatch) -> None:
             "assignments": ["OPENAI_API_KEY=sk-test"],
         },
     )
-    assert service.calls[1] == ("recreate_instance", (), {"name": "writer", "fresh": False, "timeout": None, "version": None})
+    assert service.calls[1] == ("recreate_instance", (), {"name": "writer", "fresh": False, "timeout": None, "version": None, "a2a": None})
 
 
 def test_getenv_command_lists_instance_environment(monkeypatch) -> None:
@@ -1866,7 +1874,7 @@ def test_unsetenv_command_can_recreate_instance_immediately(monkeypatch) -> None
         (),
         {"name": "writer", "keys": ["OPENAI_API_KEY"]},
     )
-    assert service.calls[1] == ("recreate_instance", (), {"name": "writer", "fresh": False, "timeout": None, "version": None})
+    assert service.calls[1] == ("recreate_instance", (), {"name": "writer", "fresh": False, "timeout": None, "version": None, "a2a": None})
 
 
 def test_setenv_command_from_file_loads_assignments(monkeypatch, tmp_path) -> None:
@@ -2297,6 +2305,7 @@ def test_create_command_uses_defaults(monkeypatch) -> None:
             "port": None,
             "cpu": "1",
             "memory": "2g",
+            "a2a": False,
         },
     )
     assert service.calls[-1] == (
@@ -2370,6 +2379,7 @@ def test_create_command_accepts_image_override(monkeypatch) -> None:
             "port": None,
             "cpu": "1",
             "memory": "2g",
+            "a2a": False,
         },
     )
 
@@ -2432,7 +2442,7 @@ def test_recreate_command_forwards_timeout_and_skips_retry(monkeypatch) -> None:
     method_names = [call[0] for call in service.calls]
     assert "retry_instance" not in method_names
     recreate_call = next(call for call in service.calls if call[0] == "recreate_instance")
-    assert recreate_call[2] == {"name": "writer", "fresh": False, "timeout": 30, "version": None}
+    assert recreate_call[2] == {"name": "writer", "fresh": False, "timeout": 30, "version": None, "a2a": None}
 
 
 def test_recreate_command_can_recover_removed_instance_with_version(monkeypatch) -> None:
@@ -2446,7 +2456,7 @@ def test_recreate_command_can_recover_removed_instance_with_version(monkeypatch)
     assert result.exit_code == 0
     assert "Recreated instance:" in result.stdout
     assert service.calls == [
-        ("recreate_instance", (), {"name": "writer-old", "fresh": False, "timeout": None, "version": "2026.4.8"}),
+        ("recreate_instance", (), {"name": "writer-old", "fresh": False, "timeout": None, "version": "2026.4.8", "a2a": None}),
         ("dashboard_url", (), {"name": "writer-old"}),
     ]
 
@@ -2469,7 +2479,7 @@ def test_recreate_command_fresh_with_yes_wipes_datadir(monkeypatch) -> None:
 
     assert result.exit_code == 0
     recreate_call = next(call for call in service.calls if call[0] == "recreate_instance")
-    assert recreate_call[2] == {"name": "writer", "fresh": True, "timeout": None, "version": None}
+    assert recreate_call[2] == {"name": "writer", "fresh": True, "timeout": None, "version": None, "a2a": None}
 
 
 def test_recreate_command_fresh_validates_instance_exists_before_confirm(monkeypatch) -> None:

@@ -7,10 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Planned for 0.3.0
+### Planned
 - `--output {table|json|yaml}` global protocol — unify JSON schema across list/inspect.
 - Provider bundle provenance via `.clawcu-instance.json` metadata.
 - Active provider as a first-class field.
+
+## [0.3.0] - 2026-04-22
+
+### Added
+- A2A v0 protocol: `--a2a` flag at instance creation bakes a sidecar into the service image so it exposes `GET /.well-known/agent-card.json` + `POST /a2a/send` on a neighbor port alongside the stock service. Works for both OpenClaw (Node sidecar) and Hermes (Python sidecar). Image tag `clawcu/{service}-a2a:{base}-plugin{clawcu-version}.{sha}` uses a source-sha fingerprint so editable-install drift still triggers a rebake.
+- `clawcu hermes identity set <name> <path>` installs a user-authored SOUL.md into a Hermes instance's datadir so `prompt_builder.load_soul_md` picks up the new persona on the next chat turn (no restart).
+- A2A sidecar layer: per-peer rate limit, tee'd log file, readiness probe against gateway, optional conversation-history via `thread_id` (path-traversal hardened; per-peer JSONL under `<datadir>/threads/`).
 
 ## [0.2.11] - 2026-04-22
 

@@ -19,6 +19,11 @@ class InstanceSpec:
     auth_mode: str
     dashboard_port: int | None = None
     image_tag_override: str | None = None
+    # When True the service is deployed using the a2a-flavored variant
+    # of its base image — the stock gateway plus an A2A sidecar baked in
+    # via clawcu.a2a.sidecar_plugin.<service>. The base image tag is stored in
+    # image_tag_override; adapters add the extra port and env vars.
+    a2a_enabled: bool = False
 
 
 @dataclass(kw_only=True)
@@ -40,6 +45,7 @@ class InstanceRecord(InstanceSpec):
         payload = dict(data)
         payload.setdefault("auth_mode", "token")
         payload.setdefault("dashboard_port", None)
+        payload.setdefault("a2a_enabled", False)
         return cls(**payload)
 
 

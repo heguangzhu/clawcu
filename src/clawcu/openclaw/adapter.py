@@ -64,22 +64,69 @@ class OpenClawAdapter(ServiceAdapter):
         name = record if isinstance(record, str) else record.name
         return service.store.instance_env_path(name)
 
+    # When an instance is baked with the A2A plugin, the sidecar binds
+    # this internal port; the host publishes ``record.port + 1`` so the
+    # federation probe in clawcu.a2a.card finds the card at the expected
+    # neighbor port (``plugin_port_candidates`` = (0, 1)).
+    a2a_internal_port = 18790
+
     def run_spec(self, service, record: InstanceRecord) -> ContainerRunSpec:
         env_path = self.env_path(service, record)
+        additional_ports: list[tuple[int, int]] = []
+        extra_env: dict[str, str] = {}
+        # The baked image's entrypoint-a2a.sh supervises BOTH the stock
+        # gateway and the sidecar; we don't override CMD here because the
+        # image's CMD already launches the gateway with the same flags we
+        # pass in the non-a2a case.
+        command: list[str] | None = [
+            "node",
+            "openclaw.mjs",
+            "gateway",
+            "--allow-unconfigured",
+            "--bind",
+            "lan",
+            "--port",
+            str(self.internal_port),
+        ]
+        if record.a2a_enabled:
+            a2a_host_port = record.port + 1
+            additional_ports.append((a2a_host_port, self.a2a_internal_port))
+            extra_env.update(
+                {
+                    "A2A_SIDECAR_NAME": record.name,
+                    "A2A_SIDECAR_PORT": str(self.a2a_internal_port),
+                    "A2A_SIDECAR_ADVERTISE_HOST": "127.0.0.1",
+                    "A2A_SIDECAR_ADVERTISE_PORT": str(a2a_host_port),
+                    # Sidecar forwards /a2a/send to the gateway's own
+                    # OpenAI-compat endpoint so the agent's native
+                    # persona + skills drive the reply. This env tells
+                    # the sidecar which port the gateway is listening
+                    # on inside the container.
+                    "A2A_GATEWAY_PORT": str(self.internal_port),
+                    # OpenClaw gateway exposes readiness at /healthz. The
+                    # sidecar is now gateway-agnostic (review-7 P2-E) —
+                    # each adapter declares its own readiness path so the
+                    # sidecar doesn't need to know the service layout.
+                    "A2A_GATEWAY_READY_PATH": "/healthz",
+                    # Review-10 P2-C: tee sidecar logs into the datadir
+                    # mount so they survive `clawcu recreate`. Host sees
+                    # them at <record.datadir>/logs/a2a-sidecar.log.
+                    "A2A_SIDECAR_LOG_DIR": "/home/node/.openclaw/logs",
+                    # Review-13 P1-C: per-peer / per-thread conversation
+                    # history. When the peer sends thread_id, the sidecar
+                    # reads/appends <dir>/<peer>/<thread_id>.jsonl so the
+                    # agent sees continuous context. Lives under the
+                    # datadir mount so threads survive `clawcu recreate`.
+                    "A2A_THREAD_DIR": "/home/node/.openclaw/threads",
+                }
+            )
         return ContainerRunSpec(
             internal_port=self.internal_port,
             mount_target="/home/node/.openclaw",
             env_file=str(env_path) if env_path.exists() else None,
-            command=[
-                "node",
-                "openclaw.mjs",
-                "gateway",
-                "--allow-unconfigured",
-                "--bind",
-                "lan",
-                "--port",
-                str(self.internal_port),
-            ],
+            extra_env=extra_env,
+            command=command,
+            additional_ports=additional_ports,
         )
 
     def configure_before_run(self, service, record: InstanceRecord) -> None:
@@ -125,6 +172,15 @@ class OpenClawAdapter(ServiceAdapter):
             config.setdefault("agents", {}).setdefault("defaults", {})["workspace"] = (
                 "/home/node/.openclaw/workspace"
             )
+            # A2A sidecar forwards /a2a/send through the gateway's native
+            # OpenAI-compat endpoint so it hits the real agent runtime (full
+            # persona + skills + tool loop) instead of bypassing straight to
+            # the LLM. That endpoint is gated by config and off by default.
+            if getattr(record, "a2a_enabled", False):
+                http_cfg = gw.setdefault("http", {})
+                endpoints = http_cfg.setdefault("endpoints", {})
+                chat_completions = endpoints.setdefault("chatCompletions", {})
+                chat_completions["enabled"] = True
             config_path.write_text(
                 json.dumps(config, indent=2, ensure_ascii=False),
                 encoding="utf-8",
