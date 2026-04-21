@@ -112,7 +112,7 @@ clawcu a2a up                                             # registry + bridges, 
 clawcu a2a send --to analyst --message "summarize yesterday"
 ```
 
-For the full command reference (`list` / `inspect` / `exec` / `upgrade` / `provider` / `a2a` …), see [USAGE_latest.md](release/USAGE_latest.md).
+Deep-dive on the A2A sidecar (architecture, protocol, operations, troubleshooting): [docs/a2a-sidecar.md](docs/a2a-sidecar.md). For the full command reference (`list` / `inspect` / `exec` / `upgrade` / `provider` / `a2a` …), see [USAGE_latest.md](release/USAGE_latest.md).
 
 ## Safe Upgrade Workflow
 
