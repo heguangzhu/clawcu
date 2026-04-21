@@ -32,8 +32,11 @@ def plugin_source_dir(service: str) -> Path:
 
 # Build-time noise that must NOT feed into the plugin fingerprint: touching
 # these files should not trigger a fresh image bake. Review-8 P2-H.
+# __init__.py is packaging metadata (needed for setuptools to include
+# Dockerfile/*.sh/*.js as package-data) and is not runtime sidecar code.
 _PLUGIN_SHA_IGNORED_DIRS = {"__pycache__", ".git", "node_modules"}
 _PLUGIN_SHA_IGNORED_SUFFIXES = (".pyc", ".pyo")
+_PLUGIN_SHA_IGNORED_NAMES = {"__init__.py"}
 
 
 def plugin_source_sha(service: str) -> str:
@@ -57,6 +60,8 @@ def plugin_source_sha(service: str) -> str:
         if any(part in _PLUGIN_SHA_IGNORED_DIRS for part in rel.parts):
             continue
         if path.suffix in _PLUGIN_SHA_IGNORED_SUFFIXES:
+            continue
+        if path.name in _PLUGIN_SHA_IGNORED_NAMES:
             continue
         hasher.update(rel.as_posix().encode("utf-8"))
         hasher.update(b"\0")
