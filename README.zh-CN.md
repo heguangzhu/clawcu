@@ -31,6 +31,7 @@
 - **一套 CLI，两个运行时** — OpenClaw 和 Hermes 共用同一套生命周期命令
 - **每次升级前自动快照** — datadir 与环境变量同步捕获；`rollback` 从真实备份恢复
 - **先克隆再实验** — 复制一份实例，在副本上升级，主实例原地不动
+- **Agent-to-agent 消息（`v0.3.0`）** — 创建时加 `--a2a`，把 A2A v0 sidecar 烤进受管镜像，在邻居端口上暴露 `/.well-known/agent-card.json` + `POST /a2a/send`。普通实例不受影响。
 
 ```text
 $ clawcu list
@@ -102,7 +103,16 @@ clawcu tui analyst
 clawcu config writer
 ```
 
-完整命令参考（`list` / `inspect` / `exec` / `upgrade` / `provider` …）见 [USAGE_latest.zh-CN.md](release/USAGE_latest.zh-CN.md)。
+用 A2A 让实例之间对话（opt-in，`v0.3.0`）：
+
+```bash
+clawcu create openclaw --name writer  --version 2026.4.12 --a2a
+clawcu create hermes   --name analyst --version 2026.4.13 --a2a
+clawcu a2a up                                             # 注册中心 + 桥接，一条命令
+clawcu a2a send --to analyst --message "summarize yesterday"
+```
+
+完整命令参考（`list` / `inspect` / `exec` / `upgrade` / `provider` / `a2a` …）见 [USAGE_latest.zh-CN.md](release/USAGE_latest.zh-CN.md)。
 
 ## 安全升级流程
 
