@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import replace
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from clawcu import __version__ as clawcu_version
 from clawcu.a2a.builder import A2AImageBuilder, a2a_image_tag
@@ -657,9 +657,15 @@ class ClawCUService:
         cpu: str,
         memory: str,
         a2a: bool = False,
+        a2a_hop_budget: int | None = None,
     ) -> InstanceRecord:
         adapter = self.adapter_for_service(service_name)
         auto_port = port is None
+        if a2a_hop_budget is not None:
+            if not a2a:
+                raise ValueError("a2a_hop_budget requires a2a=True.")
+            if not isinstance(a2a_hop_budget, int) or isinstance(a2a_hop_budget, bool) or a2a_hop_budget < 1:
+                raise ValueError("a2a_hop_budget must be a positive integer (>= 1).")
         self.reporter("Step 1/5: Validating options and resolving defaults. This should take a second or two.")
         spec = adapter.build_spec(
             self,
@@ -713,8 +719,16 @@ class ClawCUService:
                 "service": spec.service,
             }
         ]
+        env_overrides: dict[str, str] = {}
+        if a2a and a2a_hop_budget is not None:
+            env_overrides["A2A_HOP_BUDGET"] = str(a2a_hop_budget)
         self.reporter("Step 5/5: Starting the Docker container and checking health. This usually takes a few seconds.")
-        live_record = self._start_new_instance(spec, history=history, auto_port=auto_port)
+        live_record = self._start_new_instance(
+            spec,
+            history=history,
+            auto_port=auto_port,
+            env_overrides=env_overrides or None,
+        )
         self.reporter(self._lifecycle_summary("created", live_record))
         return live_record
 
@@ -729,6 +743,7 @@ class ClawCUService:
         cpu: str,
         memory: str,
         a2a: bool = False,
+        a2a_hop_budget: int | None = None,
     ) -> InstanceRecord:
         return self.create_service(
             "openclaw",
@@ -740,6 +755,7 @@ class ClawCUService:
             cpu=cpu,
             memory=memory,
             a2a=a2a,
+            a2a_hop_budget=a2a_hop_budget,
         )
 
     def create_hermes(
@@ -753,6 +769,7 @@ class ClawCUService:
         cpu: str,
         memory: str,
         a2a: bool = False,
+        a2a_hop_budget: int | None = None,
     ) -> InstanceRecord:
         return self.create_service(
             "hermes",
@@ -764,6 +781,7 @@ class ClawCUService:
             cpu=cpu,
             memory=memory,
             a2a=a2a,
+            a2a_hop_budget=a2a_hop_budget,
         )
 
     def _bake_a2a_image(self, service: str, base_version: str, base_image: str) -> str:
@@ -945,6 +963,51 @@ class ClawCUService:
                 "token": access.token,
             },
             "container": inspection,
+            "a2a": self._a2a_inspect_section(record),
+        }
+
+    def _a2a_inspect_section(self, record: InstanceRecord) -> dict[str, Any] | None:
+        """Review-2 P1-F (iter 3): surface A2A wiring on inspect.
+
+        When A2A is enabled, read the instance env file for the user-
+        visible A2A knobs (hop budget, registry URL) and compute the
+        bridge port + MCP URL. Operators can see the whole A2A config
+        without ``clawcu getenv | grep``. Returns ``None`` for stock
+        instances so the renderer can skip the whole section.
+        """
+        if not getattr(record, "a2a_enabled", False):
+            return None
+        from clawcu.a2a.card import bridge_port_for
+
+        env: dict[str, str] = {}
+        try:
+            env_path = self.adapter_for_record(record).env_path(self, record)
+            if env_path.exists():
+                env = self._load_env_file(env_path)
+        except Exception:
+            # Env file read is best-effort; a missing/unreadable file
+            # shouldn't break `inspect`. The adapter layer already
+            # guarantees env_path exists for A2A instances.
+            env = {}
+
+        bridge_port = bridge_port_for(record)
+        hop_budget_raw = env.get("A2A_HOP_BUDGET", "").strip()
+        try:
+            hop_budget: int | None = int(hop_budget_raw) if hop_budget_raw else None
+        except ValueError:
+            hop_budget = None
+
+        registry_url = (
+            env.get("A2A_REGISTRY_URL", "").strip()
+            or "http://host.docker.internal:9100"
+        )
+        return {
+            "enabled": True,
+            "port": bridge_port,
+            "registry_url": registry_url,
+            "hop_budget": hop_budget,
+            "hop_budget_default": 8,
+            "mcp_url": f"http://127.0.0.1:{bridge_port}/mcp",
         }
 
     def dashboard_url(self, name: str) -> str:
@@ -1122,6 +1185,24 @@ class ClawCUService:
     def _dump_env_file(self, values: dict[str, str]) -> str:
         lines = [f"{key}={values[key]}" for key in sorted(values)]
         return ("\n".join(lines) + "\n") if lines else ""
+
+    def _apply_env_overrides(
+        self,
+        adapter,
+        record: InstanceRecord,
+        overrides: dict[str, str],
+    ) -> None:
+        """Merge ``overrides`` into the instance env file (create-time only).
+
+        Runs *after* adapter.configure_before_run so that Hermes' persona
+        scaffolder can seed ``API_SERVER_KEY`` first; the overrides merge
+        on top without clobbering adapter-managed keys we don't touch.
+        """
+        env_path = adapter.env_path(self, record)
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_values = self._load_env_file(env_path)
+        env_values.update(overrides)
+        env_path.write_text(self._dump_env_file(env_values), encoding="utf-8")
 
     def _load_env_text(self, text: str) -> dict[str, str]:
         values: dict[str, str] = {}
@@ -2355,6 +2436,7 @@ class ClawCUService:
         *,
         history: list[dict],
         auto_port: bool,
+        env_overrides: dict[str, str] | None = None,
     ) -> InstanceRecord:
         current_spec = spec
         current_history = copy.deepcopy(history)
@@ -2369,6 +2451,8 @@ class ClawCUService:
             self._write_instance_metadata(record)
             try:
                 adapter.configure_before_run(self, record)
+                if env_overrides:
+                    self._apply_env_overrides(adapter, record, env_overrides)
                 self._run_container(record)
             except Exception as exc:
                 failure = updated_record(

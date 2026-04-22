@@ -1082,6 +1082,7 @@ def _do_create(
     cpu: str,
     memory: str,
     a2a: bool = False,
+    a2a_hop_budget: int | None = None,
     apply_provider: str | None = None,
     apply_agent: str = "main",
     apply_persist: bool = False,
@@ -1090,17 +1091,29 @@ def _do_create(
         _exit_with_error(
             f"Unknown service '{service_name}'. Expected one of: {', '.join(_KNOWN_SERVICES)}."
         )
+    if a2a_hop_budget is not None and not a2a:
+        _exit_with_error(
+            "--a2a-hop-budget requires --a2a. Add --a2a or drop --a2a-hop-budget."
+        )
+    # a2a-design-5.md §P2-I: warn (not error) past the soft ceiling — above
+    # 16 hops the budget stops being a useful loop-protection knob.
+    if a2a_hop_budget is not None and a2a_hop_budget > 16:
+        console.print(
+            f"[yellow]Warning:[/yellow] --a2a-hop-budget={a2a_hop_budget} exceeds "
+            "the soft ceiling of 16 — hop budget is intended to cap runaway loops, "
+            "not to scale delegation depth."
+        )
     service = get_service()
     if hasattr(service, "set_reporter"):
         service.set_reporter(_print_progress)
     try:
         if service_name == "openclaw":
             record = service.create_openclaw(
-                name=name, version=version, image=image, datadir=datadir, port=port, cpu=cpu, memory=memory, a2a=a2a,
+                name=name, version=version, image=image, datadir=datadir, port=port, cpu=cpu, memory=memory, a2a=a2a, a2a_hop_budget=a2a_hop_budget,
             )
         else:
             record = service.create_hermes(
-                name=name, version=version, image=image, datadir=datadir, port=port, cpu=cpu, memory=memory, a2a=a2a,
+                name=name, version=version, image=image, datadir=datadir, port=port, cpu=cpu, memory=memory, a2a=a2a, a2a_hop_budget=a2a_hop_budget,
             )
     except Exception as exc:
         _exit_with_error(str(exc))
@@ -1177,6 +1190,16 @@ _A2A_OPTION = typer.Option(
         "result is tagged clawcu/{service}-a2a:{base}-plugin{clawcu-version}."
     ),
 )
+_A2A_HOP_BUDGET_OPTION = typer.Option(
+    "--a2a-hop-budget",
+    min=1,
+    help=(
+        "Maximum number of A2A hops the sidecar will forward a single outbound "
+        "call through before returning 508 Loop Detected. Persisted to the "
+        "instance env file as A2A_HOP_BUDGET; defaults to 8 when unset. Requires "
+        "--a2a."
+    ),
+)
 _A2A_TRISTATE_OPTION = typer.Option(
     "--a2a/--no-a2a",
     help=(
@@ -1209,6 +1232,7 @@ def create_callback(
     cpu: Annotated[str, typer.Option("--cpu", help="Docker CPU limit.")] = "1",
     memory: Annotated[str, typer.Option("--memory", help="Docker memory limit.")] = "2g",
     a2a: Annotated[bool, _A2A_OPTION] = False,
+    a2a_hop_budget: Annotated[int | None, _A2A_HOP_BUDGET_OPTION] = None,
     apply_provider: Annotated[str | None, _APPLY_PROVIDER_OPTION] = None,
     apply_agent: Annotated[str, _APPLY_AGENT_OPTION] = "main",
     apply_persist: Annotated[bool, _APPLY_PERSIST_OPTION] = False,
@@ -1228,6 +1252,7 @@ def create_callback(
             cpu=cpu,
             memory=memory,
             a2a=a2a,
+            a2a_hop_budget=a2a_hop_budget,
             apply_provider=apply_provider,
             apply_agent=apply_agent,
             apply_persist=apply_persist,
@@ -1278,6 +1303,7 @@ def create_openclaw(
     cpu: Annotated[str, typer.Option("--cpu", help="Docker CPU limit.")] = "1",
     memory: Annotated[str, typer.Option("--memory", help="Docker memory limit.")] = "2g",
     a2a: Annotated[bool, _A2A_OPTION] = False,
+    a2a_hop_budget: Annotated[int | None, _A2A_HOP_BUDGET_OPTION] = None,
     apply_provider: Annotated[str | None, _APPLY_PROVIDER_OPTION] = None,
     apply_agent: Annotated[str, _APPLY_AGENT_OPTION] = "main",
     apply_persist: Annotated[bool, _APPLY_PERSIST_OPTION] = False,
@@ -1292,6 +1318,7 @@ def create_openclaw(
         cpu=cpu,
         memory=memory,
         a2a=a2a,
+        a2a_hop_budget=a2a_hop_budget,
         apply_provider=apply_provider,
         apply_agent=apply_agent,
         apply_persist=apply_persist,
@@ -1320,6 +1347,7 @@ def create_hermes(
     cpu: Annotated[str, typer.Option("--cpu", help="Docker CPU limit.")] = "1",
     memory: Annotated[str, typer.Option("--memory", help="Docker memory limit.")] = "2g",
     a2a: Annotated[bool, _A2A_OPTION] = False,
+    a2a_hop_budget: Annotated[int | None, _A2A_HOP_BUDGET_OPTION] = None,
     apply_provider: Annotated[str | None, _APPLY_PROVIDER_OPTION] = None,
     apply_agent: Annotated[str, _APPLY_AGENT_OPTION] = "main",
     apply_persist: Annotated[bool, _APPLY_PERSIST_OPTION] = False,
@@ -1334,6 +1362,7 @@ def create_hermes(
         cpu=cpu,
         memory=memory,
         a2a=a2a,
+        a2a_hop_budget=a2a_hop_budget,
         apply_provider=apply_provider,
         apply_agent=apply_agent,
         apply_persist=apply_persist,
@@ -2044,6 +2073,30 @@ def _print_inspect_human(payload: dict, *, reveal: bool, show_history: bool) -> 
         for key, value in snapshot_items:
             snap_table.add_row(key, str(value))
         console.print(snap_table)
+
+    # --- A2A (review-2 P1-F / iter 3) ---
+    a2a = payload.get("a2a")
+    if a2a and a2a.get("enabled"):
+        console.print()
+        console.print("[bold]A2A[/bold]")
+        a2a_table = Table(show_header=False, box=None, pad_edge=False)
+        a2a_table.add_column("key", style="cyan", no_wrap=True)
+        a2a_table.add_column("value", overflow="fold")
+        a2a_table.add_row("Enabled", "yes")
+        a2a_table.add_row("Port", str(a2a.get("port", "-")))
+        a2a_table.add_row(
+            "Registry URL", str(a2a.get("registry_url") or "-")
+        )
+        budget = a2a.get("hop_budget")
+        default_budget = a2a.get("hop_budget_default", 8)
+        if budget is None:
+            a2a_table.add_row("Hop budget", f"{default_budget} (default)")
+        else:
+            a2a_table.add_row("Hop budget", str(budget))
+        mcp_url = a2a.get("mcp_url")
+        if mcp_url:
+            a2a_table.add_row("MCP server", f"{mcp_url} (auto)")
+        console.print(a2a_table)
 
     # --- Container (compact) ---
     container = payload.get("container")

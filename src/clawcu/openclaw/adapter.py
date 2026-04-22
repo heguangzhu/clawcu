@@ -72,7 +72,9 @@ class OpenClawAdapter(ServiceAdapter):
 
     def run_spec(self, service, record: InstanceRecord) -> ContainerRunSpec:
         env_path = self.env_path(service, record)
+        env_values = service._load_env_file(env_path)
         additional_ports: list[tuple[int, int]] = []
+        extra_hosts: list[tuple[str, str]] = []
         extra_env: dict[str, str] = {}
         # The baked image's entrypoint-a2a.sh supervises BOTH the stock
         # gateway and the sidecar; we don't override CMD here because the
@@ -91,6 +93,11 @@ class OpenClawAdapter(ServiceAdapter):
         if record.a2a_enabled:
             a2a_host_port = record.port + 1
             additional_ports.append((a2a_host_port, self.a2a_internal_port))
+            # Review-1 P0-B: Linux hosts don't resolve host.docker.internal
+            # without an explicit --add-host. Docker Desktop resolves it
+            # automatically, so this is a no-op on macOS/Windows. Required
+            # for /a2a/outbound to reach the host-side registry.
+            extra_hosts.append(("host.docker.internal", "host-gateway"))
             extra_env.update(
                 {
                     "A2A_SIDECAR_NAME": record.name,
@@ -120,6 +127,22 @@ class OpenClawAdapter(ServiceAdapter):
                     "A2A_THREAD_DIR": "/home/node/.openclaw/threads",
                 }
             )
+            # Review-1 P0-B: auto-inject a registry URL default so
+            # /a2a/outbound works out of the box on Linux (host.docker.internal
+            # only resolves thanks to the extra_hosts we added above). User
+            # overrides in the env file win — we only set it when absent.
+            if not env_values.get("A2A_REGISTRY_URL"):
+                extra_env["A2A_REGISTRY_URL"] = "http://host.docker.internal:9100"
+            # a2a-design-4.md §P0-A: auto-wiring bootstrap. The sidecar reads
+            # these on start and merges `mcp.servers.a2a` into the OpenClaw
+            # config file so the LLM sees `a2a_call_peer` as an MCP tool
+            # without any IDENTITY.md edit. User env-file entries win.
+            if not env_values.get("A2A_ENABLED"):
+                extra_env["A2A_ENABLED"] = "true"
+            if not env_values.get("A2A_SERVICE_MCP_CONFIG_PATH"):
+                extra_env["A2A_SERVICE_MCP_CONFIG_PATH"] = "/home/node/.openclaw/openclaw.json"
+            if not env_values.get("A2A_SERVICE_MCP_CONFIG_FORMAT"):
+                extra_env["A2A_SERVICE_MCP_CONFIG_FORMAT"] = "json"
         return ContainerRunSpec(
             internal_port=self.internal_port,
             mount_target="/home/node/.openclaw",
@@ -127,6 +150,7 @@ class OpenClawAdapter(ServiceAdapter):
             extra_env=extra_env,
             command=command,
             additional_ports=additional_ports,
+            extra_hosts=extra_hosts,
         )
 
     def configure_before_run(self, service, record: InstanceRecord) -> None:

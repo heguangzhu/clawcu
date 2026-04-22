@@ -2306,6 +2306,7 @@ def test_create_command_uses_defaults(monkeypatch) -> None:
             "cpu": "1",
             "memory": "2g",
             "a2a": False,
+            "a2a_hop_budget": None,
         },
     )
     assert service.calls[-1] == (
@@ -2380,8 +2381,158 @@ def test_create_command_accepts_image_override(monkeypatch) -> None:
             "cpu": "1",
             "memory": "2g",
             "a2a": False,
+            "a2a_hop_budget": None,
         },
     )
+
+
+def test_create_openclaw_passes_a2a_hop_budget(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "create",
+            "openclaw",
+            "--name",
+            "writer",
+            "--version",
+            "2026.4.1",
+            "--a2a",
+            "--a2a-hop-budget",
+            "4",
+        ],
+    )
+
+    assert result.exit_code == 0
+    create_call = next(c for c in service.calls if c[0] == "create_openclaw")
+    assert create_call[2]["a2a"] is True
+    assert create_call[2]["a2a_hop_budget"] == 4
+
+
+def test_create_hermes_passes_a2a_hop_budget(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "create",
+            "hermes",
+            "--name",
+            "scribe",
+            "--version",
+            "v0.9.0",
+            "--a2a",
+            "--a2a-hop-budget",
+            "16",
+        ],
+    )
+
+    assert result.exit_code == 0
+    create_call = next(c for c in service.calls if c[0] == "create_hermes")
+    assert create_call[2]["a2a"] is True
+    assert create_call[2]["a2a_hop_budget"] == 16
+
+
+def test_create_rejects_a2a_hop_budget_without_a2a(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "create",
+            "openclaw",
+            "--name",
+            "writer",
+            "--version",
+            "2026.4.1",
+            "--a2a-hop-budget",
+            "4",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--a2a-hop-budget requires --a2a" in result.stdout
+    # Service was never asked to create when validation rejects up front.
+    assert not any(call[0] == "create_openclaw" for call in service.calls)
+
+
+def test_create_rejects_zero_a2a_hop_budget(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "create",
+            "openclaw",
+            "--name",
+            "writer",
+            "--version",
+            "2026.4.1",
+            "--a2a",
+            "--a2a-hop-budget",
+            "0",
+        ],
+    )
+
+    # Typer's min=1 validation kicks in before our own validator runs.
+    assert result.exit_code != 0
+    assert not any(call[0] == "create_openclaw" for call in service.calls)
+
+
+def test_create_warns_on_large_a2a_hop_budget_but_still_creates(monkeypatch) -> None:
+    """a2a-design-5.md §P2-I: past the soft ceiling of 16, the CLI warns but
+    does not fail — the hop budget still scales, it just stops being a
+    loop-protection knob."""
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "create",
+            "openclaw",
+            "--name",
+            "writer",
+            "--version",
+            "2026.4.1",
+            "--a2a",
+            "--a2a-hop-budget",
+            "32",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "exceeds the soft ceiling of 16" in result.stdout
+    create_call = next(c for c in service.calls if c[0] == "create_openclaw")
+    assert create_call[2]["a2a_hop_budget"] == 32
+
+
+def test_create_does_not_warn_for_a2a_hop_budget_at_ceiling(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "create",
+            "openclaw",
+            "--name",
+            "writer",
+            "--version",
+            "2026.4.1",
+            "--a2a",
+            "--a2a-hop-budget",
+            "16",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "exceeds the soft ceiling" not in result.stdout
 
 
 def test_create_command_surfaces_duplicate_name_error(monkeypatch) -> None:

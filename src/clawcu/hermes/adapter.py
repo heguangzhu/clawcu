@@ -174,8 +174,13 @@ class HermesAdapter(ServiceAdapter):
         # existing dashboard_port → 9119 mapping already exposes the A2A
         # sidecar to the host; we just need to tell the sidecar what name
         # and advertised endpoint to report.
+        extra_hosts: list[tuple[str, str]] = []
         if record.a2a_enabled:
             advertised_port = record.dashboard_port or self.dashboard_default_port
+            # Review-1 P0-B: Linux parity. Docker Desktop auto-resolves
+            # host.docker.internal; Linux doesn't unless we ask. Always
+            # safe to pass — a no-op when the DNS name already resolves.
+            extra_hosts.append(("host.docker.internal", "host-gateway"))
             extra_env.update(
                 {
                     "A2A_SELF_NAME": record.name,
@@ -200,6 +205,19 @@ class HermesAdapter(ServiceAdapter):
                     "A2A_THREAD_DIR": "/opt/data/threads",
                 }
             )
+            # Review-1 P0-B: auto-inject registry URL default; user env
+            # overrides (parity with OpenClaw adapter).
+            if not env_values.get("A2A_REGISTRY_URL"):
+                extra_env["A2A_REGISTRY_URL"] = "http://host.docker.internal:9100"
+            # a2a-design-4.md §P0-A: auto-wiring bootstrap. The sidecar
+            # merges `mcp.servers.a2a` into the Hermes config.yaml so the
+            # LLM sees `a2a_call_peer`. User env-file entries win.
+            if not env_values.get("A2A_ENABLED"):
+                extra_env["A2A_ENABLED"] = "true"
+            if not env_values.get("A2A_SERVICE_MCP_CONFIG_PATH"):
+                extra_env["A2A_SERVICE_MCP_CONFIG_PATH"] = "/opt/data/config.yaml"
+            if not env_values.get("A2A_SERVICE_MCP_CONFIG_FORMAT"):
+                extra_env["A2A_SERVICE_MCP_CONFIG_FORMAT"] = "yaml"
         return ContainerRunSpec(
             internal_port=self.internal_port,
             mount_target="/opt/data",
@@ -214,6 +232,7 @@ class HermesAdapter(ServiceAdapter):
             if record.dashboard_port is not None
             else [],
             additional_mounts=[(str(profile_home), "/root/.hermes")],
+            extra_hosts=extra_hosts,
         )
 
     def configure_before_run(self, service, record: InstanceRecord) -> None:

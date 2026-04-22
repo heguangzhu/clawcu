@@ -262,6 +262,157 @@ def test_create_openclaw_makes_runtime_tree_writable(temp_clawcu_home, tmp_path)
     assert stat.S_IMODE((datadir / "workspace" / ".openclaw" / "workspace-state.json").stat().st_mode) == 0o666
 
 
+def test_create_openclaw_with_a2a_hop_budget_writes_env_file(temp_clawcu_home, tmp_path) -> None:
+    service, _, _, store = make_service(temp_clawcu_home)
+    datadir = tmp_path / "writer"
+
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+        a2a=True,
+        a2a_hop_budget=3,
+    )
+
+    env_path = service.store.instance_env_path("writer")
+    assert env_path.exists()
+    values = service._load_env_file(env_path)
+    assert values.get("A2A_HOP_BUDGET") == "3"
+
+
+def test_create_openclaw_without_a2a_hop_budget_does_not_set_env(temp_clawcu_home, tmp_path) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+    datadir = tmp_path / "writer"
+
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+        a2a=True,
+    )
+
+    env_path = service.store.instance_env_path("writer")
+    values = service._load_env_file(env_path)
+    assert "A2A_HOP_BUDGET" not in values
+
+
+def test_create_service_rejects_hop_budget_without_a2a(temp_clawcu_home, tmp_path) -> None:
+    import pytest
+
+    service, _, _, _ = make_service(temp_clawcu_home)
+    with pytest.raises(ValueError, match="a2a=True"):
+        service.create_openclaw(
+            name="writer",
+            version="2026.4.1",
+            datadir=str(tmp_path / "writer"),
+            port=3000,
+            cpu="1",
+            memory="2g",
+            a2a=False,
+            a2a_hop_budget=4,
+        )
+
+
+def test_create_service_rejects_non_positive_hop_budget(temp_clawcu_home, tmp_path) -> None:
+    import pytest
+
+    service, _, _, _ = make_service(temp_clawcu_home)
+    with pytest.raises(ValueError, match="positive integer"):
+        service.create_openclaw(
+            name="writer",
+            version="2026.4.1",
+            datadir=str(tmp_path / "writer"),
+            port=3000,
+            cpu="1",
+            memory="2g",
+            a2a=True,
+            a2a_hop_budget=0,
+        )
+
+
+# Review-2 P1-F (iter 3): inspect surfaces the A2A wiring so operators
+# can see hop budget, registry URL, and the MCP server URL without
+# `clawcu getenv | grep`.
+
+
+def test_inspect_instance_omits_a2a_section_for_stock_instance(temp_clawcu_home, tmp_path) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+    payload = service.inspect_instance("writer")
+    assert payload["a2a"] is None
+
+
+def test_inspect_instance_includes_a2a_defaults_when_enabled(temp_clawcu_home, tmp_path) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=3000,
+        cpu="1",
+        memory="2g",
+        a2a=True,
+    )
+    payload = service.inspect_instance("writer")
+    a2a = payload["a2a"]
+    assert a2a["enabled"] is True
+    assert a2a["port"] == 4000  # port (3000) + 1000
+    assert a2a["hop_budget"] is None  # default path
+    assert a2a["hop_budget_default"] == 8
+    assert a2a["mcp_url"] == "http://127.0.0.1:4000/mcp"
+    # Registry URL falls back to the container default; adapter may or
+    # may not have written the explicit value to the env file.
+    assert a2a["registry_url"].startswith("http://")
+
+
+def test_inspect_instance_includes_a2a_explicit_hop_budget(temp_clawcu_home, tmp_path) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=3000,
+        cpu="1",
+        memory="2g",
+        a2a=True,
+        a2a_hop_budget=4,
+    )
+    payload = service.inspect_instance("writer")
+    assert payload["a2a"]["hop_budget"] == 4
+    assert payload["a2a"]["mcp_url"] == "http://127.0.0.1:4000/mcp"
+
+
+def test_inspect_instance_reads_user_set_registry_url_from_env(temp_clawcu_home, tmp_path) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=3000,
+        cpu="1",
+        memory="2g",
+        a2a=True,
+    )
+    service.set_instance_env(
+        "writer", ["A2A_REGISTRY_URL=http://registry.internal:9100"]
+    )
+    payload = service.inspect_instance("writer")
+    assert payload["a2a"]["registry_url"] == "http://registry.internal:9100"
+
+
 def test_collect_providers_saves_directory_bundle_from_managed_instance(temp_clawcu_home, tmp_path) -> None:
     service, _, _, store = make_service(temp_clawcu_home)
     datadir = tmp_path / "writer"

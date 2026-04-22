@@ -87,3 +87,8 @@ class ContainerRunSpec:
     command: list[str] | None = None
     additional_ports: list[tuple[int, int]] = field(default_factory=list)
     additional_mounts: list[tuple[str, str]] = field(default_factory=list)
+    # Iter 2 P0-B: `(name, ip)` pairs passed to docker as `--add-host=name:ip`.
+    # Used by A2A adapters to inject `host.docker.internal:host-gateway` so
+    # `/a2a/outbound` can reach the clawcu registry on Linux where the
+    # special DNS name otherwise doesn't resolve.
+    extra_hosts: list[tuple[str, str]] = field(default_factory=list)

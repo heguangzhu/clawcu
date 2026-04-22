@@ -140,6 +140,10 @@ class DockerManager:
             command.extend(["-v", f"{source_path}:{target_path}"])
         for host_port, internal_port in spec.additional_ports:
             command.extend(["-p", f"{host_port}:{internal_port}"])
+        for host_name, host_ip in spec.extra_hosts:
+            # `host-gateway` is a docker-engine magic value (Linux parity
+            # with Docker Desktop's auto-resolved host.docker.internal).
+            command.extend(["--add-host", f"{host_name}:{host_ip}"])
         if spec.env_file:
             command.extend(["--env-file", spec.env_file])
         for key, value in sorted(spec.extra_env.items()):
