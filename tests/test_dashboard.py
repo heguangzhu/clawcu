@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+
+import click
 from typer.testing import CliRunner
 
 import clawcu.cli as cli_module
@@ -8,14 +11,19 @@ from clawcu.cli import app
 runner = CliRunner()
 
 
+def _plain(text: str) -> str:
+    return click.unstyle(re.sub(r"\s+", " ", text))
+
+
 def test_dashboard_help_mentions_port_and_browser_options() -> None:
     result = runner.invoke(app, ["dashboard", "--help"])
+    output = _plain(result.stdout)
 
     assert result.exit_code == 0
-    assert "--host" in result.stdout
-    assert "--port" in result.stdout
-    assert "--open" in result.stdout
-    assert "--foreground" in result.stdout
+    assert "--host" in output
+    assert "--port" in output
+    assert "--open" in output
+    assert "--foreground" in output
 
 
 def test_dashboard_prints_concise_error_without_traceback(monkeypatch) -> None:
