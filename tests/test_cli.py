@@ -452,8 +452,14 @@ class FakeService:
             }
         ]
 
-    def list_service_available_versions(self, *, include_remote: bool = True) -> dict:
-        self._record("list_service_available_versions", include_remote=include_remote)
+    def list_service_available_versions(
+        self, *, include_remote: bool = True, use_cache: bool = True
+    ) -> dict:
+        self._record(
+            "list_service_available_versions",
+            include_remote=include_remote,
+            use_cache=use_cache,
+        )
         return {
             "openclaw": {
                 "service": "openclaw",
@@ -1307,7 +1313,11 @@ def test_list_command_defaults_to_managed_source(monkeypatch) -> None:
     # The available-versions footer calls the service once more.
     assert service.calls == [
         ("list_instance_summaries", (), {"running_only": False}),
-        ("list_service_available_versions", (), {"include_remote": True}),
+        (
+            "list_service_available_versions",
+            (),
+            {"include_remote": True, "use_cache": True},
+        ),
     ]
     assert "Available versions" in result.stdout
 
@@ -1327,7 +1337,21 @@ def test_list_no_remote_flag_skips_registry_fetch(monkeypatch) -> None:
     assert (
         "list_service_available_versions",
         (),
-        {"include_remote": False},
+        {"include_remote": False, "use_cache": True},
+    ) in service.calls
+
+
+def test_list_no_cache_flag_bypasses_available_versions_cache(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["list", "--no-cache"])
+
+    assert result.exit_code == 0
+    assert (
+        "list_service_available_versions",
+        (),
+        {"include_remote": True, "use_cache": False},
     ) in service.calls
 
 
@@ -1343,7 +1367,7 @@ def test_list_json_mode_skips_available_versions_footer(monkeypatch) -> None:
     assert (
         "list_service_available_versions",
         (),
-        {"include_remote": True},
+        {"include_remote": True, "use_cache": True},
     ) not in service.calls
 
 
@@ -1369,9 +1393,11 @@ def test_list_no_remote_footer_renders_as_dim_offline(monkeypatch) -> None:
     """
     service = FakeService()
 
-    def offline_versions(*, include_remote: bool) -> dict:
+    def offline_versions(*, include_remote: bool, use_cache: bool) -> dict:
         service._record(
-            "list_service_available_versions", include_remote=include_remote
+            "list_service_available_versions",
+            include_remote=include_remote,
+            use_cache=use_cache,
         )
         return {
             "openclaw": {
@@ -1415,9 +1441,11 @@ def test_list_footer_renders_yellow_on_actual_fetch_failure(monkeypatch) -> None
     """
     service = FakeService()
 
-    def failing_versions(*, include_remote: bool) -> dict:
+    def failing_versions(*, include_remote: bool, use_cache: bool) -> dict:
         service._record(
-            "list_service_available_versions", include_remote=include_remote
+            "list_service_available_versions",
+            include_remote=include_remote,
+            use_cache=use_cache,
         )
         return {
             "openclaw": {
@@ -1464,7 +1492,11 @@ def test_list_command_source_all_includes_local(monkeypatch) -> None:
         ("list_local_instance_summaries", (), {}),
         ("list_removed_instance_summaries", (), {}),
         ("list_instance_summaries", (), {"running_only": False}),
-        ("list_service_available_versions", (), {"include_remote": True}),
+        (
+            "list_service_available_versions",
+            (),
+            {"include_remote": True, "use_cache": True},
+        ),
     ]
 
 
@@ -2665,7 +2697,11 @@ def test_list_local_option_filters_to_local(monkeypatch) -> None:
     assert result.exit_code == 0
     assert service.calls == [
         ("list_local_instance_summaries", (), {}),
-        ("list_service_available_versions", (), {"include_remote": True}),
+        (
+            "list_service_available_versions",
+            (),
+            {"include_remote": True, "use_cache": True},
+        ),
     ]
 
 
