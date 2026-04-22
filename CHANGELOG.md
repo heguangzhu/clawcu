@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provider bundle provenance via `.clawcu-instance.json` metadata.
 - Active provider as a first-class field.
 
+## [0.2.11] - 2026-04-22
+
+### Added
+- `create` and `upgrade` now accept optional `--image` overrides while keeping `--version` as the required logical version label. The selected runtime image is persisted on the instance so later `recreate`, orphan recovery, and `rollback` keep following the same image chain.
+
 ## [0.2.10] - 2026-04-19
 
 ### Added
@@ -60,7 +65,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 - OpenClaw lifecycle management: pull, create, list, inspect, start/stop, upgrade, rollback, clone, snapshots.
 
-[Unreleased]: https://github.com/heguangzhu/clawcu/compare/v0.2.10...HEAD
+[Unreleased]: https://github.com/heguangzhu/clawcu/compare/v0.2.11...HEAD
+[0.2.11]: https://github.com/heguangzhu/clawcu/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/heguangzhu/clawcu/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/heguangzhu/clawcu/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/heguangzhu/clawcu/compare/v0.2.7...v0.2.8

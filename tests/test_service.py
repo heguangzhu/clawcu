@@ -224,6 +224,25 @@ def test_create_service_uses_prepared_image_tag_override(temp_clawcu_home, tmp_p
     assert docker.commands[0] == ("run", "clawcu-openclaw-writer")
 
 
+def test_create_service_accepts_explicit_image_override(temp_clawcu_home, tmp_path) -> None:
+    service, docker, openclaw, store = make_service(temp_clawcu_home)
+
+    record = service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        image="registry.example.com/openclaw:2026.4.1-tools",
+        datadir=str(tmp_path / "writer"),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+
+    assert record.image_tag == "registry.example.com/openclaw:2026.4.1-tools"
+    assert store.load_record("writer").image_tag == "registry.example.com/openclaw:2026.4.1-tools"
+    assert openclaw.versions == []
+    assert docker.commands[0] == ("run", "clawcu-openclaw-writer")
+
+
 def test_create_openclaw_makes_runtime_tree_writable(temp_clawcu_home, tmp_path) -> None:
     service, _, _, _ = make_service(temp_clawcu_home)
     datadir = tmp_path / "writer"
@@ -2250,6 +2269,28 @@ def test_retry_instance_recreates_failed_instance(temp_clawcu_home, tmp_path) ->
     assert ("rm", "clawcu-openclaw-writer") in docker.commands
 
 
+def test_retry_instance_reuses_failed_custom_image(temp_clawcu_home, tmp_path) -> None:
+    service, docker, openclaw, store = make_service(temp_clawcu_home)
+    docker.fail_next_run = True
+
+    with pytest.raises(RuntimeError):
+        service.create_openclaw(
+            name="writer",
+            version="2026.4.1",
+            image="registry.example.com/openclaw:2026.4.1-tools",
+            datadir=str(tmp_path / "writer"),
+            port=18789,
+            cpu="1",
+            memory="2g",
+        )
+
+    retried = service.retry_instance("writer")
+
+    assert retried.image_tag == "registry.example.com/openclaw:2026.4.1-tools"
+    assert store.load_record("writer").image_tag == "registry.example.com/openclaw:2026.4.1-tools"
+    assert openclaw.versions == []
+
+
 def test_start_instance_persists_start_failed_status(temp_clawcu_home, tmp_path) -> None:
     service, docker, _, store = make_service(temp_clawcu_home)
     service.create_openclaw(
@@ -2584,6 +2625,27 @@ def test_recreate_instance_rebuilds_container(temp_clawcu_home, tmp_path) -> Non
     assert "clawcu_version" in recreate_event
 
 
+def test_recreate_instance_reuses_saved_custom_image(temp_clawcu_home, tmp_path) -> None:
+    service, docker, openclaw, store = make_service(temp_clawcu_home)
+
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        image="registry.example.com/openclaw:2026.4.1-tools",
+        datadir=str(tmp_path / "writer"),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+
+    recreated = service.recreate_instance("writer")
+
+    assert recreated.image_tag == "registry.example.com/openclaw:2026.4.1-tools"
+    assert store.load_record("writer").image_tag == "registry.example.com/openclaw:2026.4.1-tools"
+    assert docker.commands.count(("run", "clawcu-openclaw-writer")) == 2
+    assert openclaw.versions == []
+
+
 def test_recreate_instance_with_timeout_stops_gracefully_before_rm(
     temp_clawcu_home, tmp_path
 ) -> None:
@@ -2719,6 +2781,35 @@ def test_recreate_removed_openclaw_restores_orphaned_datadir(temp_clawcu_home, t
     assert recreated.datadir == str(datadir)
     assert store.load_record("writer").version == created.version
     assert docker.commands.count(("run", "clawcu-openclaw-writer")) == 2
+
+
+def test_recreate_removed_openclaw_restores_custom_image_from_upgraded_metadata(
+    temp_clawcu_home, tmp_path
+) -> None:
+    service, docker, openclaw, store = make_service(temp_clawcu_home)
+    datadir = temp_clawcu_home / "writer"
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(datadir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+    service.upgrade_instance(
+        "writer",
+        version="2026.4.2",
+        image="registry.example.com/openclaw:2026.4.2-tools",
+    )
+
+    service.remove_instance("writer", delete_data=False)
+    recreated = service.recreate_instance("writer")
+
+    assert recreated.version == "2026.4.2"
+    assert recreated.image_tag == "registry.example.com/openclaw:2026.4.2-tools"
+    assert store.load_record("writer").image_tag == "registry.example.com/openclaw:2026.4.2-tools"
+    assert docker.commands.count(("run", "clawcu-openclaw-writer")) == 3
+    assert openclaw.versions == ["2026.4.1"]
 
 
 def test_recreate_removed_hermes_restores_orphaned_datadir_from_saved_metadata(
@@ -3142,6 +3233,30 @@ def test_upgrade_plan_rejects_same_version(temp_clawcu_home, tmp_path) -> None:
         service.upgrade_plan("writer", version="2026.4.1")
 
 
+def test_upgrade_plan_allows_same_version_when_image_changes(
+    temp_clawcu_home, tmp_path
+) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=18789,
+        cpu="1",
+        memory="2g",
+    )
+
+    plan = service.upgrade_plan(
+        "writer",
+        version="2026.4.1",
+        image="registry.example.com/openclaw:2026.4.1-tools",
+    )
+
+    assert plan["current_version"] == "2026.4.1"
+    assert plan["target_version"] == "2026.4.1"
+    assert plan["projected_image"] == "registry.example.com/openclaw:2026.4.1-tools"
+
+
 def test_list_upgradable_versions_merges_history_and_local_images(
     temp_clawcu_home, tmp_path
 ) -> None:
@@ -3558,6 +3673,67 @@ def test_rollback_restores_snapshot_data_and_instance_env(temp_clawcu_home, tmp_
     assert any("Upgrade snapshot retained at" in message for message in messages)
     assert any("Restored snapshot" in message for message in messages)
     assert any("Rollback safety snapshot retained at" in message for message in messages)
+
+
+def test_upgrade_instance_accepts_explicit_image_override_and_records_image_history(
+    temp_clawcu_home, tmp_path
+) -> None:
+    service, _, openclaw, store = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+
+    upgraded = service.upgrade_instance(
+        "writer",
+        version="2026.4.2",
+        image="registry.example.com/openclaw:2026.4.2-tools",
+    )
+
+    assert upgraded.image_tag == "registry.example.com/openclaw:2026.4.2-tools"
+    stored = store.load_record("writer")
+    upgrade_event = next(e for e in reversed(stored.history) if e["action"] == "upgrade")
+    assert upgrade_event["from_image"] == "ghcr.io/openclaw/openclaw:2026.4.1"
+    assert upgrade_event["to_image"] == "registry.example.com/openclaw:2026.4.2-tools"
+    assert openclaw.versions == ["2026.4.1"]
+
+
+def test_rollback_restores_prior_custom_runtime_image(temp_clawcu_home, tmp_path) -> None:
+    service, _, openclaw, store = make_service(temp_clawcu_home)
+    datadir = tmp_path / "writer"
+    datadir.mkdir()
+    (datadir / "state.txt").write_text("v1", encoding="utf-8")
+
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        image="registry.example.com/openclaw:2026.4.1-tools",
+        datadir=str(datadir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+    store.instance_env_path("writer").write_text("OPENAI_API_KEY=v1\n", encoding="utf-8")
+
+    service.upgrade_instance(
+        "writer",
+        version="2026.4.2",
+        image="registry.example.com/openclaw:2026.4.2-tools",
+    )
+    (datadir / "state.txt").write_text("v2", encoding="utf-8")
+    store.instance_env_path("writer").write_text("OPENAI_API_KEY=v2\n", encoding="utf-8")
+
+    rolled = service.rollback_instance("writer")
+
+    assert rolled.version == "2026.4.1"
+    assert rolled.image_tag == "registry.example.com/openclaw:2026.4.1-tools"
+    assert store.load_record("writer").image_tag == "registry.example.com/openclaw:2026.4.1-tools"
+    assert (datadir / "state.txt").read_text(encoding="utf-8") == "v1"
+    assert openclaw.versions == []
 
 
 def test_rollback_plan_returns_preview_without_side_effects(

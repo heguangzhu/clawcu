@@ -79,6 +79,15 @@ clawcu create openclaw --name writer --version 2026.4.1
 clawcu tui writer
 ```
 
+If you maintain a custom runtime image, keep the logical service version explicit and override only the runtime image:
+
+```bash
+clawcu create openclaw \
+  --name writer-tools \
+  --version 2026.4.1 \
+  --image registry.example.com/openclaw:2026.4.1-tools
+```
+
 Or spin up a Hermes instance with the same shape:
 
 ```bash
@@ -105,7 +114,15 @@ clawcu upgrade writer-upgrade-test --version 2026.4.10
 clawcu rollback writer-upgrade-test    # if the new version misbehaves
 ```
 
-Every `upgrade` snapshots the instance datadir and the matching env file (`~/.clawcu/instances/<instance>.env` for OpenClaw, `<datadir>/.env` for Hermes) before replacing the container. If the upgrade fails, ClawCU restores both automatically.
+`upgrade` also accepts `--image` when you want to keep the target version label explicit but run a custom image:
+
+```bash
+clawcu upgrade writer-upgrade-test \
+  --version 2026.4.10 \
+  --image registry.example.com/openclaw:2026.4.10-tools
+```
+
+Every `upgrade` snapshots the instance datadir and the matching env file (`~/.clawcu/instances/<instance>.env` for OpenClaw, `<datadir>/.env` for Hermes) before replacing the container. If the upgrade fails, ClawCU restores both automatically. When `--image` is used, the chosen runtime image is persisted as part of the instance state, so later `recreate`, orphan recovery, and `rollback` continue using the same recorded image chain.
 
 ## Model Configuration
 

@@ -99,6 +99,29 @@ class ClawCUService:
             return "token"
         return record.auth_mode
 
+    def _normalize_requested_image(self, image: str | None) -> str | None:
+        if image is None:
+            return None
+        cleaned = image.strip()
+        if not cleaned:
+            raise ValueError("Image cannot be empty.")
+        return cleaned
+
+    def _planned_runtime_image(
+        self,
+        record: InstanceRecord,
+        *,
+        version: str,
+        image: str | None = None,
+    ) -> str:
+        explicit_image = self._normalize_requested_image(image)
+        if explicit_image is not None:
+            return explicit_image
+        manager = self._service_manager(record)
+        if hasattr(manager, "official_image_tag"):
+            return manager.official_image_tag(version)
+        return f"{record.service}:{version}"
+
     def _make_runtime_tree_writable(self, root: Path) -> None:
         if not root.exists():
             return
@@ -627,6 +650,7 @@ class ClawCUService:
         *,
         name: str,
         version: str,
+        image: str | None = None,
         datadir: str | None = None,
         port: int | None = None,
         cpu: str,
@@ -655,10 +679,19 @@ class ClawCUService:
         self.reporter(
             f"Resolved instance settings: datadir={spec.datadir}, port={spec.port}, cpu={spec.cpu}, memory={spec.memory}, auth={spec.auth_mode}."
         )
+        explicit_image = self._normalize_requested_image(image)
         self.store.append_log(
             f"create instance service={spec.service} name={spec.name} version={spec.version} datadir={spec.datadir}"
+            + (f" image={explicit_image}" if explicit_image else "")
         )
-        prepared_image = adapter.prepare_artifact(spec.version)
+        if explicit_image is not None:
+            prepared_image = explicit_image
+            self.reporter(
+                f"Step 2/5: Using explicit runtime image {prepared_image} for this instance. "
+                "Docker will pull it on container start if it is missing locally."
+            )
+        else:
+            prepared_image = adapter.prepare_artifact(spec.version)
         spec = replace(spec, image_tag_override=prepared_image)
         datadir_path = Path(spec.datadir)
         self.reporter("Step 4/5: Preparing the local data directory and runtime metadata. This usually takes a few seconds.")
@@ -668,6 +701,7 @@ class ClawCUService:
                 "action": "create_requested",
                 "timestamp": utc_now_iso(),
                 "version": spec.version,
+                "image_tag": prepared_image,
                 "clawcu_version": clawcu_version,
                 "auth_mode": spec.auth_mode,
                 "service": spec.service,
@@ -683,6 +717,7 @@ class ClawCUService:
         *,
         name: str,
         version: str,
+        image: str | None = None,
         datadir: str | None = None,
         port: int | None = None,
         cpu: str,
@@ -692,6 +727,7 @@ class ClawCUService:
             "openclaw",
             name=name,
             version=version,
+            image=image,
             datadir=datadir,
             port=port,
             cpu=cpu,
@@ -703,6 +739,7 @@ class ClawCUService:
         *,
         name: str,
         version: str,
+        image: str | None = None,
         datadir: str | None = None,
         port: int | None = None,
         cpu: str,
@@ -712,6 +749,7 @@ class ClawCUService:
             "hermes",
             name=name,
             version=version,
+            image=image,
             datadir=datadir,
             port=port,
             cpu=cpu,
@@ -827,6 +865,7 @@ class ClawCUService:
             "service": record.service,
             "name": record.name,
             "version": record.version,
+            "image_tag": record.image_tag,
             "datadir": record.datadir,
             "port": record.port,
             "dashboard_port": record.dashboard_port,
@@ -1196,7 +1235,6 @@ class ClawCUService:
             raise ValueError(
                 f"Instance '{name}' is in status '{record.status}'. Only create_failed instances can be retried."
             )
-        adapter = self.adapter_for_record(record)
         effective_auth_mode = self._effective_auth_mode(record)
 
         self.reporter("Step 1/4: Loading the failed instance record and validating retry state.")
@@ -1204,8 +1242,11 @@ class ClawCUService:
             f"Retrying instance '{record.name}' with version {record.version}, datadir={record.datadir}, port={record.port}, cpu={record.cpu}, memory={record.memory}."
         )
         self.store.append_log(f"retry instance name={record.name} version={record.version}")
-        self.reporter(f"Step 2/4: Making sure the requested {adapter.display_name} artifact is available.")
-        prepared_image = adapter.prepare_artifact(record.version)
+        prepared_image = record.image_tag
+        self.reporter(
+            f"Step 2/4: Reusing saved runtime image {prepared_image}. "
+            "Docker will pull it on container start if it is missing locally."
+        )
         self.reporter("Step 3/4: Cleaning up any leftover Docker container from the failed attempt.")
         self.docker.remove_container(record.container_name, missing_ok=True)
         self.reporter("Step 4/4: Recreating the Docker container. This usually takes a few seconds.")
@@ -1258,7 +1299,6 @@ class ClawCUService:
             raise ValueError(
                 f"Instance '{name}' already exists. Use `clawcu upgrade {name} --version {version}` to change versions."
             )
-        adapter = self.adapter_for_record(record)
         effective_auth_mode = self._effective_auth_mode(record)
         self.reporter(
             f"Recreating instance '{record.name}' (service={record.service}, version {record.version}, port {record.port}, auth={effective_auth_mode})."
@@ -1266,13 +1306,11 @@ class ClawCUService:
         self.store.append_log(
             f"recreate instance name={record.name} version={record.version} fresh={fresh} timeout={timeout}"
         )
-        if prepare_artifact:
-            prepared_image = adapter.prepare_artifact(record.version)
-        else:
-            prepared_image = record.image_tag
-            self.reporter(
-                f"Reusing the existing image tag {record.image_tag} without re-running artifact preparation."
-            )
+        prepared_image = record.image_tag
+        self.reporter(
+            f"Reusing the saved runtime image {prepared_image} for recreate. "
+            "Docker will pull it on container start if it is missing locally."
+        )
         if timeout is not None:
             try:
                 self.docker.stop_container(record.container_name, timeout=timeout)
@@ -1329,7 +1367,13 @@ class ClawCUService:
         self.store.append_log(
             f"recreate removed instance name={spec.name} version={spec.version} fresh={fresh} timeout={timeout}"
         )
-        if prepare_artifact:
+        if spec.image_tag_override:
+            prepared_image = spec.image_tag_override
+            self.reporter(
+                f"Reusing the saved runtime image {prepared_image} from instance metadata. "
+                "Docker will pull it on container start if it is missing locally."
+            )
+        elif prepare_artifact:
             prepared_image = adapter.prepare_artifact(spec.version)
         else:
             prepared_image = spec.image_tag_override or image_tag_for_service(spec.service, spec.version)
@@ -1402,7 +1446,13 @@ class ClawCUService:
         """Return the service-native manager (openclaw / hermes) for a record."""
         return self.openclaw if record.service == "openclaw" else self.hermes
 
-    def upgrade_plan(self, name: str, *, version: str) -> dict:
+    def upgrade_plan(
+        self,
+        name: str,
+        *,
+        version: str,
+        image: str | None = None,
+    ) -> dict:
         """Return an upgrade preview payload without touching Docker or disk.
 
         Used by `clawcu upgrade --dry-run` and by the confirmation prompt
@@ -1414,18 +1464,15 @@ class ClawCUService:
         record = self.store.load_record(name)
         adapter = self.adapter_for_record(record)
         target_version = normalize_service_version(record.service, version)
-        if target_version == record.version:
+        projected_image = self._planned_runtime_image(
+            record, version=target_version, image=image
+        )
+        if target_version == record.version and projected_image == record.image_tag:
             raise ValueError(
                 f"Instance '{name}' is already on version {target_version}."
             )
         env_path = adapter.env_path(self, record)
         env_values = self._load_env_file(env_path) if env_path.exists() else {}
-        manager = self._service_manager(record)
-        projected_image = (
-            manager.official_image_tag(target_version)
-            if hasattr(manager, "official_image_tag")
-            else f"{record.service}:{target_version}"
-        )
         snapshot_label = f"upgrade-to-{target_version}"
         snapshot_root = self.store.paths.snapshots_dir / record.name
         return {
@@ -1433,6 +1480,7 @@ class ClawCUService:
             "service": record.service,
             "current_version": record.version,
             "target_version": target_version,
+            "current_image": record.image_tag,
             "datadir": str(record.datadir),
             "env_path": str(env_path),
             "env_exists": env_path.exists(),
@@ -1685,6 +1733,8 @@ class ClawCUService:
                     "timestamp": event.get("timestamp"),
                     "from_version": event.get("from_version"),
                     "to_version": event.get("to_version"),
+                    "from_image": event.get("from_image"),
+                    "to_image": event.get("to_image"),
                     "snapshot_dir": snapshot_dir,
                     "snapshot_exists": exists,
                     # Rolling back restores the state captured *before* the
@@ -1717,17 +1767,16 @@ class ClawCUService:
         env_path = adapter.env_path(self, record)
         snapshot_label = f"rollback-from-{record.version}"
         snapshot_root = self.store.paths.snapshots_dir / record.name
-        manager = self._service_manager(record)
         projected_image = (
-            manager.official_image_tag(previous_version)
-            if hasattr(manager, "official_image_tag")
-            else f"{record.service}:{previous_version}"
+            str(transition.get("from_image") or "").strip()
+            or self._planned_runtime_image(record, version=previous_version)
         )
         return {
             "instance": record.name,
             "service": record.service,
             "current_version": record.version,
             "target_version": previous_version,
+            "current_image": record.image_tag,
             "datadir": str(record.datadir),
             "env_path": str(env_path),
             "env_exists": env_path.exists(),
@@ -1766,11 +1815,23 @@ class ClawCUService:
             "Run 'clawcu rollback <name> --list' to see available targets."
         )
 
-    def upgrade_instance(self, name: str, *, version: str) -> InstanceRecord:
+    def upgrade_instance(
+        self,
+        name: str,
+        *,
+        version: str,
+        image: str | None = None,
+    ) -> InstanceRecord:
         record = self.store.load_record(name)
         adapter = self.adapter_for_record(record)
         target_version = normalize_service_version(record.service, version)
-        if target_version == record.version:
+        explicit_image = self._normalize_requested_image(image)
+        target_image = self._planned_runtime_image(
+            record,
+            version=target_version,
+            image=explicit_image,
+        )
+        if target_version == record.version and target_image == record.image_tag:
             raise ValueError(f"Instance '{name}' is already on version {target_version}.")
 
         self.reporter(
@@ -1794,11 +1855,18 @@ class ClawCUService:
         )
 
         try:
-            self.reporter(
-                f"Step 3/4: Preparing {adapter.display_name} {target_version}. "
-                "This may take a while if the image or source artifact needs to be prepared."
-            )
-            prepared_image = adapter.prepare_artifact(target_version)
+            if explicit_image is not None:
+                prepared_image = explicit_image
+                self.reporter(
+                    f"Step 3/4: Using explicit runtime image {prepared_image} for {adapter.display_name} {target_version}. "
+                    "Docker will pull it on container start if it is missing locally."
+                )
+            else:
+                self.reporter(
+                    f"Step 3/4: Preparing {adapter.display_name} {target_version}. "
+                    "This may take a while if the image or source artifact needs to be prepared."
+                )
+                prepared_image = adapter.prepare_artifact(target_version)
         except Exception as exc:
             record.history.append(
                 {
@@ -1859,6 +1927,8 @@ class ClawCUService:
                     "timestamp": utc_now_iso(),
                     "from_version": previous.version,
                     "to_version": target_version,
+                    "from_image": previous.image_tag,
+                    "to_image": prepared_image,
                     "snapshot_dir": str(snapshot_dir),
                     "error": str(exc),
                     "rollback_error": str(rollback_error) if rollback_error else None,
@@ -1868,6 +1938,7 @@ class ClawCUService:
             previous.status = self.docker.container_status(previous.container_name)
             previous.updated_at = utc_now_iso()
             self.store.save_record(previous)
+            self._write_instance_metadata(previous)
             if rollback_error:
                 raise RuntimeError(
                     f"Upgrade to {target_version} failed and automatic rollback also failed: {rollback_error}"
@@ -1882,10 +1953,13 @@ class ClawCUService:
                 "timestamp": utc_now_iso(),
                 "from_version": previous.version,
                 "to_version": target_version,
+                "from_image": previous.image_tag,
+                "to_image": prepared_image,
                 "snapshot_dir": str(snapshot_dir),
             }
         )
         self.store.save_record(upgraded)
+        self._write_instance_metadata(upgraded)
         self.reporter(
             f"Upgrade snapshot retained at {snapshot_dir}. "
             f"Run 'clawcu rollback {upgraded.name}' if you want to restore {previous.version}."
@@ -1909,11 +1983,19 @@ class ClawCUService:
         self.store.append_log(
             f"rollback instance name={record.name} from={record.version} to={previous_version}"
         )
-        self.reporter(
-            f"Step 2/4: Preparing {adapter.display_name} {previous_version}. "
-            "This may take a while if the image or source artifact is not available locally."
-        )
-        prepared_image = adapter.prepare_artifact(previous_version)
+        historical_image = str(transition.get("from_image") or "").strip()
+        if historical_image:
+            prepared_image = historical_image
+            self.reporter(
+                f"Step 2/4: Reusing recorded runtime image {prepared_image} for {adapter.display_name} {previous_version}. "
+                "Docker will pull it on container start if it is missing locally."
+            )
+        else:
+            self.reporter(
+                f"Step 2/4: Preparing {adapter.display_name} {previous_version}. "
+                "This may take a while if the image or source artifact is not available locally."
+            )
+            prepared_image = adapter.prepare_artifact(previous_version)
         env_path = adapter.env_path(self, record)
         self.reporter(
             "Step 3/4: Saving the current state and restoring the previous snapshot. "
@@ -1949,6 +2031,8 @@ class ClawCUService:
                 "timestamp": utc_now_iso(),
                 "from_version": record.version,
                 "to_version": previous_version,
+                "from_image": record.image_tag,
+                "to_image": prepared_image,
                 "snapshot_dir": str(current_snapshot),
                 "restored_snapshot": restore_from,
             }
@@ -1961,6 +2045,7 @@ class ClawCUService:
         self._run_container(rolled)
         rolled = adapter.wait_for_readiness(self, self._persist_live_status(rolled))
         self.store.save_record(rolled)
+        self._write_instance_metadata(rolled)
         if restore_from:
             self.reporter(
                 f"Restored snapshot {restore_from}. "

@@ -79,6 +79,15 @@ clawcu create openclaw --name writer --version 2026.4.1
 clawcu tui writer
 ```
 
+如果你维护了自定义运行镜像，可以继续显式记录逻辑版本，同时只覆盖实际运行镜像：
+
+```bash
+clawcu create openclaw \
+  --name writer-tools \
+  --version 2026.4.1 \
+  --image registry.example.com/openclaw:2026.4.1-tools
+```
+
 或者用同样的模式创建一个 Hermes 实例：
 
 ```bash
@@ -105,7 +114,15 @@ clawcu upgrade writer-upgrade-test --version 2026.4.10
 clawcu rollback writer-upgrade-test    # 新版本有问题时回滚
 ```
 
-每次 `upgrade` 都会先对实例 datadir 和对应的环境变量文件（OpenClaw 在 `~/.clawcu/instances/<instance>.env`，Hermes 在 `<datadir>/.env`）创建快照，然后才替换容器。升级失败时 ClawCU 会自动恢复两者。
+`upgrade` 也支持 `--image`：当你想保留目标版本标签，但实际运行自定义镜像时使用：
+
+```bash
+clawcu upgrade writer-upgrade-test \
+  --version 2026.4.10 \
+  --image registry.example.com/openclaw:2026.4.10-tools
+```
+
+每次 `upgrade` 都会先对实例 datadir 和对应的环境变量文件（OpenClaw 在 `~/.clawcu/instances/<instance>.env`，Hermes 在 `<datadir>/.env`）创建快照，然后才替换容器。升级失败时 ClawCU 会自动恢复两者。若使用了 `--image`，选中的 runtime image 也会写入实例状态，因此后续 `recreate`、孤儿恢复和 `rollback` 会沿着同一条镜像链继续工作。
 
 ## 模型配置
 

@@ -125,13 +125,18 @@ class FakeService:
     def set_reporter(self, reporter) -> None:
         self.reporter = reporter
 
-    def _instance(self, name: str = "writer", version: str = "2026.4.1") -> InstanceRecord:
+    def _instance(
+        self,
+        name: str = "writer",
+        version: str = "2026.4.1",
+        image_tag: str | None = None,
+    ) -> InstanceRecord:
         return InstanceRecord(
             service="openclaw",
             name=name,
             version=version,
             upstream_ref=f"v{version}",
-            image_tag=f"clawcu/openclaw:{version}",
+            image_tag=image_tag or f"clawcu/openclaw:{version}",
             container_name=f"clawcu-openclaw-{name}",
             datadir=f"/tmp/{name}",
             port=3000 if name == "writer" else 3001,
@@ -207,17 +212,24 @@ class FakeService:
         if self.reporter:
             self.reporter("Step 1/5: Validating options")
             self.reporter("Step 5/5: Starting the Docker container")
-        return self._instance(name=kwargs["name"], version=kwargs["version"])
+        return self._instance(
+            name=kwargs["name"],
+            version=kwargs["version"],
+            image_tag=kwargs.get("image") or f"clawcu/openclaw:{kwargs['version']}",
+        )
 
     def create_hermes(self, **kwargs) -> InstanceRecord:
         self._record("create_hermes", **kwargs)
         if self.reporter:
             self.reporter("Step 1/5: Validating options")
             self.reporter("Step 5/5: Starting the Docker container")
-        record = self._instance(name=kwargs["name"], version=kwargs["version"])
+        record = self._instance(
+            name=kwargs["name"],
+            version=kwargs["version"],
+            image_tag=kwargs.get("image") or f"clawcu/hermes-agent:{kwargs['version']}",
+        )
         record.service = "hermes"
         record.container_name = f"clawcu-hermes-{kwargs['name']}"
-        record.image_tag = f"clawcu/hermes-agent:{kwargs['version']}"
         record.auth_mode = "native"
         record.port = kwargs.get("port") or 8652
         return record
@@ -608,19 +620,20 @@ class FakeService:
             )
         return SimpleNamespace(name=name, version=version)
 
-    def upgrade_plan(self, name: str, *, version: str) -> dict:
-        self._record("upgrade_plan", name=name, version=version)
+    def upgrade_plan(self, name: str, *, version: str, image: str | None = None) -> dict:
+        self._record("upgrade_plan", name=name, version=version, image=image)
         return {
             "instance": name,
             "service": "openclaw",
             "current_version": "2026.4.1",
             "target_version": version,
+            "current_image": "ghcr.io/openclaw/openclaw:2026.4.1",
             "datadir": f"/tmp/{name}",
             "env_path": f"/tmp/{name}.env",
             "env_exists": True,
             "env_keys": ["OPENAI_API_KEY", "OPENAI_BASE_URL"],
             "env_carryover": "preserved",
-            "projected_image": f"ghcr.io/openclaw/openclaw:{version}",
+            "projected_image": image or f"ghcr.io/openclaw/openclaw:{version}",
             "snapshot_root": f"/tmp/snapshots/{name}",
             "snapshot_label": f"upgrade-to-{version}",
         }
@@ -646,12 +659,16 @@ class FakeService:
             "remote_requested": include_remote,
         }
 
-    def upgrade_instance(self, name: str, *, version: str) -> InstanceRecord:
-        self._record("upgrade_instance", name=name, version=version)
+    def upgrade_instance(self, name: str, *, version: str, image: str | None = None) -> InstanceRecord:
+        self._record("upgrade_instance", name=name, version=version, image=image)
         if self.reporter:
             self.reporter("Step 1/4: Preparing an upgrade plan")
             self.reporter("Step 4/4: Recreating the container")
-        return self._instance(name=name, version=version)
+        return self._instance(
+            name=name,
+            version=version,
+            image_tag=image or f"clawcu/openclaw:{version}",
+        )
 
     def rollback_plan(self, name: str, *, to_version: str | None = None) -> dict:
         self._record("rollback_plan", name=name, to_version=to_version)
@@ -661,6 +678,7 @@ class FakeService:
             "service": "openclaw",
             "current_version": "2026.4.1",
             "target_version": target,
+            "current_image": "ghcr.io/openclaw/openclaw:2026.4.1",
             "datadir": f"/tmp/{name}",
             "env_path": f"/tmp/{name}.env",
             "env_exists": True,
@@ -2274,6 +2292,7 @@ def test_create_command_uses_defaults(monkeypatch) -> None:
         {
             "name": "writer",
             "version": "2026.4.1",
+            "image": None,
             "datadir": None,
             "port": None,
             "cpu": "1",
@@ -2312,6 +2331,41 @@ def test_create_hermes_command_uses_defaults(monkeypatch) -> None:
         {
             "name": "scribe",
             "version": "v0.9.0",
+            "image": None,
+            "datadir": None,
+            "port": None,
+            "cpu": "1",
+            "memory": "2g",
+        },
+    )
+
+
+def test_create_command_accepts_image_override(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "create",
+            "openclaw",
+            "--name",
+            "writer",
+            "--version",
+            "2026.4.1",
+            "--image",
+            "registry.example.com/openclaw:2026.4.1-tools",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert service.calls[0] == (
+        "create_openclaw",
+        (),
+        {
+            "name": "writer",
+            "version": "2026.4.1",
+            "image": "registry.example.com/openclaw:2026.4.1-tools",
             "datadir": None,
             "port": None,
             "cpu": "1",
@@ -2965,9 +3019,47 @@ def test_upgrade_command_accepts_version_option(monkeypatch) -> None:
     assert service.calls[-2] == (
         "upgrade_instance",
         (),
-        {"name": "writer", "version": "2026.4.2"},
+        {"name": "writer", "version": "2026.4.2", "image": None},
     )
     assert service.calls[-1] == ("dashboard_url", (), {"name": "writer"})
+
+
+def test_upgrade_command_accepts_image_override(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "upgrade",
+            "writer",
+            "--version",
+            "2026.4.2",
+            "--image",
+            "registry.example.com/openclaw:2026.4.2-tools",
+            "--yes",
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert (
+        "upgrade_plan",
+        (),
+        {
+            "name": "writer",
+            "version": "2026.4.2",
+            "image": "registry.example.com/openclaw:2026.4.2-tools",
+        },
+    ) in service.calls
+    assert (
+        "upgrade_instance",
+        (),
+        {
+            "name": "writer",
+            "version": "2026.4.2",
+            "image": "registry.example.com/openclaw:2026.4.2-tools",
+        },
+    ) in service.calls
 
 
 def test_upgrade_command_list_versions_prints_history_and_local(monkeypatch) -> None:

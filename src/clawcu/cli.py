@@ -1059,6 +1059,7 @@ def _do_create(
     *,
     name: str,
     version: str,
+    image: str | None,
     datadir: str | None,
     port: int | None,
     cpu: str,
@@ -1077,11 +1078,11 @@ def _do_create(
     try:
         if service_name == "openclaw":
             record = service.create_openclaw(
-                name=name, version=version, datadir=datadir, port=port, cpu=cpu, memory=memory,
+                name=name, version=version, image=image, datadir=datadir, port=port, cpu=cpu, memory=memory,
             )
         else:
             record = service.create_hermes(
-                name=name, version=version, datadir=datadir, port=port, cpu=cpu, memory=memory,
+                name=name, version=version, image=image, datadir=datadir, port=port, cpu=cpu, memory=memory,
             )
     except Exception as exc:
         _exit_with_error(str(exc))
@@ -1160,6 +1161,10 @@ def create_callback(
     ] = None,
     name: Annotated[str | None, typer.Option("--name", help="Managed instance name.")] = None,
     version: Annotated[str | None, typer.Option("--version", help="Service version or git ref.")] = None,
+    image: Annotated[
+        str | None,
+        typer.Option("--image", help="Optional runtime image override. When set, Docker starts this image while --version remains the recorded service version."),
+    ] = None,
     datadir: Annotated[
         str | None,
         typer.Option("--datadir", help="Host data directory. Defaults to ~/.clawcu/{name}."),
@@ -1180,6 +1185,7 @@ def create_callback(
             service,
             name=name,
             version=version,
+            image=image,
             datadir=datadir,
             port=port,
             cpu=cpu,
@@ -1216,6 +1222,10 @@ def pull_hermes(
 def create_openclaw(
     name: Annotated[str, typer.Option("--name", help="Managed instance name.")],
     version: Annotated[str, typer.Option("--version", help="OpenClaw version to run.")],
+    image: Annotated[
+        str | None,
+        typer.Option("--image", help="Optional runtime image override. When set, Docker starts this image while --version remains the recorded OpenClaw version."),
+    ] = None,
     datadir: Annotated[
         str | None,
         typer.Option("--datadir", help="Host data directory. Defaults to ~/.clawcu/{name}."),
@@ -1237,6 +1247,7 @@ def create_openclaw(
         "openclaw",
         name=name,
         version=version,
+        image=image,
         datadir=datadir,
         port=port,
         cpu=cpu,
@@ -1251,6 +1262,10 @@ def create_openclaw(
 def create_hermes(
     name: Annotated[str, typer.Option("--name", help="Managed instance name.")],
     version: Annotated[str, typer.Option("--version", help="Hermes git ref to run.")],
+    image: Annotated[
+        str | None,
+        typer.Option("--image", help="Optional runtime image override. When set, Docker starts this image while --version remains the recorded Hermes version."),
+    ] = None,
     datadir: Annotated[
         str | None,
         typer.Option("--datadir", help="Host data directory. Defaults to ~/.clawcu/{name}."),
@@ -1272,6 +1287,7 @@ def create_hermes(
         "hermes",
         name=name,
         version=version,
+        image=image,
         datadir=datadir,
         port=port,
         cpu=cpu,
@@ -2900,6 +2916,10 @@ def _print_upgradable_versions(payload: dict, *, show_all: bool = False) -> None
 def upgrade_instance(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
     version: Annotated[str | None, typer.Option("--version", help="Target service version or git ref. Required unless --list-versions is passed.")] = None,
+    image: Annotated[
+        str | None,
+        typer.Option("--image", help="Optional runtime image override. When set, Docker starts this image while --version remains the recorded target version."),
+    ] = None,
     list_versions: Annotated[
         bool,
         typer.Option(
@@ -2978,7 +2998,7 @@ def upgrade_instance(
         )
 
     try:
-        plan = service.upgrade_plan(name, version=version)
+        plan = service.upgrade_plan(name, version=version, image=image)
     except Exception as exc:
         _exit_with_error(str(exc))
 
@@ -3009,7 +3029,7 @@ def upgrade_instance(
     if hasattr(service, "set_reporter"):
         service.set_reporter(_print_progress)
     try:
-        record = service.upgrade_instance(name, version=version)
+        record = service.upgrade_instance(name, version=version, image=image)
     except Exception as exc:
         _exit_with_error(str(exc))
     console.print(f"[green]Upgraded instance:[/green] {record.name} -> {record.version}")

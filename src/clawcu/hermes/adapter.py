@@ -433,6 +433,11 @@ class HermesAdapter(ServiceAdapter):
             memory=str(metadata.get("memory") or "2g"),
             auth_mode=str(metadata.get("auth_mode") or self.default_auth_mode()),
             dashboard_port=resolved_dashboard_port,
+            image_tag_override=(
+                str(metadata.get("image_tag") or "").strip()
+                if version is None and str(metadata.get("image_tag") or "").strip()
+                else None
+            ),
         )
 
     def local_agent_summaries(self, service) -> list[dict]:
