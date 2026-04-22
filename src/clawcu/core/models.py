@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any
 
 
@@ -40,6 +40,8 @@ class InstanceRecord(InstanceSpec):
         payload = dict(data)
         payload.setdefault("auth_mode", "token")
         payload.setdefault("dashboard_port", None)
+        allowed = {item.name for item in fields(cls)}
+        payload = {key: value for key, value in payload.items() if key in allowed}
         return cls(**payload)
 
 
@@ -61,6 +63,8 @@ class ProviderRecord:
         payload = dict(data)
         payload.setdefault("endpoint", None)
         payload.setdefault("models", [])
+        allowed = {item.name for item in fields(cls)}
+        payload = {key: value for key, value in payload.items() if key in allowed}
         return cls(**payload)
 
 
