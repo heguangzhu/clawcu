@@ -1,0 +1,1291 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ClawCU Instance Workspace</title>
+    <style>
+      :root {
+        --bg: #ede6d7;
+        --bg-deep: #d7cfbd;
+        --paper: #f8f4ea;
+        --ink: #1b232b;
+        --muted: #687581;
+        --line: rgba(27, 35, 43, 0.12);
+        --panel: #172029;
+        --panel-2: #223240;
+        --panel-3: #31495d;
+        --ok: #3f9468;
+        --warn: #cb8f26;
+        --danger: #b95f4d;
+        --accent: #2b728e;
+        --shadow: 0 24px 60px rgba(27, 35, 43, 0.1);
+        --mono: "SF Mono", "Menlo", "Monaco", "Consolas", monospace;
+        --body: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+        --display: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+        --radius-lg: 28px;
+        --radius-md: 18px;
+        --radius-sm: 12px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background:
+          radial-gradient(circle at 18% 12%, rgba(43, 114, 142, 0.12), transparent 18%),
+          radial-gradient(circle at 82% 8%, rgba(203, 143, 38, 0.12), transparent 16%),
+          linear-gradient(180deg, #f2ede3 0%, var(--bg) 48%, #e8dfcf 100%);
+        color: var(--ink);
+        font-family: var(--body);
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        opacity: 0.16;
+        background-image:
+          linear-gradient(rgba(23, 32, 41, 0.03) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(23, 32, 41, 0.03) 1px, transparent 1px);
+        background-size: 24px 24px;
+      }
+
+      button,
+      a,
+      select {
+        font: inherit;
+      }
+
+      .page {
+        position: relative;
+        z-index: 1;
+        width: min(1600px, calc(100vw - 32px));
+        margin: 16px auto;
+        display: grid;
+        gap: 16px;
+      }
+
+      .panel {
+        background: rgba(248, 244, 234, 0.9);
+        border: 1px solid rgba(27, 35, 43, 0.08);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(10px);
+      }
+
+      .hero {
+        padding: 22px 24px 24px;
+        background:
+          radial-gradient(circle at top right, rgba(43, 114, 142, 0.14), transparent 26%),
+          linear-gradient(180deg, rgba(23, 32, 41, 0.98), rgba(34, 50, 64, 0.98));
+        color: #f8f4ea;
+      }
+
+      .hero-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+
+      .hero-nav {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .hero-kicker {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+        color: rgba(248, 244, 234, 0.62);
+      }
+
+      .hero h1 {
+        margin: 8px 0 0;
+        font-family: var(--display);
+        font-size: clamp(2.6rem, 1.6rem + 2.2vw, 4.6rem);
+        line-height: 0.94;
+        letter-spacing: -0.06em;
+      }
+
+      .hero-summary {
+        max-width: 86ch;
+        margin-top: 14px;
+        color: rgba(248, 244, 234, 0.8);
+        font-size: 16px;
+        line-height: 1.6;
+      }
+
+      .hero-meta,
+      .toolbar,
+      .facts-grid,
+      .action-grid,
+      .mini-grid,
+      .history-list {
+        display: grid;
+        gap: 12px;
+      }
+
+      .hero-meta {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        margin-top: 20px;
+      }
+
+      .hero-card {
+        min-width: 0;
+        padding: 14px 16px;
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      .hero-card label,
+      .section-kicker,
+      .label {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+      }
+
+      .hero-card label {
+        color: rgba(248, 244, 234, 0.58);
+      }
+
+      .hero-card strong {
+        display: block;
+        font-size: 22px;
+        letter-spacing: -0.03em;
+      }
+
+      .hero-card span {
+        display: block;
+        margin-top: 8px;
+        color: rgba(248, 244, 234, 0.72);
+        line-height: 1.45;
+      }
+
+      .action,
+      .select-wrap select {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        height: 42px;
+        padding: 0 14px;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.64);
+        color: var(--ink);
+        text-decoration: none;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .action.primary {
+        background: var(--panel);
+        color: #f8f4ea;
+        border-color: rgba(255, 255, 255, 0.08);
+      }
+
+      .action.ghost {
+        background: rgba(255, 255, 255, 0.08);
+        color: #f8f4ea;
+        border-color: rgba(255, 255, 255, 0.08);
+      }
+
+      .action:disabled {
+        cursor: wait;
+        opacity: 0.6;
+      }
+
+      .select-wrap {
+        position: relative;
+      }
+
+      .select-wrap select {
+        min-width: 230px;
+        appearance: none;
+        justify-content: flex-start;
+        padding-right: 38px;
+      }
+
+      .select-wrap::after {
+        content: "▾";
+        position: absolute;
+        right: 14px;
+        top: 50%;
+        transform: translateY(-50%);
+        pointer-events: none;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .toolbar {
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 14px;
+      }
+
+      .toolbar-copy {
+        padding: 20px 24px 0;
+      }
+
+      .toolbar-copy h2 {
+        margin: 0;
+        font-size: 24px;
+        letter-spacing: -0.03em;
+      }
+
+      .toolbar-copy p {
+        margin: 8px 0 0;
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      .action-grid {
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        padding: 0 24px 24px;
+      }
+
+      .facts-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .fact-card,
+      .workspace-section,
+      .side-card {
+        min-width: 0;
+        padding: 18px;
+        border-radius: 22px;
+        background: rgba(255, 255, 255, 0.58);
+        border: 1px solid rgba(27, 35, 43, 0.08);
+      }
+
+      .fact-card strong {
+        display: block;
+        font-size: 24px;
+        letter-spacing: -0.04em;
+        min-width: 0;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+
+      .fact-card span {
+        display: block;
+        margin-top: 8px;
+        color: var(--muted);
+        line-height: 1.5;
+        overflow-wrap: anywhere;
+      }
+
+      .fact-card.full-row {
+        grid-column: 1 / -1;
+      }
+
+      .fact-card.path-card strong {
+        font-family: var(--mono);
+        font-size: 17px;
+        line-height: 1.45;
+        letter-spacing: -0.02em;
+      }
+
+      .content-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.9fr);
+        gap: 16px;
+      }
+
+      .main-stack,
+      .side-stack {
+        display: grid;
+        gap: 16px;
+      }
+
+      .section-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+
+      .section-head h3 {
+        margin: 0;
+        font-size: 20px;
+        letter-spacing: -0.03em;
+      }
+
+      .section-head p {
+        margin: 8px 0 0;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+
+      .section-meta {
+        text-align: right;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      .log-frame {
+        min-height: 460px;
+        max-height: 64vh;
+        overflow: auto;
+        padding: 14px;
+        border-radius: 18px;
+        background:
+          linear-gradient(180deg, rgba(23, 32, 41, 0.98), rgba(31, 45, 57, 0.98));
+        color: #f8f4ea;
+        font-family: var(--mono);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      .log-line {
+        padding: 8px 10px;
+        border-radius: 10px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      .log-line:nth-child(odd) {
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .mini-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .mini-item {
+        padding: 14px;
+        border-radius: 16px;
+        background: rgba(23, 32, 41, 0.04);
+        border: 1px solid rgba(27, 35, 43, 0.06);
+      }
+
+      .mini-item strong {
+        display: block;
+        font-size: 16px;
+      }
+
+      .mini-item span {
+        display: block;
+        margin-top: 8px;
+        color: var(--muted);
+        line-height: 1.5;
+        overflow-wrap: anywhere;
+      }
+
+      .history-list {
+        grid-template-columns: 1fr;
+      }
+
+      .history-item {
+        padding: 14px;
+        border-radius: 16px;
+        background: rgba(23, 32, 41, 0.04);
+        border: 1px solid rgba(27, 35, 43, 0.06);
+      }
+
+      .history-item strong {
+        display: block;
+        font-size: 16px;
+      }
+
+      .history-item p {
+        margin: 8px 0 0;
+        color: var(--muted);
+        line-height: 1.6;
+        overflow-wrap: anywhere;
+      }
+
+      .pill-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 10px;
+        border-radius: 999px;
+        background: rgba(23, 32, 41, 0.06);
+        border: 1px solid rgba(27, 35, 43, 0.08);
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .status-pill.running {
+        color: var(--ok);
+        background: rgba(63, 148, 104, 0.12);
+      }
+
+      .status-pill.attention {
+        color: var(--warn);
+        background: rgba(203, 143, 38, 0.14);
+      }
+
+      .status-pill.failed {
+        color: var(--danger);
+        background: rgba(185, 95, 77, 0.14);
+      }
+
+      .status-pill .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+
+      .empty-state {
+        padding: 18px;
+        border-radius: 18px;
+        border: 1px dashed rgba(27, 35, 43, 0.14);
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.4);
+      }
+
+      .utility-layer {
+        position: fixed;
+        right: 20px;
+        bottom: 20px;
+        z-index: 30;
+        display: grid;
+        gap: 12px;
+        pointer-events: none;
+      }
+
+      .toast,
+      .console,
+      .scroll-top {
+        pointer-events: auto;
+      }
+
+      .scroll-top {
+        justify-self: end;
+        width: 52px;
+        height: 52px;
+        border: 0;
+        border-radius: 16px;
+        background: rgba(23, 32, 41, 0.94);
+        color: #f8f4ea;
+        box-shadow: 0 14px 30px rgba(27, 35, 43, 0.22);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 24px;
+        cursor: pointer;
+        opacity: 0;
+        transform: translateY(8px) scale(0.96);
+        transition: opacity 180ms ease, transform 180ms ease;
+        pointer-events: none;
+      }
+
+      .scroll-top.show {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+        pointer-events: auto;
+      }
+
+      .toast {
+        justify-self: end;
+        max-width: min(440px, calc(100vw - 40px));
+        padding: 12px 14px;
+        border-radius: 14px;
+        background: rgba(23, 32, 41, 0.94);
+        color: #f8f4ea;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: 0 14px 30px rgba(27, 35, 43, 0.22);
+        opacity: 0;
+        transform: translateY(8px);
+        transition: opacity 180ms ease, transform 180ms ease;
+      }
+
+      .toast.show {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .console {
+        width: min(720px, calc(100vw - 40px));
+        max-height: 52vh;
+        overflow: auto;
+        padding: 16px;
+        border-radius: 20px;
+        background: rgba(23, 32, 41, 0.96);
+        color: #f8f4ea;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: 0 24px 50px rgba(27, 35, 43, 0.26);
+        display: none;
+      }
+
+      .console.open {
+        display: block;
+      }
+
+      .console-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .console pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 12px;
+        line-height: 1.55;
+        font-family: var(--mono);
+      }
+
+      .drawer-close {
+        border: 0;
+        background: transparent;
+        color: inherit;
+        cursor: pointer;
+        font-size: 18px;
+      }
+
+      @media (max-width: 1320px) {
+        .action-grid {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+
+        .hero-meta,
+        .facts-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .content-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 860px) {
+        .page {
+          width: min(100vw - 20px, 1600px);
+          margin: 10px auto;
+        }
+
+        .toolbar,
+        .hero-top {
+          grid-template-columns: 1fr;
+        }
+
+        .action-grid,
+        .hero-meta,
+        .facts-grid,
+        .mini-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .select-wrap select {
+          min-width: 0;
+          width: 100%;
+        }
+
+        .toolbar-copy,
+        .action-grid,
+        .workspace-section,
+        .side-card,
+        .fact-card {
+          padding-left: 18px;
+          padding-right: 18px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <section class="hero panel" id="workspace-hero"></section>
+
+      <section class="panel">
+        <div class="toolbar-copy">
+          <div class="section-kicker">Instance Workspace</div>
+          <h2>Full-Width Workspace</h2>
+        </div>
+        <div class="action-grid" id="workspace-actions"></div>
+      </section>
+
+      <section class="facts-grid" id="facts-grid"></section>
+
+      <section class="content-grid">
+        <div class="main-stack">
+          <section class="workspace-section">
+            <div class="section-head">
+              <div>
+                <div class="section-kicker">Live Output</div>
+                <h3>Recent Logs</h3>
+                <p id="logs-summary">Loading recent logs…</p>
+              </div>
+              <div class="section-meta" id="logs-meta"></div>
+            </div>
+            <div class="log-frame" id="logs-frame"></div>
+          </section>
+
+          <section class="workspace-section">
+            <div class="section-head">
+              <div>
+                <div class="section-kicker">Lifecycle</div>
+                <h3>Snapshots & History</h3>
+                <p>Keep upgrade, rollback, and recreate traces visible so you can quickly judge whether this instance is actually stable.</p>
+              </div>
+            </div>
+            <div class="history-list" id="history-list"></div>
+          </section>
+        </div>
+
+        <div class="side-stack">
+          <section class="side-card">
+            <div class="section-head">
+              <div>
+                <div class="section-kicker">Runtime Facts</div>
+                <h3>Access & Runtime</h3>
+              </div>
+            </div>
+            <div class="mini-grid" id="runtime-grid"></div>
+          </section>
+
+          <section class="side-card">
+            <div class="section-head">
+              <div>
+                <div class="section-kicker">Upgrade Context</div>
+                <h3>Safety Lane</h3>
+              </div>
+            </div>
+            <div class="history-list" id="upgrade-context"></div>
+          </section>
+        </div>
+      </section>
+    </div>
+
+    <div class="utility-layer">
+      <button class="scroll-top" id="scroll-top-button" type="button" aria-label="Back to top" title="Back to top">↑</button>
+      <section class="console" id="console-panel">
+        <div class="console-head">
+          <strong id="console-title">Command Output</strong>
+          <button class="drawer-close" type="button" id="console-close">×</button>
+        </div>
+        <pre id="console-output"></pre>
+      </section>
+
+      <div class="toast" id="toast"></div>
+    </div>
+
+    <script>
+      const params = new URLSearchParams(window.location.search);
+      const requestedName = params.get("name") || "";
+      function workspaceLangHref(lang, name = requestedName) {
+        const query = new URLSearchParams();
+        if (name) query.set("name", name);
+        query.set("lang", lang);
+        return `/workspace?${query.toString()}`;
+      }
+
+      const state = {
+        dashboard: null,
+        record: null,
+        inspect: null,
+        logs: null,
+        versions: null,
+        name: requestedName,
+        loadingAll: false,
+        loadingLogs: false,
+        lastLogsRefreshed: "",
+        toastTimer: null,
+      };
+
+      const els = {
+        hero: document.getElementById("workspace-hero"),
+        actions: document.getElementById("workspace-actions"),
+        factsGrid: document.getElementById("facts-grid"),
+        logsSummary: document.getElementById("logs-summary"),
+        logsMeta: document.getElementById("logs-meta"),
+        logsFrame: document.getElementById("logs-frame"),
+        historyList: document.getElementById("history-list"),
+        runtimeGrid: document.getElementById("runtime-grid"),
+        upgradeContext: document.getElementById("upgrade-context"),
+        toast: document.getElementById("toast"),
+        consolePanel: document.getElementById("console-panel"),
+        consoleTitle: document.getElementById("console-title"),
+        consoleOutput: document.getElementById("console-output"),
+        consoleClose: document.getElementById("console-close"),
+        scrollTop: document.getElementById("scroll-top-button"),
+      };
+
+      const SERVICE_LABEL = {
+        openclaw: "OpenClaw",
+        hermes: "Hermes",
+      };
+
+      function normalizeVersion(value) {
+        return String(value || "").replace(/^v/, "");
+      }
+
+      function serviceLabel(service) {
+        return SERVICE_LABEL[service] || service || "-";
+      }
+
+      function statusMeta(record) {
+        const status = String(record?.status || "").toLowerCase();
+        if (status === "running") return { label: "Running", className: "running" };
+        if (status === "starting" || status === "created") return { label: "Starting", className: "attention" };
+        return { label: status || "Unknown", className: "failed" };
+      }
+
+      function recordPorts(record) {
+        if (!record) return "-";
+        if (record.service === "hermes") {
+          return `Dashboard ${record.dashboard_port || record.port} / API ${record.port}`;
+        }
+        return `Gateway ${record.port}`;
+      }
+
+      function accessShort(record) {
+        const url = String(resolvedAccessUrl(record, state.inspect) || "");
+        return url.replace(/^https?:\/\//, "").replace(/\/$/, "") || "-";
+      }
+
+      function ensureTrailingSlash(url) {
+        return String(url || "").endsWith("/") ? String(url || "") : `${String(url || "")}/`;
+      }
+
+      function resolvedAccessUrl(record, inspect = null) {
+        const inspectUrl = inspect?.access?.base_url;
+        const recordUrl = record?.access_url;
+        const baseUrl = String(inspectUrl || recordUrl || "").trim();
+        if (!baseUrl || baseUrl === "-") return "";
+        if (record?.service === "hermes") {
+          return `${ensureTrailingSlash(baseUrl)}healthz`;
+        }
+        return baseUrl;
+      }
+
+      function fmtTime(date = new Date()) {
+        return new Intl.DateTimeFormat("en-US", {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: false,
+        }).format(date);
+      }
+
+      function setConsole(title, output) {
+        els.consoleTitle.textContent = title;
+        els.consoleOutput.textContent = output || "No output.";
+        els.consolePanel.classList.add("open");
+      }
+
+      function closeConsole() {
+        els.consolePanel.classList.remove("open");
+      }
+
+      function showToast(message, isError = false) {
+        clearTimeout(state.toastTimer);
+        els.toast.textContent = message;
+        els.toast.style.background = isError ? "rgba(185, 95, 77, 0.96)" : "rgba(23, 32, 41, 0.94)";
+        els.toast.classList.add("show");
+        state.toastTimer = setTimeout(() => els.toast.classList.remove("show"), 2600);
+      }
+
+      function syncScrollTopButton() {
+        els.scrollTop?.classList.toggle("show", window.scrollY > 520);
+      }
+
+      async function apiGet(path) {
+        const response = await fetch(path);
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        return response.json();
+      }
+
+      async function apiPost(payload) {
+        const response = await fetch("/api/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        return response.json();
+      }
+
+      function heroActions(record) {
+        if (!record) return [];
+        if (record.service === "hermes") {
+          return [
+            ["refresh_all", state.loadingAll ? "Refreshing…" : "Refresh State", true],
+            ["refresh_logs", state.loadingLogs ? "Refreshing…" : "Refresh Logs", false],
+            ["open_dashboard", "Open Health", false],
+            ["tui", "TUI Chat", false],
+            ["config", "Config", false],
+            ["clone_for_upgrade", "Clone First Upgrade", false],
+            ["rollback", "Rollback", false],
+          ];
+        }
+        return [
+          ["refresh_all", state.loadingAll ? "Refreshing…" : "Refresh State", true],
+          ["refresh_logs", state.loadingLogs ? "Refreshing…" : "Refresh Logs", false],
+          ["open_dashboard", "Open Dashboard", false],
+          ["copy_token", "Copy Token", false],
+          ["config", "Config", false],
+          ["clone_for_upgrade", "Clone First Upgrade", false],
+        ];
+      }
+
+      function renderHero() {
+        const managed = state.dashboard?.managed || [];
+        const record = state.record;
+
+        if (!record) {
+          els.hero.innerHTML = `
+            <div class="hero-top">
+              <div>
+                <div class="hero-kicker">Instance Workspace</div>
+                <h1>Instance Not Found</h1>
+                <div class="hero-summary">The instance in the current URL was not found, or it is no longer part of the managed fleet. You can return to the dashboard and choose another one.</div>
+              </div>
+              <div class="hero-nav">
+                <a class="action" href="${workspaceLangHref("zh-CN", requestedName)}">中文</a>
+                <a class="action" href="/?lang=en">Back To Dashboard</a>
+              </div>
+            </div>
+          `;
+          return;
+        }
+
+        const versions = state.versions || {};
+        const stableRemote = versions.stable_remote_versions || [];
+        const target = stableRemote.length ? stableRemote[stableRemote.length - 1] : null;
+        const status = statusMeta(record);
+        const summary = target && normalizeVersion(target) !== normalizeVersion(record.version)
+          ? `Current version is ${record.version}; the latest stable candidate is ${target}. The recommended path here is clone-first, then decide whether to switch.`
+          : `Current version is ${record.version}. No newer stable candidate is available right now, so this page focuses on runtime state, logs, and lifecycle history.`;
+
+        els.hero.innerHTML = `
+          <div class="hero-top">
+            <div>
+              <div class="hero-kicker">Instance Workspace</div>
+              <h1>${record.name}</h1>
+              <div class="hero-summary">${serviceLabel(record.service)} · ${record.status} · ${summary}</div>
+            </div>
+            <div class="hero-nav">
+              <a class="action" href="${workspaceLangHref("zh-CN", record.name)}">中文</a>
+              <a class="action ghost" href="/?lang=en">Back To Dashboard</a>
+              <div class="select-wrap">
+                <select id="instance-switcher">
+                  ${managed
+                    .map((item) => `<option value="${item.name}" ${item.name === record.name ? "selected" : ""}>${item.name}</option>`)
+                    .join("")}
+                </select>
+              </div>
+              <div class="status-pill ${status.className}"><span class="dot"></span>${status.label}</div>
+            </div>
+          </div>
+          <div class="hero-meta">
+            <div class="hero-card">
+              <label>Access</label>
+              <strong>${accessShort(record)}</strong>
+              <span>${record.service === "hermes" ? "This Hermes build exposes a health endpoint here; interactive chat stays in TUI." : (record.auth_hint || record.auth_mode || "-")}</span>
+            </div>
+            <div class="hero-card">
+              <label>Ports</label>
+              <strong>${recordPorts(record)}</strong>
+              <span>${record.service === "hermes" ? "Dashboard + API are separated here." : "Gateway is exposed through the OpenClaw dashboard."}</span>
+            </div>
+            <div class="hero-card">
+              <label>Provider</label>
+              <strong>${record.providers || "-"}</strong>
+              <span>${record.models || "-"}</span>
+            </div>
+            <div class="hero-card">
+              <label>Snapshot</label>
+              <strong>${record.snapshot || "-"}</strong>
+              <span>${state.dashboard?.generated_at || "-"}</span>
+            </div>
+          </div>
+        `;
+
+        document.getElementById("instance-switcher")?.addEventListener("change", (event) => {
+          const nextName = event.target.value;
+          window.location.href = `/workspace?name=${encodeURIComponent(nextName)}`;
+        });
+      }
+
+      function renderActions() {
+        const record = state.record;
+        if (!record) {
+          els.actions.innerHTML = "";
+          return;
+        }
+        els.actions.innerHTML = heroActions(record)
+          .map(([key, label, primary]) => {
+            const disabled = (key === "refresh_all" && state.loadingAll) || (key === "refresh_logs" && state.loadingLogs);
+            return `
+              <button class="action ${primary ? "primary" : ""}" type="button" data-action="${key}" ${disabled ? "disabled" : ""}>
+                ${label}
+              </button>
+            `;
+          })
+          .join("");
+
+        els.actions.querySelectorAll("[data-action]").forEach((button) => {
+          button.addEventListener("click", () => handleAction(button.getAttribute("data-action")));
+        });
+      }
+
+      function renderFacts() {
+        const record = state.record;
+        const inspect = state.inspect;
+        const container = inspect?.container || {};
+        const access = inspect?.access || {};
+        const agent = (record?.agents || [])[0];
+        const versions = state.versions || {};
+        const stableRemote = versions.stable_remote_versions || [];
+        const target = stableRemote.length ? stableRemote[stableRemote.length - 1] : null;
+
+        if (!record) {
+          els.factsGrid.innerHTML = "";
+          return;
+        }
+
+        const cards = [
+          { label: "Version", value: record.version, body: target && normalizeVersion(target) !== normalizeVersion(record.version) ? `Stable candidate: ${target}` : "No newer stable version right now." },
+          { label: "Status", value: record.status, body: container?.state?.status ? `Container state: ${container.state.status}` : "No container state returned." },
+          { label: "Primary Model", value: agent?.primary || record.models || "-", body: `Service: ${serviceLabel(record.service)}` },
+          { label: "Data Dir", value: record.datadir, body: resolvedAccessUrl(record, inspect) || "-", classes: "full-row path-card" },
+        ];
+
+        els.factsGrid.innerHTML = cards
+          .map(
+            ({ label, value, body, classes = "" }) => `
+              <div class="fact-card panel ${classes}">
+                <div class="label">${label}</div>
+                <strong>${value || "-"}</strong>
+                <span>${body || "-"}</span>
+              </div>
+            `
+          )
+          .join("");
+      }
+
+      function renderLogs() {
+        const output = String(state.logs?.output || "").trim();
+        const lines = output ? output.split("\n").slice(-180) : [];
+        els.logsSummary.textContent = state.loadingLogs
+          ? "Refreshing log output..."
+          : "Logs stay in the main workspace area and refresh in place.";
+        els.logsMeta.innerHTML = `
+          <div>${lines.length ? `${lines.length} lines shown` : "No log lines returned"}</div>
+          <div>${state.lastLogsRefreshed ? `Last updated ${state.lastLogsRefreshed}` : "Waiting for first refresh"}</div>
+        `;
+        els.logsFrame.innerHTML = lines.length
+          ? lines.map((line) => `<div class="log-line">${line}</div>`).join("")
+          : `<div class="empty-state">${state.loadingLogs || state.loadingAll ? "Loading logs…" : "No logs returned for this instance."}</div>`;
+      }
+
+      function renderHistory() {
+        const inspect = state.inspect;
+        const snapshots = inspect?.snapshots || {};
+        const history = (inspect?.instance?.history || []).slice().reverse();
+        const rows = [];
+
+        Object.entries(snapshots)
+          .filter(([, value]) => value)
+          .forEach(([key, value]) => {
+            rows.push(`
+              <div class="history-item">
+                <strong>${key}</strong>
+                <p>${value}</p>
+              </div>
+            `);
+          });
+
+        history.slice(0, 10).forEach((event) => {
+          const body = Object.entries(event || {})
+            .filter(([key]) => key !== "action")
+            .map(([key, value]) => `${key}=${value}`)
+            .join(", ");
+          rows.push(`
+            <div class="history-item">
+              <strong>${event.action || "-"}</strong>
+              <p>${body || "No extra metadata."}</p>
+            </div>
+          `);
+        });
+
+        els.historyList.innerHTML = rows.length ? rows.join("") : `<div class="empty-state">No snapshots or lifecycle history returned.</div>`;
+      }
+
+      function renderRuntimeGrid() {
+        const record = state.record;
+        const inspect = state.inspect;
+        const access = inspect?.access || {};
+        const container = inspect?.container || {};
+        const rows = [
+          [record?.service === "hermes" ? "Health URL" : "Access URL", resolvedAccessUrl(record, inspect) || "-"],
+          ["Container", record?.container_name || inspect?.instance?.container_name || "-"],
+          ["Image", container?.config?.image || record?.image || "-"],
+          ["Auth", record?.auth_hint || record?.auth_mode || "-"],
+          ["Ports", recordPorts(record)],
+          ["Network", container?.network_mode || "-"],
+        ];
+
+        els.runtimeGrid.innerHTML = rows
+          .map(
+            ([label, value]) => `
+              <div class="mini-item">
+                <div class="label">${label}</div>
+                <strong>${value || "-"}</strong>
+              </div>
+            `
+          )
+          .join("");
+      }
+
+      function renderUpgradeContext() {
+        const record = state.record;
+        const versions = state.versions || {};
+        const stableRemote = versions.stable_remote_versions || [];
+        const latest = stableRemote.length ? stableRemote[stableRemote.length - 1] : null;
+        const current = record?.version || "";
+        const historyVersions = versions.history || [];
+        const blocks = [];
+
+        if (latest && normalizeVersion(latest) !== normalizeVersion(current)) {
+          blocks.push(`
+            <div class="history-item">
+              <strong>Clone-first recommended</strong>
+              <p>This instance can still be safely cloned to ${latest} for validation first. The original instance stays intact, which is safer for upgrade risk management.</p>
+            </div>
+          `);
+        } else {
+          blocks.push(`
+            <div class="history-item">
+              <strong>Stable lane aligned</strong>
+              <p>This instance has no newer stable candidate right now, so there is no need to start a clone-first upgrade flow yet.</p>
+            </div>
+          `);
+        }
+
+        blocks.push(`
+          <div class="history-item">
+            <strong>Known versions</strong>
+            <p>${historyVersions.length ? historyVersions.join(", ") : "No version history returned."}</p>
+          </div>
+        `);
+
+        blocks.push(`
+          <div class="history-item">
+            <strong>Current focus</strong>
+            <p>Check the logs for anomalies first, then use snapshots and history to see whether an upgrade, rollback, or recreate happened recently.</p>
+          </div>
+        `);
+
+        els.upgradeContext.innerHTML = blocks.join("");
+      }
+
+      function syncRecord() {
+        const managed = state.dashboard?.managed || [];
+        state.record = managed.find((item) => item.name === state.name) || managed[0] || null;
+        if (state.record) {
+          state.name = state.record.name;
+          state.versions = state.dashboard?.upgrades?.[state.name] || null;
+          const nextUrl = `/workspace?name=${encodeURIComponent(state.name)}`;
+          if (`${window.location.pathname}${window.location.search}` !== nextUrl) {
+            window.history.replaceState({}, "", nextUrl);
+          }
+        }
+      }
+
+      function render() {
+        renderHero();
+        renderActions();
+        renderFacts();
+        renderLogs();
+        renderHistory();
+        renderRuntimeGrid();
+        renderUpgradeContext();
+      }
+
+      async function loadDashboard() {
+        state.dashboard = await apiGet("/api/dashboard");
+        syncRecord();
+      }
+
+      async function loadWorkspaceData({ showToastAfter = false } = {}) {
+        if (!state.record) {
+          render();
+          return;
+        }
+        state.loadingAll = true;
+        renderActions();
+        try {
+          const [inspect, logs] = await Promise.all([
+            apiGet(`/api/inspect?name=${encodeURIComponent(state.name)}`),
+            apiGet(`/api/logs?name=${encodeURIComponent(state.name)}&tail=180`),
+          ]);
+          state.inspect = inspect;
+          state.logs = logs;
+          state.lastLogsRefreshed = fmtTime();
+          render();
+          if (showToastAfter) showToast(`Workspace refreshed for ${state.name}.`);
+        } finally {
+          state.loadingAll = false;
+          renderActions();
+        }
+      }
+
+      async function refreshLogsOnly() {
+        if (!state.record) return;
+        state.loadingLogs = true;
+        renderActions();
+        renderLogs();
+        try {
+          state.logs = await apiGet(`/api/logs?name=${encodeURIComponent(state.name)}&tail=180`);
+          state.lastLogsRefreshed = fmtTime();
+          renderLogs();
+          showToast(`Logs refreshed for ${state.name}.`);
+        } finally {
+          state.loadingLogs = false;
+          renderActions();
+          renderLogs();
+        }
+      }
+
+      async function handleAction(action) {
+        const record = state.record;
+        if (!record) return;
+
+        try {
+          if (action === "refresh_all") {
+            await loadDashboard();
+            await loadWorkspaceData({ showToastAfter: true });
+            return;
+          }
+          if (action === "refresh_logs") {
+            await refreshLogsOnly();
+            return;
+          }
+          if (action === "open_dashboard") {
+            if (record.service === "openclaw") {
+              const token = await apiGet(`/api/token?name=${encodeURIComponent(state.name)}`);
+              window.open(token.url || record.access_url, "_blank", "noopener");
+            } else {
+              const url = resolvedAccessUrl(record, state.inspect);
+              if (!url) {
+                showToast(`No browser endpoint is available for ${state.name}.`, true);
+                return;
+              }
+              window.open(url, "_blank", "noopener");
+            }
+            return;
+          }
+          if (action === "copy_token") {
+            const token = await apiGet(`/api/token?name=${encodeURIComponent(state.name)}`);
+            await navigator.clipboard.writeText(token.token || "");
+            showToast(`Copied token for ${state.name}.`);
+            return;
+          }
+          if (action === "config") {
+            const result = await apiPost({ action: "config", instance: state.name });
+            setConsole("Terminal Command", result.output || result.message);
+            showToast(result.message || `Launched config for ${state.name}.`);
+            return;
+          }
+          if (action === "tui") {
+            const result = await apiPost({ action: "tui", instance: state.name });
+            setConsole("Terminal Command", result.output || result.message);
+            showToast(result.message || `Launched TUI for ${state.name}.`);
+            return;
+          }
+          if (action === "clone_for_upgrade") {
+            const latest = (state.versions?.stable_remote_versions || []).slice(-1)[0] || "";
+            const cloneName = window.prompt("Clone name", `${state.name}-upgrade-test`);
+            if (!cloneName) return;
+            let targetVersion = "";
+            if (latest && normalizeVersion(latest) !== normalizeVersion(record.version || "")) {
+              const shouldUpgrade = window.confirm(`Also upgrade the clone to ${latest}?`);
+              targetVersion = shouldUpgrade ? latest : "";
+            }
+            const result = await apiPost({
+              action: "clone_for_upgrade",
+              instance: state.name,
+              clone_name: cloneName,
+              target_version: targetVersion,
+            });
+            setConsole("Clone For Upgrade", result.output || result.message);
+            showToast(result.message || `Clone flow finished for ${cloneName}.`, !result.ok);
+            if (result.ok) {
+              window.location.href = `/workspace?name=${encodeURIComponent(cloneName)}`;
+            }
+            return;
+          }
+          if (action === "rollback") {
+            if (!window.confirm(`Rollback ${state.name} to the latest reversible snapshot?`)) return;
+            const result = await apiPost({ action: "rollback", instance: state.name });
+            setConsole("Rollback", result.output || result.message);
+            showToast(result.message || `Rollback finished for ${state.name}.`, !result.ok);
+            await loadDashboard();
+            await loadWorkspaceData();
+          }
+        } catch (error) {
+          setConsole("Action Error", String(error.message || error));
+          showToast(`Action failed for ${state.name}.`, true);
+        }
+      }
+
+      async function boot() {
+        els.consoleClose.addEventListener("click", closeConsole);
+        els.scrollTop?.addEventListener("click", () => {
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        });
+        window.addEventListener("scroll", syncScrollTopButton, { passive: true });
+        syncScrollTopButton();
+        try {
+          await loadDashboard();
+          render();
+          await loadWorkspaceData();
+          showToast("Workspace ready.");
+        } catch (error) {
+          render();
+          setConsole("Startup Error", String(error.message || error));
+          showToast("Failed to load workspace.", true);
+        }
+      }
+
+      boot();
+    </script>
+  </body>
+</html>

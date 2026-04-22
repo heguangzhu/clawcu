@@ -1,0 +1,1297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ClawCU 实例工作台</title>
+    <style>
+      :root {
+        --bg: #ede6d7;
+        --bg-deep: #d7cfbd;
+        --paper: #f8f4ea;
+        --ink: #1b232b;
+        --muted: #687581;
+        --line: rgba(27, 35, 43, 0.12);
+        --panel: #172029;
+        --panel-2: #223240;
+        --panel-3: #31495d;
+        --ok: #3f9468;
+        --warn: #cb8f26;
+        --danger: #b95f4d;
+        --accent: #2b728e;
+        --shadow: 0 24px 60px rgba(27, 35, 43, 0.1);
+        --mono: "SF Mono", "Menlo", "Monaco", "Consolas", monospace;
+        --body: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+        --display: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+        --radius-lg: 28px;
+        --radius-md: 18px;
+        --radius-sm: 12px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background:
+          radial-gradient(circle at 18% 12%, rgba(43, 114, 142, 0.12), transparent 18%),
+          radial-gradient(circle at 82% 8%, rgba(203, 143, 38, 0.12), transparent 16%),
+          linear-gradient(180deg, #f2ede3 0%, var(--bg) 48%, #e8dfcf 100%);
+        color: var(--ink);
+        font-family: var(--body);
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        opacity: 0.16;
+        background-image:
+          linear-gradient(rgba(23, 32, 41, 0.03) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(23, 32, 41, 0.03) 1px, transparent 1px);
+        background-size: 24px 24px;
+      }
+
+      button,
+      a,
+      select {
+        font: inherit;
+      }
+
+      .page {
+        position: relative;
+        z-index: 1;
+        width: min(1600px, calc(100vw - 32px));
+        margin: 16px auto;
+        display: grid;
+        gap: 16px;
+      }
+
+      .panel {
+        background: rgba(248, 244, 234, 0.9);
+        border: 1px solid rgba(27, 35, 43, 0.08);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(10px);
+      }
+
+      .workspace-toolbar {
+        padding: 20px 24px 24px;
+      }
+
+      .hero {
+        padding: 22px 24px 24px;
+        background:
+          radial-gradient(circle at top right, rgba(43, 114, 142, 0.14), transparent 26%),
+          linear-gradient(180deg, rgba(23, 32, 41, 0.98), rgba(34, 50, 64, 0.98));
+        color: #f8f4ea;
+      }
+
+      .hero-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+
+      .hero-nav {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .hero-kicker {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+        color: rgba(248, 244, 234, 0.62);
+      }
+
+      .hero h1 {
+        margin: 8px 0 0;
+        font-family: var(--display);
+        font-size: clamp(2.6rem, 1.6rem + 2.2vw, 4.6rem);
+        line-height: 0.94;
+        letter-spacing: -0.06em;
+      }
+
+      .hero-summary {
+        max-width: 86ch;
+        margin-top: 14px;
+        color: rgba(248, 244, 234, 0.8);
+        font-size: 16px;
+        line-height: 1.6;
+      }
+
+      .hero-meta,
+      .toolbar,
+      .facts-grid,
+      .action-grid,
+      .mini-grid,
+      .history-list {
+        display: grid;
+        gap: 12px;
+      }
+
+      .hero-meta {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        margin-top: 20px;
+      }
+
+      .hero-card {
+        min-width: 0;
+        padding: 14px 16px;
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      .hero-card label,
+      .section-kicker,
+      .label {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+      }
+
+      .hero-card label {
+        color: rgba(248, 244, 234, 0.58);
+      }
+
+      .hero-card strong {
+        display: block;
+        font-size: 22px;
+        letter-spacing: -0.03em;
+      }
+
+      .hero-card span {
+        display: block;
+        margin-top: 8px;
+        color: rgba(248, 244, 234, 0.72);
+        line-height: 1.45;
+      }
+
+      .action,
+      .select-wrap select {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        min-height: 42px;
+        padding: 10px 14px;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.64);
+        color: var(--ink);
+        text-decoration: none;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 1.35;
+        text-align: center;
+        white-space: normal;
+      }
+
+      .action.primary {
+        background: var(--panel);
+        color: #f8f4ea;
+        border-color: rgba(255, 255, 255, 0.08);
+      }
+
+      .action.ghost {
+        background: rgba(255, 255, 255, 0.08);
+        color: #f8f4ea;
+        border-color: rgba(255, 255, 255, 0.08);
+      }
+
+      .action:disabled {
+        cursor: wait;
+        opacity: 0.6;
+      }
+
+      .select-wrap {
+        position: relative;
+      }
+
+      .select-wrap select {
+        min-width: 230px;
+        appearance: none;
+        justify-content: flex-start;
+        padding-right: 38px;
+      }
+
+      .select-wrap::after {
+        content: "▾";
+        position: absolute;
+        right: 14px;
+        top: 50%;
+        transform: translateY(-50%);
+        pointer-events: none;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .toolbar {
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 14px;
+      }
+
+      .toolbar-copy {
+        padding: 0 0 14px;
+      }
+
+      .toolbar-copy h2 {
+        margin: 0;
+        font-size: 24px;
+        letter-spacing: -0.03em;
+      }
+
+      .toolbar-copy p {
+        margin: 8px 0 0;
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      .action-grid {
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        padding: 0;
+      }
+
+      .facts-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .fact-card,
+      .workspace-section,
+      .side-card {
+        min-width: 0;
+        padding: 18px;
+        border-radius: 22px;
+        background: rgba(255, 255, 255, 0.58);
+        border: 1px solid rgba(27, 35, 43, 0.08);
+      }
+
+      .fact-card strong {
+        display: block;
+        font-size: 24px;
+        letter-spacing: -0.04em;
+        min-width: 0;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+
+      .fact-card span {
+        display: block;
+        margin-top: 8px;
+        color: var(--muted);
+        line-height: 1.5;
+        overflow-wrap: anywhere;
+      }
+
+      .fact-card.full-row {
+        grid-column: 1 / -1;
+      }
+
+      .fact-card.path-card strong {
+        font-family: var(--mono);
+        font-size: 17px;
+        line-height: 1.45;
+        letter-spacing: -0.02em;
+      }
+
+      .content-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.9fr);
+        gap: 16px;
+      }
+
+      .main-stack,
+      .side-stack {
+        display: grid;
+        gap: 16px;
+      }
+
+      .section-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+
+      .section-head h3 {
+        margin: 0;
+        font-size: 20px;
+        letter-spacing: -0.03em;
+      }
+
+      .section-head p {
+        margin: 8px 0 0;
+        color: var(--muted);
+        line-height: 1.5;
+      }
+
+      .section-meta {
+        text-align: right;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      .log-frame {
+        min-height: 460px;
+        max-height: 64vh;
+        overflow: auto;
+        padding: 14px;
+        border-radius: 18px;
+        background:
+          linear-gradient(180deg, rgba(23, 32, 41, 0.98), rgba(31, 45, 57, 0.98));
+        color: #f8f4ea;
+        font-family: var(--mono);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      .log-line {
+        padding: 8px 10px;
+        border-radius: 10px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      .log-line:nth-child(odd) {
+        background: rgba(255, 255, 255, 0.04);
+      }
+
+      .mini-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .mini-item {
+        padding: 14px;
+        border-radius: 16px;
+        background: rgba(23, 32, 41, 0.04);
+        border: 1px solid rgba(27, 35, 43, 0.06);
+      }
+
+      .mini-item strong {
+        display: block;
+        font-size: 16px;
+      }
+
+      .mini-item span {
+        display: block;
+        margin-top: 8px;
+        color: var(--muted);
+        line-height: 1.5;
+        overflow-wrap: anywhere;
+      }
+
+      .history-list {
+        grid-template-columns: 1fr;
+      }
+
+      .history-item {
+        padding: 14px;
+        border-radius: 16px;
+        background: rgba(23, 32, 41, 0.04);
+        border: 1px solid rgba(27, 35, 43, 0.06);
+      }
+
+      .history-item strong {
+        display: block;
+        font-size: 16px;
+      }
+
+      .history-item p {
+        margin: 8px 0 0;
+        color: var(--muted);
+        line-height: 1.6;
+        overflow-wrap: anywhere;
+      }
+
+      .pill-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 10px;
+        border-radius: 999px;
+        background: rgba(23, 32, 41, 0.06);
+        border: 1px solid rgba(27, 35, 43, 0.08);
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .status-pill.running {
+        color: var(--ok);
+        background: rgba(63, 148, 104, 0.12);
+      }
+
+      .status-pill.attention {
+        color: var(--warn);
+        background: rgba(203, 143, 38, 0.14);
+      }
+
+      .status-pill.failed {
+        color: var(--danger);
+        background: rgba(185, 95, 77, 0.14);
+      }
+
+      .status-pill .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+
+      .empty-state {
+        padding: 18px;
+        border-radius: 18px;
+        border: 1px dashed rgba(27, 35, 43, 0.14);
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.4);
+      }
+
+      .utility-layer {
+        position: fixed;
+        right: 20px;
+        bottom: 20px;
+        z-index: 30;
+        display: grid;
+        gap: 12px;
+        pointer-events: none;
+      }
+
+      .toast,
+      .console,
+      .scroll-top {
+        pointer-events: auto;
+      }
+
+      .scroll-top {
+        justify-self: end;
+        width: 52px;
+        height: 52px;
+        border: 0;
+        border-radius: 16px;
+        background: rgba(23, 32, 41, 0.94);
+        color: #f8f4ea;
+        box-shadow: 0 14px 30px rgba(27, 35, 43, 0.22);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 24px;
+        cursor: pointer;
+        opacity: 0;
+        transform: translateY(8px) scale(0.96);
+        transition: opacity 180ms ease, transform 180ms ease;
+        pointer-events: none;
+      }
+
+      .scroll-top.show {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+        pointer-events: auto;
+      }
+
+      .toast {
+        justify-self: end;
+        max-width: min(440px, calc(100vw - 40px));
+        padding: 12px 14px;
+        border-radius: 14px;
+        background: rgba(23, 32, 41, 0.94);
+        color: #f8f4ea;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: 0 14px 30px rgba(27, 35, 43, 0.22);
+        opacity: 0;
+        transform: translateY(8px);
+        transition: opacity 180ms ease, transform 180ms ease;
+      }
+
+      .toast.show {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .console {
+        width: min(720px, calc(100vw - 40px));
+        max-height: 52vh;
+        overflow: auto;
+        padding: 16px;
+        border-radius: 20px;
+        background: rgba(23, 32, 41, 0.96);
+        color: #f8f4ea;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: 0 24px 50px rgba(27, 35, 43, 0.26);
+        display: none;
+      }
+
+      .console.open {
+        display: block;
+      }
+
+      .console-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .console pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 12px;
+        line-height: 1.55;
+        font-family: var(--mono);
+      }
+
+      .drawer-close {
+        border: 0;
+        background: transparent;
+        color: inherit;
+        cursor: pointer;
+        font-size: 18px;
+      }
+
+      @media (max-width: 1320px) {
+        .action-grid {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+
+        .hero-meta,
+        .facts-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .content-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 860px) {
+        .page {
+          width: min(100vw - 20px, 1600px);
+          margin: 10px auto;
+        }
+
+        .toolbar,
+        .hero-top {
+          grid-template-columns: 1fr;
+        }
+
+        .action-grid,
+        .hero-meta,
+        .facts-grid,
+        .mini-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .select-wrap select {
+          min-width: 0;
+          width: 100%;
+        }
+
+        .toolbar-copy,
+        .action-grid,
+        .workspace-section,
+        .side-card,
+        .fact-card {
+          padding-left: 18px;
+          padding-right: 18px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <section class="hero panel" id="workspace-hero"></section>
+
+      <section class="panel workspace-toolbar">
+        <div class="toolbar-copy">
+          <div class="section-kicker">实例工作台</div>
+        </div>
+        <div class="action-grid" id="workspace-actions"></div>
+      </section>
+
+      <section class="facts-grid" id="facts-grid"></section>
+
+      <section class="content-grid">
+        <div class="main-stack">
+          <section class="workspace-section">
+            <div class="section-head">
+              <div>
+                <div class="section-kicker">实时输出</div>
+                <h3>最近日志</h3>
+                <p id="logs-summary">正在加载最近日志…</p>
+              </div>
+              <div class="section-meta" id="logs-meta"></div>
+            </div>
+            <div class="log-frame" id="logs-frame"></div>
+          </section>
+
+          <section class="workspace-section">
+            <div class="section-head">
+              <div>
+                <div class="section-kicker">生命周期</div>
+                <h3>快照与历史</h3>
+                <p>保留升级、回滚和重建痕迹，方便你快速判断现在这个实例是不是“稳定地跑着”。</p>
+              </div>
+            </div>
+            <div class="history-list" id="history-list"></div>
+          </section>
+        </div>
+
+        <div class="side-stack">
+          <section class="side-card">
+            <div class="section-head">
+              <div>
+                <div class="section-kicker">运行信息</div>
+                <h3>访问与运行态</h3>
+              </div>
+            </div>
+            <div class="mini-grid" id="runtime-grid"></div>
+          </section>
+
+          <section class="side-card">
+            <div class="section-head">
+              <div>
+                <div class="section-kicker">升级上下文</div>
+                <h3>安全路径</h3>
+              </div>
+            </div>
+            <div class="history-list" id="upgrade-context"></div>
+          </section>
+        </div>
+      </section>
+    </div>
+
+    <div class="utility-layer">
+      <button class="scroll-top" id="scroll-top-button" type="button" aria-label="Back to top" title="Back to top">↑</button>
+      <section class="console" id="console-panel">
+        <div class="console-head">
+          <strong id="console-title">命令输出</strong>
+          <button class="drawer-close" type="button" id="console-close">×</button>
+        </div>
+        <pre id="console-output"></pre>
+      </section>
+
+      <div class="toast" id="toast"></div>
+    </div>
+
+    <script>
+      const params = new URLSearchParams(window.location.search);
+      const requestedName = params.get("name") || "";
+      function workspaceLangHref(lang, name = requestedName) {
+        const query = new URLSearchParams();
+        if (name) query.set("name", name);
+        query.set("lang", lang);
+        return `/workspace?${query.toString()}`;
+      }
+
+      const state = {
+        dashboard: null,
+        record: null,
+        inspect: null,
+        logs: null,
+        versions: null,
+        name: requestedName,
+        loadingAll: false,
+        loadingLogs: false,
+        lastLogsRefreshed: "",
+        toastTimer: null,
+      };
+
+      const els = {
+        hero: document.getElementById("workspace-hero"),
+        actions: document.getElementById("workspace-actions"),
+        factsGrid: document.getElementById("facts-grid"),
+        logsSummary: document.getElementById("logs-summary"),
+        logsMeta: document.getElementById("logs-meta"),
+        logsFrame: document.getElementById("logs-frame"),
+        historyList: document.getElementById("history-list"),
+        runtimeGrid: document.getElementById("runtime-grid"),
+        upgradeContext: document.getElementById("upgrade-context"),
+        toast: document.getElementById("toast"),
+        consolePanel: document.getElementById("console-panel"),
+        consoleTitle: document.getElementById("console-title"),
+        consoleOutput: document.getElementById("console-output"),
+        consoleClose: document.getElementById("console-close"),
+        scrollTop: document.getElementById("scroll-top-button"),
+      };
+
+      const SERVICE_LABEL = {
+        openclaw: "OpenClaw",
+        hermes: "Hermes",
+      };
+
+      function normalizeVersion(value) {
+        return String(value || "").replace(/^v/, "");
+      }
+
+      function serviceLabel(service) {
+        return SERVICE_LABEL[service] || service || "-";
+      }
+
+      function statusMeta(record) {
+        const status = String(record?.status || "").toLowerCase();
+        if (status === "running") return { label: "Running", className: "running" };
+        if (status === "starting" || status === "created") return { label: "Starting", className: "attention" };
+        return { label: status || "Unknown", className: "failed" };
+      }
+
+      function recordPorts(record) {
+        if (!record) return "-";
+        if (record.service === "hermes") {
+          return `Dashboard ${record.dashboard_port || record.port} / API ${record.port}`;
+        }
+        return `Gateway ${record.port}`;
+      }
+
+      function accessShort(record) {
+        const url = String(resolvedAccessUrl(record, state.inspect) || "");
+        return url.replace(/^https?:\/\//, "").replace(/\/$/, "") || "-";
+      }
+
+      function ensureTrailingSlash(url) {
+        return String(url || "").endsWith("/") ? String(url || "") : `${String(url || "")}/`;
+      }
+
+      function resolvedAccessUrl(record, inspect = null) {
+        const inspectUrl = inspect?.access?.base_url;
+        const recordUrl = record?.access_url;
+        const baseUrl = String(inspectUrl || recordUrl || "").trim();
+        if (!baseUrl || baseUrl === "-") return "";
+        if (record?.service === "hermes") {
+          return `${ensureTrailingSlash(baseUrl)}healthz`;
+        }
+        return baseUrl;
+      }
+
+      function fmtTime(date = new Date()) {
+        return new Intl.DateTimeFormat("zh-CN", {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: false,
+        }).format(date);
+      }
+
+      function setConsole(title, output) {
+        els.consoleTitle.textContent = title;
+        els.consoleOutput.textContent = output || "暂无输出。";
+        els.consolePanel.classList.add("open");
+      }
+
+      function closeConsole() {
+        els.consolePanel.classList.remove("open");
+      }
+
+      function showToast(message, isError = false) {
+        clearTimeout(state.toastTimer);
+        els.toast.textContent = message;
+        els.toast.style.background = isError ? "rgba(185, 95, 77, 0.96)" : "rgba(23, 32, 41, 0.94)";
+        els.toast.classList.add("show");
+        state.toastTimer = setTimeout(() => els.toast.classList.remove("show"), 2600);
+      }
+
+      function syncScrollTopButton() {
+        els.scrollTop?.classList.toggle("show", window.scrollY > 520);
+      }
+
+      async function apiGet(path) {
+        const response = await fetch(path);
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        return response.json();
+      }
+
+      async function apiPost(payload) {
+        const response = await fetch("/api/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        return response.json();
+      }
+
+      function heroActions(record) {
+        if (!record) return [];
+        if (record.service === "hermes") {
+          return [
+            ["refresh_all", state.loadingAll ? "刷新中…" : "刷新状态", true],
+            ["refresh_logs", state.loadingLogs ? "刷新中…" : "刷新日志", false],
+            ["open_dashboard", "打开健康页", false],
+            ["tui", "TUI Chat", false],
+            ["config", "配置", false],
+            ["clone_for_upgrade", "克隆后升级", false],
+            ["rollback", "回滚", false],
+          ];
+        }
+        return [
+          ["refresh_all", state.loadingAll ? "刷新中…" : "刷新状态", true],
+          ["refresh_logs", state.loadingLogs ? "刷新中…" : "刷新日志", false],
+          ["open_dashboard", "打开面板", false],
+          ["copy_token", "复制 Token", false],
+          ["config", "配置", false],
+          ["clone_for_upgrade", "克隆后升级", false],
+        ];
+      }
+
+      function renderHero() {
+        const managed = state.dashboard?.managed || [];
+        const record = state.record;
+
+        if (!record) {
+          els.hero.innerHTML = `
+            <div class="hero-top">
+              <div>
+                <div class="hero-kicker">实例工作台</div>
+                <h1>实例不存在</h1>
+                <div class="hero-summary">当前 URL 对应的实例不存在，或者已经不在 managed fleet 里了。你可以返回总览页重新选择。</div>
+              </div>
+              <div class="hero-nav">
+                <a class="action" href="${workspaceLangHref("en", requestedName)}">EN</a>
+                <a class="action" href="/">返回总览</a>
+              </div>
+            </div>
+          `;
+          return;
+        }
+
+        const versions = state.versions || {};
+        const stableRemote = versions.stable_remote_versions || [];
+        const target = stableRemote.length ? stableRemote[stableRemote.length - 1] : null;
+        const status = statusMeta(record);
+        const summary = target && normalizeVersion(target) !== normalizeVersion(record.version)
+          ? `当前版本 ${record.version}，最新稳定候选是 ${target}。这里优先推荐 clone-first，再决定是否切换。`
+          : `当前版本 ${record.version}，暂无更新的稳定候选。这个页面现在重点放在运行状态、日志和历史轨迹。`;
+
+        els.hero.innerHTML = `
+          <div class="hero-top">
+            <div>
+              <div class="hero-kicker">实例工作台</div>
+              <h1>${record.name}</h1>
+              <div class="hero-summary">${serviceLabel(record.service)} · ${record.status} · ${summary}</div>
+            </div>
+            <div class="hero-nav">
+              <a class="action" href="${workspaceLangHref("en", record.name)}">EN</a>
+              <a class="action ghost" href="/">返回总览</a>
+              <div class="select-wrap">
+                <select id="instance-switcher">
+                  ${managed
+                    .map((item) => `<option value="${item.name}" ${item.name === record.name ? "selected" : ""}>${item.name}</option>`)
+                    .join("")}
+                </select>
+              </div>
+              <div class="status-pill ${status.className}"><span class="dot"></span>${status.label}</div>
+            </div>
+          </div>
+          <div class="hero-meta">
+            <div class="hero-card">
+              <label>访问入口</label>
+              <strong>${accessShort(record)}</strong>
+              <span>${record.service === "hermes" ? "这个 Hermes 版本在这里暴露健康检查入口，交互式聊天仍然走 TUI。" : (record.auth_hint || record.auth_mode || "-")}</span>
+            </div>
+            <div class="hero-card">
+              <label>端口</label>
+              <strong>${recordPorts(record)}</strong>
+              <span>${record.service === "hermes" ? "这里的 Dashboard 与 API 端口是分开的。" : "Gateway 通过 OpenClaw 面板暴露。"}</span>
+            </div>
+            <div class="hero-card">
+              <label>模型来源</label>
+              <strong>${record.providers || "-"}</strong>
+              <span>${record.models || "-"}</span>
+            </div>
+            <div class="hero-card">
+              <label>快照</label>
+              <strong>${record.snapshot || "-"}</strong>
+              <span>${state.dashboard?.generated_at || "-"}</span>
+            </div>
+          </div>
+        `;
+
+        document.getElementById("instance-switcher")?.addEventListener("change", (event) => {
+          const nextName = event.target.value;
+          window.location.href = `/workspace?name=${encodeURIComponent(nextName)}`;
+        });
+      }
+
+      function renderActions() {
+        const record = state.record;
+        if (!record) {
+          els.actions.innerHTML = "";
+          return;
+        }
+        els.actions.innerHTML = heroActions(record)
+          .map(([key, label, primary]) => {
+            const disabled = (key === "refresh_all" && state.loadingAll) || (key === "refresh_logs" && state.loadingLogs);
+            return `
+              <button class="action ${primary ? "primary" : ""}" type="button" data-action="${key}" ${disabled ? "disabled" : ""}>
+                ${label}
+              </button>
+            `;
+          })
+          .join("");
+
+        els.actions.querySelectorAll("[data-action]").forEach((button) => {
+          button.addEventListener("click", () => handleAction(button.getAttribute("data-action")));
+        });
+      }
+
+      function renderFacts() {
+        const record = state.record;
+        const inspect = state.inspect;
+        const container = inspect?.container || {};
+        const access = inspect?.access || {};
+        const agent = (record?.agents || [])[0];
+        const versions = state.versions || {};
+        const stableRemote = versions.stable_remote_versions || [];
+        const target = stableRemote.length ? stableRemote[stableRemote.length - 1] : null;
+
+        if (!record) {
+          els.factsGrid.innerHTML = "";
+          return;
+        }
+
+        const cards = [
+          { label: "版本", value: record.version, body: target && normalizeVersion(target) !== normalizeVersion(record.version) ? `稳定候选版本：${target}` : "当前没有更新的稳定候选。" },
+          { label: "状态", value: record.status, body: container?.state?.status ? `容器状态：${container.state.status}` : "没有返回容器状态。" },
+          { label: "主模型", value: agent?.primary || record.models || "-", body: `服务：${serviceLabel(record.service)}` },
+          { label: "数据目录", value: record.datadir, body: resolvedAccessUrl(record, inspect) || "-", classes: "full-row path-card" },
+        ];
+
+        els.factsGrid.innerHTML = cards
+          .map(
+            ({ label, value, body, classes = "" }) => `
+              <div class="fact-card panel ${classes}">
+                <div class="label">${label}</div>
+                <strong>${value || "-"}</strong>
+                <span>${body || "-"}</span>
+              </div>
+            `
+          )
+          .join("");
+      }
+
+      function renderLogs() {
+        const output = String(state.logs?.output || "").trim();
+        const lines = output ? output.split("\n").slice(-180) : [];
+        els.logsSummary.textContent = state.loadingLogs
+          ? "正在刷新日志输出…"
+          : "日志区放在页面主区域，刷新后会直接更新这里。";
+        els.logsMeta.innerHTML = `
+          <div>${lines.length ? `已显示 ${lines.length} 行` : "没有返回日志行"}</div>
+          <div>${state.lastLogsRefreshed ? `最近更新于 ${state.lastLogsRefreshed}` : "等待首次刷新"}</div>
+        `;
+        els.logsFrame.innerHTML = lines.length
+          ? lines.map((line) => `<div class="log-line">${line}</div>`).join("")
+          : `<div class="empty-state">${state.loadingLogs || state.loadingAll ? "正在加载日志…" : "这个实例没有返回日志。"}</div>`;
+      }
+
+      function renderHistory() {
+        const inspect = state.inspect;
+        const snapshots = inspect?.snapshots || {};
+        const history = (inspect?.instance?.history || []).slice().reverse();
+        const rows = [];
+
+        Object.entries(snapshots)
+          .filter(([, value]) => value)
+          .forEach(([key, value]) => {
+            rows.push(`
+              <div class="history-item">
+                <strong>${key}</strong>
+                <p>${value}</p>
+              </div>
+            `);
+          });
+
+        history.slice(0, 10).forEach((event) => {
+          const body = Object.entries(event || {})
+            .filter(([key]) => key !== "action")
+            .map(([key, value]) => `${key}=${value}`)
+            .join(", ");
+          rows.push(`
+            <div class="history-item">
+              <strong>${event.action || "-"}</strong>
+              <p>${body || "No extra metadata."}</p>
+            </div>
+          `);
+        });
+
+        els.historyList.innerHTML = rows.length ? rows.join("") : `<div class="empty-state">没有返回快照或生命周期历史。</div>`;
+      }
+
+      function renderRuntimeGrid() {
+        const record = state.record;
+        const inspect = state.inspect;
+        const access = inspect?.access || {};
+        const container = inspect?.container || {};
+        const rows = [
+          [record?.service === "hermes" ? "健康检查地址" : "访问地址", resolvedAccessUrl(record, inspect) || "-"],
+          ["容器", record?.container_name || inspect?.instance?.container_name || "-"],
+          ["镜像", container?.config?.image || record?.image || "-"],
+          ["认证", record?.auth_hint || record?.auth_mode || "-"],
+          ["端口", recordPorts(record)],
+          ["网络", container?.network_mode || "-"],
+        ];
+
+        els.runtimeGrid.innerHTML = rows
+          .map(
+            ([label, value]) => `
+              <div class="mini-item">
+                <div class="label">${label}</div>
+                <strong>${value || "-"}</strong>
+              </div>
+            `
+          )
+          .join("");
+      }
+
+      function renderUpgradeContext() {
+        const record = state.record;
+        const versions = state.versions || {};
+        const stableRemote = versions.stable_remote_versions || [];
+        const latest = stableRemote.length ? stableRemote[stableRemote.length - 1] : null;
+        const current = record?.version || "";
+        const historyVersions = versions.history || [];
+        const blocks = [];
+
+        if (latest && normalizeVersion(latest) !== normalizeVersion(current)) {
+          blocks.push(`
+            <div class="history-item">
+              <strong>推荐先克隆</strong>
+              <p>当前实例还可以安全地先 clone 到 ${latest} 再验证。这样原实例会继续保留，适合处理升级风险。</p>
+            </div>
+          `);
+        } else {
+          blocks.push(`
+            <div class="history-item">
+              <strong>当前已对齐稳定版本线</strong>
+              <p>当前实例已经没有更新的稳定候选，暂时不需要启动 clone-first 升级流程。</p>
+            </div>
+          `);
+        }
+
+        blocks.push(`
+          <div class="history-item">
+            <strong>已知版本</strong>
+            <p>${historyVersions.length ? historyVersions.join(", ") : "没有返回版本历史。"}</p>
+          </div>
+        `);
+
+        blocks.push(`
+          <div class="history-item">
+            <strong>当前关注点</strong>
+            <p>先看日志有没有异常，再看 snapshots/history 判断最近是不是做过升级、回滚或 recreate。</p>
+          </div>
+        `);
+
+        els.upgradeContext.innerHTML = blocks.join("");
+      }
+
+      function syncRecord() {
+        const managed = state.dashboard?.managed || [];
+        state.record = managed.find((item) => item.name === state.name) || managed[0] || null;
+        if (state.record) {
+          state.name = state.record.name;
+          state.versions = state.dashboard?.upgrades?.[state.name] || null;
+          const nextUrl = `/workspace?name=${encodeURIComponent(state.name)}`;
+          if (`${window.location.pathname}${window.location.search}` !== nextUrl) {
+            window.history.replaceState({}, "", nextUrl);
+          }
+        }
+      }
+
+      function render() {
+        renderHero();
+        renderActions();
+        renderFacts();
+        renderLogs();
+        renderHistory();
+        renderRuntimeGrid();
+        renderUpgradeContext();
+      }
+
+      async function loadDashboard() {
+        state.dashboard = await apiGet("/api/dashboard");
+        syncRecord();
+      }
+
+      async function loadWorkspaceData({ showToastAfter = false } = {}) {
+        if (!state.record) {
+          render();
+          return;
+        }
+        state.loadingAll = true;
+        renderActions();
+        try {
+          const [inspect, logs] = await Promise.all([
+            apiGet(`/api/inspect?name=${encodeURIComponent(state.name)}`),
+            apiGet(`/api/logs?name=${encodeURIComponent(state.name)}&tail=180`),
+          ]);
+          state.inspect = inspect;
+          state.logs = logs;
+          state.lastLogsRefreshed = fmtTime();
+          render();
+          if (showToastAfter) showToast(`${state.name} 的工作台已刷新。`);
+        } finally {
+          state.loadingAll = false;
+          renderActions();
+        }
+      }
+
+      async function refreshLogsOnly() {
+        if (!state.record) return;
+        state.loadingLogs = true;
+        renderActions();
+        renderLogs();
+        try {
+          state.logs = await apiGet(`/api/logs?name=${encodeURIComponent(state.name)}&tail=180`);
+          state.lastLogsRefreshed = fmtTime();
+          renderLogs();
+          showToast(`${state.name} 的日志已刷新。`);
+        } finally {
+          state.loadingLogs = false;
+          renderActions();
+          renderLogs();
+        }
+      }
+
+      async function handleAction(action) {
+        const record = state.record;
+        if (!record) return;
+
+        try {
+          if (action === "refresh_all") {
+            await loadDashboard();
+            await loadWorkspaceData({ showToastAfter: true });
+            return;
+          }
+          if (action === "refresh_logs") {
+            await refreshLogsOnly();
+            return;
+          }
+          if (action === "open_dashboard") {
+            if (record.service === "openclaw") {
+              const token = await apiGet(`/api/token?name=${encodeURIComponent(state.name)}`);
+              window.open(token.url || record.access_url, "_blank", "noopener");
+            } else {
+              const url = resolvedAccessUrl(record, state.inspect);
+              if (!url) {
+                showToast(`${state.name} 没有可用的浏览器入口。`, true);
+                return;
+              }
+              window.open(url, "_blank", "noopener");
+            }
+            return;
+          }
+          if (action === "copy_token") {
+            const token = await apiGet(`/api/token?name=${encodeURIComponent(state.name)}`);
+            await navigator.clipboard.writeText(token.token || "");
+            showToast(`已复制 ${state.name} 的 Token。`);
+            return;
+          }
+          if (action === "config") {
+            const result = await apiPost({ action: "config", instance: state.name });
+            setConsole("终端命令", result.output || result.message);
+            showToast(result.message || `已为 ${state.name} 打开配置。`);
+            return;
+          }
+          if (action === "tui") {
+            const result = await apiPost({ action: "tui", instance: state.name });
+            setConsole("终端命令", result.output || result.message);
+            showToast(result.message || `已为 ${state.name} 打开 TUI。`);
+            return;
+          }
+          if (action === "clone_for_upgrade") {
+            const latest = (state.versions?.stable_remote_versions || []).slice(-1)[0] || "";
+            const cloneName = window.prompt("克隆实例名", `${state.name}-upgrade-test`);
+            if (!cloneName) return;
+            let targetVersion = "";
+            if (latest && normalizeVersion(latest) !== normalizeVersion(record.version || "")) {
+              const shouldUpgrade = window.confirm(`是否同时把这个克隆实例升级到 ${latest}？`);
+              targetVersion = shouldUpgrade ? latest : "";
+            }
+            const result = await apiPost({
+              action: "clone_for_upgrade",
+              instance: state.name,
+              clone_name: cloneName,
+              target_version: targetVersion,
+            });
+            setConsole("克隆后升级", result.output || result.message);
+            showToast(result.message || `${cloneName} 的克隆流程已完成。`, !result.ok);
+            if (result.ok) {
+              window.location.href = `/workspace?name=${encodeURIComponent(cloneName)}`;
+            }
+            return;
+          }
+          if (action === "rollback") {
+            if (!window.confirm(`要将 ${state.name} 回滚到最近一个可恢复快照吗？`)) return;
+            const result = await apiPost({ action: "rollback", instance: state.name });
+            setConsole("回滚", result.output || result.message);
+            showToast(result.message || `${state.name} 的回滚已完成。`, !result.ok);
+            await loadDashboard();
+            await loadWorkspaceData();
+          }
+        } catch (error) {
+          setConsole("操作错误", String(error.message || error));
+          showToast(`${state.name} 的操作失败。`, true);
+        }
+      }
+
+      async function boot() {
+        els.consoleClose.addEventListener("click", closeConsole);
+        els.scrollTop?.addEventListener("click", () => {
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        });
+        window.addEventListener("scroll", syncScrollTopButton, { passive: true });
+        syncScrollTopButton();
+        try {
+          await loadDashboard();
+          render();
+          await loadWorkspaceData();
+          showToast("Workspace ready.");
+        } catch (error) {
+          render();
+          setConsole("Startup Error", String(error.message || error));
+          showToast("Failed to load workspace.", true);
+        }
+      }
+
+      boot();
+    </script>
+  </body>
+</html>

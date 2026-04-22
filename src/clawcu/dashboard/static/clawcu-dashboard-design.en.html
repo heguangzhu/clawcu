@@ -1,0 +1,2208 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ClawCU Dashboard Design</title>
+    <style>
+      :root {
+        --bg: #efe9dd;
+        --bg-deep: #d9d2c2;
+        --panel: #172029;
+        --panel-2: #223240;
+        --panel-3: #2c4253;
+        --paper: #f8f4ea;
+        --ink: #1b232b;
+        --muted: #687581;
+        --line: rgba(27, 35, 43, 0.12);
+        --line-strong: rgba(255, 255, 255, 0.14);
+        --ok: #3f9468;
+        --warn: #cb8f26;
+        --danger: #b95f4d;
+        --accent: #2b728e;
+        --teal-soft: rgba(63, 148, 104, 0.12);
+        --amber-soft: rgba(203, 143, 38, 0.14);
+        --red-soft: rgba(185, 95, 77, 0.14);
+        --shadow: 0 20px 50px rgba(27, 35, 43, 0.08);
+        --radius-lg: 28px;
+        --radius-md: 18px;
+        --radius-sm: 12px;
+        --mono: "SF Mono", "Menlo", "Monaco", "Consolas", monospace;
+        --body: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+        --display: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background:
+          radial-gradient(circle at 15% 20%, rgba(43, 114, 142, 0.14), transparent 22%),
+          radial-gradient(circle at 85% 10%, rgba(203, 143, 38, 0.12), transparent 18%),
+          linear-gradient(180deg, #f2ede3 0%, var(--bg) 46%, #ebe3d4 100%);
+        color: var(--ink);
+        font-family: var(--body);
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        opacity: 0.18;
+        background-image:
+          linear-gradient(rgba(23, 32, 41, 0.03) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(23, 32, 41, 0.03) 1px, transparent 1px);
+        background-size: 24px 24px;
+      }
+
+      button,
+      a {
+        font: inherit;
+      }
+
+      .shell {
+        display: grid;
+        grid-template-columns: clamp(240px, 18vw, 280px) minmax(0, 1fr);
+        gap: 20px;
+        padding: 20px;
+        min-height: 100vh;
+        width: 100%;
+      }
+
+      .panel {
+        background: rgba(248, 244, 234, 0.88);
+        border: 1px solid rgba(27, 35, 43, 0.08);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(10px);
+      }
+
+      .sidebar {
+        background: linear-gradient(180deg, rgba(248, 244, 234, 0.9), rgba(240, 233, 219, 0.82));
+        padding: 24px 22px;
+        display: flex;
+        flex-direction: column;
+        gap: 18px;
+        align-self: start;
+        position: sticky;
+        top: 20px;
+      }
+
+      .brand {
+        padding-bottom: 14px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .brand-kicker {
+        font-size: 11px;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 10px;
+      }
+
+      .brand h1 {
+        margin: 0;
+        font-family: var(--display);
+        font-size: 34px;
+        line-height: 0.98;
+        letter-spacing: -0.04em;
+      }
+
+      .brand p {
+        margin: 12px 0 0;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      .nav-group {
+        display: grid;
+        gap: 10px;
+      }
+
+      .nav-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 13px 14px;
+        border-radius: 14px;
+        border: 1px solid transparent;
+        color: var(--ink);
+        background: rgba(255, 255, 255, 0.44);
+        cursor: pointer;
+      }
+
+      .nav-item.active {
+        background: var(--panel);
+        color: #f8f4ea;
+        border-color: rgba(255, 255, 255, 0.08);
+      }
+
+      .nav-item .label {
+        font-size: 14px;
+        font-weight: 600;
+      }
+
+      .nav-item .count {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: inherit;
+        opacity: 0.84;
+      }
+
+      .sidebar-card {
+        padding: 18px;
+        border-radius: 18px;
+        background: linear-gradient(180deg, rgba(27, 35, 43, 0.95), rgba(34, 50, 64, 0.96));
+        color: #f7f1e7;
+      }
+
+      .sidebar-card h2 {
+        margin: 0 0 10px;
+        font-size: 15px;
+        letter-spacing: 0.02em;
+      }
+
+      .sidebar-card p {
+        margin: 0 0 14px;
+        font-size: 13px;
+        line-height: 1.55;
+        color: rgba(247, 241, 231, 0.76);
+      }
+
+      .mini-stack {
+        display: grid;
+        gap: 10px;
+      }
+
+      .sidebar-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 14px;
+      }
+
+      .sidebar-actions .action {
+        height: 36px;
+        padding: 0 12px;
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(255, 255, 255, 0.08);
+        color: #f8f4ea;
+      }
+
+      .mini-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        font-size: 12px;
+        font-family: var(--mono);
+      }
+
+      .main {
+        display: grid;
+        gap: 20px;
+        min-width: 0;
+      }
+
+      .hero {
+        padding: 20px 24px 22px;
+        background:
+          radial-gradient(circle at top left, rgba(43, 114, 142, 0.1), transparent 28%),
+          linear-gradient(180deg, rgba(248, 244, 234, 0.92), rgba(243, 235, 221, 0.82));
+      }
+
+      .hero-top {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: start;
+        gap: 16px 20px;
+        margin-bottom: 18px;
+      }
+
+      .hero-copy {
+        min-width: 0;
+        display: grid;
+        gap: 10px;
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        width: fit-content;
+        padding: 6px 9px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.56);
+        color: var(--muted);
+        font-size: 10px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--ok);
+        box-shadow: 0 0 0 6px rgba(63, 148, 104, 0.12);
+      }
+
+      .hero h2 {
+        margin: 0;
+        font-family: var(--display);
+        font-size: clamp(1.9rem, 1.45rem + 0.95vw, 2.9rem);
+        line-height: 0.98;
+        letter-spacing: -0.04em;
+      }
+
+      .hero p {
+        margin: 0;
+        max-width: 78ch;
+        line-height: 1.55;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .hero-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .hero-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 34px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.55);
+        border: 1px solid rgba(27, 35, 43, 0.08);
+        color: var(--ink);
+        font-size: 12px;
+      }
+
+      .hero-chip .chip-label {
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        font-size: 10px;
+      }
+
+      .hero-chip .chip-value {
+        font-weight: 600;
+      }
+
+      .hero-actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        justify-self: end;
+        gap: 10px;
+        align-self: start;
+        position: relative;
+      }
+
+      .action-popover {
+        position: relative;
+      }
+
+      .action {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        height: 40px;
+        padding: 0 14px;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.6);
+        color: var(--ink);
+        text-decoration: none;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 1.15;
+        white-space: nowrap;
+      }
+
+      .action.primary {
+        background: var(--panel);
+        color: #f8f4ea;
+        border-color: rgba(255, 255, 255, 0.08);
+      }
+
+      .stat-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .stat-card {
+        padding: 16px 18px 18px;
+        border-radius: 20px;
+        background: rgba(255, 255, 255, 0.58);
+        border: 1px solid rgba(27, 35, 43, 0.08);
+      }
+
+      button.stat-card {
+        width: 100%;
+        appearance: none;
+        text-align: left;
+        cursor: pointer;
+        transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+      }
+
+      button.stat-card:hover {
+        transform: translateY(-2px);
+        border-color: rgba(43, 114, 142, 0.24);
+        box-shadow: 0 12px 28px rgba(43, 114, 142, 0.08);
+        background: rgba(255, 255, 255, 0.72);
+      }
+
+      button.stat-card:focus-visible {
+        outline: 2px solid rgba(43, 114, 142, 0.42);
+        outline-offset: 2px;
+      }
+
+      .stat-card h3 {
+        margin: 0 0 12px;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+        color: var(--muted);
+      }
+
+      .stat-card strong {
+        display: block;
+        font-family: var(--display);
+        font-size: 34px;
+        line-height: 1;
+        letter-spacing: -0.06em;
+      }
+
+      .stat-card span {
+        display: block;
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.5;
+      }
+
+      .stat-card-linkline {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 14px;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        color: var(--accent);
+        font-weight: 700;
+      }
+
+      .workspace {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 20px;
+      }
+
+      .stack {
+        display: grid;
+        gap: 20px;
+      }
+
+      .section {
+        padding: 22px;
+      }
+
+      .section-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 16px;
+        margin-bottom: 18px;
+      }
+
+      .section-head h3 {
+        margin: 0;
+        font-size: 20px;
+        letter-spacing: -0.03em;
+      }
+
+      .section-head p {
+        margin: 7px 0 0;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      .pills {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 10px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.64);
+        border: 1px solid var(--line);
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .instance-list {
+        display: grid;
+        gap: 12px;
+      }
+
+      .instance-card {
+        padding: 18px;
+        border-radius: 20px;
+        border: 1px solid rgba(27, 35, 43, 0.08);
+        background: rgba(255, 255, 255, 0.55);
+        cursor: pointer;
+        transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+      }
+
+      .instance-card:hover {
+        transform: translateY(-2px);
+      }
+
+      .instance-card.static {
+        cursor: default;
+      }
+
+      .instance-card.static:hover {
+        transform: none;
+      }
+
+      .instance-card.active {
+        border-color: rgba(43, 114, 142, 0.36);
+        box-shadow: 0 12px 28px rgba(43, 114, 142, 0.12);
+      }
+
+      .instance-card-kicker {
+        margin-bottom: 12px;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+        color: var(--muted);
+      }
+
+      .instance-card-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 14px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--accent);
+      }
+
+      .instance-card-link.muted {
+        color: var(--muted);
+      }
+
+      .instance-top,
+      .instance-meta,
+      .instance-foot {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 16px;
+      }
+
+      .instance-meta,
+      .instance-foot {
+        margin-top: 14px;
+        flex-wrap: wrap;
+      }
+
+      .instance-name {
+        margin: 0;
+        font-size: 21px;
+        letter-spacing: -0.04em;
+      }
+
+      .instance-service {
+        margin-top: 6px;
+        font-size: 12px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .status.running {
+        color: var(--ok);
+        background: var(--teal-soft);
+      }
+
+      .status.attention {
+        color: var(--warn);
+        background: var(--amber-soft);
+      }
+
+      .status.failed {
+        color: var(--danger);
+        background: var(--red-soft);
+      }
+
+      .status .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+
+      .kv {
+        display: grid;
+        gap: 4px;
+      }
+
+      .kv label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        color: var(--muted);
+      }
+
+      .kv span {
+        font-size: 14px;
+        line-height: 1.45;
+      }
+
+      .mono {
+        font-family: var(--mono);
+      }
+
+      .upgrade-list,
+      .queue-list,
+      .recovery-list,
+      .timeline,
+      .provider-grid {
+        display: grid;
+        gap: 12px;
+      }
+
+      .provider-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .lane-item,
+      .queue-item,
+      .recovery-item,
+      .timeline-item,
+      .provider-card {
+        padding: 16px;
+        border-radius: 18px;
+        border: 1px solid rgba(27, 35, 43, 0.08);
+        background: rgba(255, 255, 255, 0.58);
+      }
+
+      .lane-item strong,
+      .queue-item strong,
+      .recovery-item strong,
+      .timeline-item strong,
+      .provider-card strong {
+        display: block;
+        font-size: 15px;
+      }
+
+      .lane-item p,
+      .queue-item p,
+      .recovery-item p,
+      .timeline-item p,
+      .provider-card p {
+        margin: 8px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      .tag-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      .tag {
+        padding: 6px 8px;
+        border-radius: 999px;
+        background: rgba(23, 32, 41, 0.06);
+        font-size: 12px;
+        color: var(--ink);
+        font-family: var(--mono);
+      }
+
+      .detail {
+        padding: 22px;
+        background:
+          radial-gradient(circle at top right, rgba(43, 114, 142, 0.14), transparent 28%),
+          linear-gradient(180deg, rgba(23, 32, 41, 0.98), rgba(34, 50, 64, 0.98));
+        color: #f8f4ea;
+        position: sticky;
+        top: 20px;
+        align-self: start;
+      }
+
+      .detail-header {
+        padding-bottom: 18px;
+        border-bottom: 1px solid var(--line-strong);
+        margin-bottom: 18px;
+      }
+
+      .detail-kicker {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+        color: rgba(248, 244, 234, 0.62);
+        margin-bottom: 10px;
+      }
+
+      .detail-header h3 {
+        margin: 0;
+        font-family: var(--display);
+        font-size: 36px;
+        line-height: 0.98;
+        letter-spacing: -0.05em;
+      }
+
+      .detail-header p {
+        margin: 10px 0 0;
+        color: rgba(248, 244, 234, 0.72);
+        line-height: 1.55;
+        font-size: 14px;
+        overflow-wrap: anywhere;
+      }
+
+      .detail-grid {
+        display: grid;
+        gap: 16px;
+      }
+
+      .detail-block {
+        min-width: 0;
+        padding: 16px;
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      .detail-block h4 {
+        margin: 0 0 12px;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        color: rgba(248, 244, 234, 0.6);
+      }
+
+      .fact-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .fact {
+        display: grid;
+        gap: 4px;
+      }
+
+      .fact label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        color: rgba(248, 244, 234, 0.52);
+      }
+
+      .fact span {
+        font-size: 14px;
+        line-height: 1.45;
+        color: #f8f4ea;
+        min-width: 0;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+
+      .detail-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .detail-actions .action {
+        border-color: rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.08);
+        color: #f8f4ea;
+        min-width: 0;
+        height: auto;
+        min-height: 44px;
+        padding: 10px 12px;
+        text-align: center;
+        white-space: normal;
+        line-height: 1.25;
+      }
+
+      .detail-actions .action.primary {
+        background: #f8f4ea;
+        color: var(--panel);
+      }
+
+      .detail-timeline {
+        display: grid;
+        gap: 10px;
+      }
+
+      .detail-timeline .timeline-item {
+        background: rgba(255, 255, 255, 0.05);
+        border-color: rgba(255, 255, 255, 0.07);
+      }
+
+      .detail-timeline .timeline-item p {
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+
+      .log-box {
+        display: grid;
+        gap: 8px;
+        font-family: var(--mono);
+        font-size: 12px;
+      }
+
+      .log-line {
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: rgba(0, 0, 0, 0.18);
+        color: rgba(248, 244, 234, 0.84);
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        word-break: break-word;
+      }
+
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .utility-layer {
+        position: fixed;
+        right: 20px;
+        bottom: 20px;
+        z-index: 40;
+        display: grid;
+        gap: 12px;
+        pointer-events: none;
+      }
+
+      .drawer,
+      .toast,
+      .console,
+      .scroll-top {
+        pointer-events: auto;
+      }
+
+      .scroll-top {
+        justify-self: end;
+        width: 52px;
+        height: 52px;
+        border: 0;
+        border-radius: 16px;
+        background: rgba(23, 32, 41, 0.94);
+        color: #f8f4ea;
+        box-shadow: 0 14px 30px rgba(27, 35, 43, 0.22);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 24px;
+        cursor: pointer;
+        opacity: 0;
+        transform: translateY(8px) scale(0.96);
+        transition: opacity 180ms ease, transform 180ms ease;
+        pointer-events: none;
+      }
+
+      .scroll-top.show {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+        pointer-events: auto;
+      }
+
+      .drawer {
+        width: min(440px, calc(100vw - 40px));
+        max-height: min(70vh, 720px);
+        overflow: auto;
+        padding: 18px;
+        border-radius: 20px;
+        background: rgba(248, 244, 234, 0.96);
+        border: 1px solid rgba(27, 35, 43, 0.1);
+        box-shadow: var(--shadow);
+        display: none;
+      }
+
+      .drawer.open {
+        display: block;
+      }
+
+      #filter-drawer {
+        position: absolute;
+        top: calc(100% + 10px);
+        right: 0;
+        z-index: 50;
+        width: min(420px, calc(100vw - 40px));
+      }
+
+      #filter-drawer::before {
+        content: "";
+        position: absolute;
+        top: -8px;
+        right: 28px;
+        width: 14px;
+        height: 14px;
+        border-top: 1px solid rgba(27, 35, 43, 0.1);
+        border-left: 1px solid rgba(27, 35, 43, 0.1);
+        background: rgba(248, 244, 234, 0.96);
+        transform: rotate(45deg);
+      }
+
+      .drawer-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+
+      .drawer-head h4 {
+        margin: 0;
+        font-size: 16px;
+      }
+
+      .drawer-close {
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        cursor: pointer;
+        font-size: 18px;
+      }
+
+      .filter-grid {
+        display: grid;
+        gap: 12px;
+      }
+
+      .filter-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        margin-top: 4px;
+      }
+
+      .filter-actions .action {
+        height: 38px;
+      }
+
+      .field {
+        display: grid;
+        gap: 6px;
+      }
+
+      .field label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        color: var(--muted);
+      }
+
+      .field input,
+      .field select {
+        width: 100%;
+        height: 40px;
+        padding: 0 12px;
+        border: 1px solid rgba(27, 35, 43, 0.12);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.8);
+        color: var(--ink);
+      }
+
+      .console {
+        width: min(560px, calc(100vw - 40px));
+        max-height: 44vh;
+        overflow: auto;
+        padding: 16px;
+        border-radius: 20px;
+        background: rgba(23, 32, 41, 0.96);
+        color: #f8f4ea;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: 0 24px 50px rgba(27, 35, 43, 0.26);
+        display: none;
+      }
+
+      .console.open {
+        display: block;
+      }
+
+      .console-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .console-head strong {
+        font-size: 14px;
+        letter-spacing: 0.02em;
+      }
+
+      .console pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-size: 12px;
+        line-height: 1.55;
+        font-family: var(--mono);
+      }
+
+      .toast {
+        justify-self: end;
+        max-width: min(420px, calc(100vw - 40px));
+        padding: 12px 14px;
+        border-radius: 14px;
+        background: rgba(23, 32, 41, 0.94);
+        color: #f8f4ea;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: 0 14px 30px rgba(27, 35, 43, 0.22);
+        opacity: 0;
+        transform: translateY(8px);
+        transition: opacity 180ms ease, transform 180ms ease;
+      }
+
+      .toast.show {
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .empty-state {
+        padding: 18px;
+        border-radius: 18px;
+        border: 1px dashed rgba(27, 35, 43, 0.14);
+        color: var(--muted);
+        background: rgba(255, 255, 255, 0.36);
+      }
+
+      .section-subhead {
+        margin: 18px 0 10px;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+        color: var(--muted);
+      }
+
+      .legend-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .legend-swatch {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+      }
+
+      .fade-up {
+        opacity: 0;
+        transform: translateY(10px);
+        animation: fadeUp 600ms ease forwards;
+      }
+
+      .fade-up.delay-1 {
+        animation-delay: 60ms;
+      }
+
+      .fade-up.delay-2 {
+        animation-delay: 120ms;
+      }
+
+      .fade-up.delay-3 {
+        animation-delay: 180ms;
+      }
+
+      @keyframes fadeUp {
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      @media (max-width: 1320px) {
+        .shell {
+          grid-template-columns: 240px minmax(0, 1fr);
+        }
+
+        .detail {
+          position: static;
+          grid-column: 1 / -1;
+        }
+
+        .workspace {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 980px) {
+        .shell {
+          grid-template-columns: 1fr;
+        }
+
+        .sidebar {
+          order: -1;
+          position: static;
+        }
+
+        .stat-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .provider-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .detail-actions {
+          grid-template-columns: 1fr;
+        }
+
+        .hero-top {
+          grid-template-columns: 1fr;
+        }
+
+        .hero-actions {
+          justify-self: start;
+        }
+
+        #filter-drawer {
+          left: 0;
+          right: auto;
+          width: min(360px, calc(100vw - 32px));
+        }
+
+        #filter-drawer::before {
+          left: 28px;
+          right: auto;
+        }
+      }
+
+      @media (max-width: 640px) {
+        .shell {
+          padding: 14px;
+          gap: 14px;
+        }
+
+        .hero,
+        .section,
+        .detail,
+        .sidebar {
+          padding: 18px;
+        }
+
+        .hero h2 {
+          font-size: 32px;
+        }
+
+        .stat-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar panel fade-up">
+        <div class="brand">
+          <div class="brand-kicker">Local Fleet Console</div>
+          <h1>ClawCU Dashboard</h1>
+          <p>A lifecycle console for multi-instance AI runtimes on one machine. The goal is not to monitor everything, but to find instances, risks, and safe upgrade paths faster.</p>
+        </div>
+
+        <div class="sidebar-card">
+          <h2>Machine Snapshot</h2>
+          <div class="mini-stack">
+            <div class="mini-row"><span>clawcu</span><span>v0.2.10</span></div>
+            <div class="mini-row"><span>docker</span><span>ready</span></div>
+            <div class="mini-row"><span>home</span><span>~/.clawcu</span></div>
+            <div class="mini-row"><span>registry</span><span>cached today</span></div>
+          </div>
+          <div class="sidebar-actions">
+            <button class="action" id="machine-open-cli" type="button">Open In Terminal</button>
+          </div>
+        </div>
+
+        <div class="nav-group">
+          <div class="nav-item active" data-nav="overview">
+            <span class="label">Overview</span>
+            <span class="count">04</span>
+          </div>
+          <div class="nav-item" data-nav="instances">
+            <span class="label">Instances</span>
+            <span class="count">03</span>
+          </div>
+          <div class="nav-item" data-nav="local">
+            <span class="label">Local</span>
+            <span class="count">00</span>
+          </div>
+          <div class="nav-item" data-nav="upgrade">
+            <span class="label">Upgrade Lane</span>
+            <span class="count">02</span>
+          </div>
+          <div class="nav-item" data-nav="providers">
+            <span class="label">Providers</span>
+            <span class="count">09</span>
+          </div>
+          <div class="nav-item" data-nav="removed">
+            <span class="label">Removed</span>
+            <span class="count">02</span>
+          </div>
+        </div>
+
+      </aside>
+
+      <main class="main">
+        <section class="hero panel fade-up delay-1" id="section-overview">
+          <div class="hero-top">
+            <div class="hero-copy">
+              <div class="eyebrow" id="hero-badge"><span class="dot"></span> Daily Ops View</div>
+              <h2 id="hero-title">ClawCU Fleet Monitor</h2>
+              <p id="hero-summary">Loading local fleet status…</p>
+              <div class="hero-meta" id="hero-meta"></div>
+            </div>
+
+            <div class="hero-actions">
+              <a class="action" id="action-language" href="/?lang=zh-CN">中文</a>
+              <button class="action primary" id="action-refresh" type="button">Refresh</button>
+              <div class="action-popover" id="filter-popover">
+                <button class="action" id="action-filter" type="button" aria-expanded="false" aria-controls="filter-drawer">Filter</button>
+                <section class="drawer" id="filter-drawer">
+                  <div class="drawer-head">
+                    <h4>Filters</h4>
+                    <button class="drawer-close" type="button" data-close-drawer="filter-drawer">×</button>
+                  </div>
+                  <div class="filter-grid">
+                    <div class="field">
+                      <label for="filter-service">Service</label>
+                      <select id="filter-service">
+                        <option value="all">All</option>
+                        <option value="openclaw">OpenClaw</option>
+                        <option value="hermes">Hermes</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label for="filter-status">Status</label>
+                      <select id="filter-status">
+                        <option value="all">All</option>
+                        <option value="running">Running</option>
+                        <option value="starting">Starting</option>
+                        <option value="missing">Missing</option>
+                      </select>
+                    </div>
+                    <div class="field">
+                      <label for="filter-query">Search</label>
+                      <input id="filter-query" type="text" placeholder="Instance, provider, version…" />
+                    </div>
+                    <div class="filter-actions">
+                      <button class="action" id="filter-reset" type="button">Reset</button>
+                    </div>
+                  </div>
+                </section>
+              </div>
+              <button class="action" id="action-providers" type="button">Providers</button>
+              <button class="action" id="action-setup-check" type="button">Setup Check</button>
+            </div>
+          </div>
+
+          <div class="stat-grid" id="stat-grid"></div>
+        </section>
+
+        <section class="workspace">
+          <div class="stack">
+            <section class="section panel fade-up delay-2" id="section-instances">
+              <div class="section-head">
+                <div>
+                  <h3>Managed Instances</h3>
+                </div>
+                <div class="pills">
+                  <span class="pill">source=managed</span>
+                  <span class="pill">running</span>
+                  <span class="pill">workspace</span>
+                  <span class="pill">OpenClaw + Hermes</span>
+                </div>
+              </div>
+
+              <div class="instance-list" id="instance-list"></div>
+            </section>
+
+            <section class="section panel" id="section-local">
+              <div class="section-head">
+                <div>
+                  <h3>Local Instances</h3>
+                  <p>This mirrors `clawcu list --source local` and surfaces pseudo-instances discovered under `~/.openclaw` and `~/.hermes` that are outside ClawCU-managed records.</p>
+                </div>
+                <div class="pills">
+                  <span class="pill">source=local</span>
+                  <span class="pill">pseudo-instance</span>
+                  <span class="pill">~/.openclaw</span>
+                  <span class="pill">~/.hermes</span>
+                </div>
+              </div>
+
+              <div class="instance-list" id="local-list"></div>
+            </section>
+
+            <section class="section panel fade-up delay-3" id="section-upgrade">
+              <div class="section-head">
+                <div>
+                  <h3>Upgrade Lane</h3>
+                </div>
+                <div class="legend">
+                  <div class="legend-item"><span class="legend-swatch" style="background: var(--ok)"></span> ready</div>
+                  <div class="legend-item"><span class="legend-swatch" style="background: var(--warn)"></span> caution</div>
+                  <div class="legend-item"><span class="legend-swatch" style="background: var(--danger)"></span> manual check</div>
+                </div>
+              </div>
+
+              <div class="upgrade-list" id="upgrade-list"></div>
+            </section>
+
+            <section class="section panel" id="section-providers">
+              <div class="section-head">
+                <div>
+                  <h3>Provider Surface</h3>
+                </div>
+                <div class="pills">
+                  <span class="pill">openclaw</span>
+                  <span class="pill">hermes</span>
+                  <span class="pill">set / missing</span>
+                </div>
+              </div>
+
+              <div class="provider-grid" id="provider-grid"></div>
+            </section>
+
+            <section class="section panel" id="section-removed">
+              <div class="section-head">
+                <div>
+                  <h3>Removed Instances</h3>
+                  <p>This mirrors `clawcu list --removed`. These datadirs have lost their managed record, but the home directory still exists and can be reviewed for recovery or cleanup.</p>
+                </div>
+                <div class="pills">
+                  <span class="pill">source=removed</span>
+                  <span class="pill">orphaned datadir</span>
+                  <span class="pill">recovery candidate</span>
+                </div>
+              </div>
+
+              <div class="section-subhead">Attention Queue</div>
+              <div class="queue-list" id="attention-queue"></div>
+
+              <div class="section-subhead">Removed Datadirs</div>
+              <div class="recovery-list" id="recovery-list" style="margin-top: 16px;"></div>
+            </section>
+          </div>
+
+          <aside class="detail panel fade-up delay-2" id="detail-panel" hidden></aside>
+        </section>
+      </main>
+    </div>
+
+    <div class="utility-layer">
+      <button class="scroll-top" id="scroll-top-button" type="button" aria-label="Back to top" title="Back to top">↑</button>
+      <section class="console" id="console-panel">
+        <div class="console-head">
+          <strong id="console-title">Command Output</strong>
+          <button class="drawer-close" type="button" data-close-drawer="console-panel">×</button>
+        </div>
+        <pre id="console-output"></pre>
+      </section>
+
+      <div class="toast" id="toast"></div>
+    </div>
+
+    <script>
+      const state = {
+        dashboard: null,
+        selectedName: null,
+        inspect: null,
+        logs: null,
+        versions: null,
+        detailLoading: false,
+        detailRequestId: 0,
+        filters: {
+          service: "all",
+          status: "all",
+          query: "",
+        },
+        toastTimer: null,
+      };
+
+      const els = {
+        heroBadge: document.getElementById("hero-badge"),
+        heroTitle: document.getElementById("hero-title"),
+        heroSummary: document.getElementById("hero-summary"),
+        heroMeta: document.getElementById("hero-meta"),
+        statGrid: document.getElementById("stat-grid"),
+        instanceList: document.getElementById("instance-list"),
+        localList: document.getElementById("local-list"),
+        upgradeList: document.getElementById("upgrade-list"),
+        attentionQueue: document.getElementById("attention-queue"),
+        recoveryList: document.getElementById("recovery-list"),
+        providerGrid: document.getElementById("provider-grid"),
+        detailPanel: document.getElementById("detail-panel"),
+        filterDrawer: document.getElementById("filter-drawer"),
+        consolePanel: document.getElementById("console-panel"),
+        consoleTitle: document.getElementById("console-title"),
+        consoleOutput: document.getElementById("console-output"),
+        scrollTop: document.getElementById("scroll-top-button"),
+        toast: document.getElementById("toast"),
+        filterService: document.getElementById("filter-service"),
+        filterStatus: document.getElementById("filter-status"),
+        filterQuery: document.getElementById("filter-query"),
+        filterReset: document.getElementById("filter-reset"),
+        filterPopover: document.getElementById("filter-popover"),
+        refresh: document.getElementById("action-refresh"),
+        filter: document.getElementById("action-filter"),
+        providers: document.getElementById("action-providers"),
+        setupCheck: document.getElementById("action-setup-check"),
+        machineOpenCli: document.getElementById("machine-open-cli"),
+      };
+
+      const SERVICE_LABEL = {
+        openclaw: "OpenClaw",
+        hermes: "Hermes",
+      };
+
+      function normalizeVersion(value) {
+        return String(value || "").replace(/^v/, "");
+      }
+
+      function statusMeta(record) {
+        const status = String(record.status || "").toLowerCase();
+        if (status === "running") return { label: "Running", className: "running" };
+        if (status === "starting" || status === "created") return { label: "Starting", className: "attention" };
+        return { label: status || "Unknown", className: "failed" };
+      }
+
+      function serviceLabel(service) {
+        return SERVICE_LABEL[service] || service || "-";
+      }
+
+      function buildHeroMeta(summary, env) {
+        return [
+          ["Host", `${env.platform || "-"} / Docker ${env.docker_server || "-"}`],
+          ["Sources", `${summary.managed_count || 0} managed · ${summary.local_count || 0} local · ${summary.removed_count || 0} removed`],
+          ["Running", `${summary.running_count || 0} managed running`],
+          ["Attention", `${summary.attention_count || 0} items`],
+          ["Providers", `${summary.provider_count || 0} bundles`],
+        ]
+          .map(
+            ([label, value]) => `
+              <div class="hero-chip">
+                <span class="chip-label">${label}</span>
+                <span class="chip-value ${String(value).includes("/") ? "mono" : ""}">${value}</span>
+              </div>
+            `
+          )
+          .join("");
+      }
+
+      function buildStatCards(summary) {
+        return [
+          ["Managed Instances", summary.managed_count || 0, `${summary.running_count || 0} instances are currently running under ClawCU-managed records.`, "section-instances"],
+          ["Local Instances", summary.local_count || 0, `Pseudo-instances discovered via \`clawcu list --source local\` from ~/.openclaw and ~/.hermes.`, "section-local"],
+          ["Removed Instances", summary.removed_count || 0, `Orphaned instance directories are still present under CLAWCU_HOME and should remain visible as recovery candidates.`, "section-removed"],
+          ["Upgrade Ready", summary.upgrade_ready_count || 0, `Latest stable remote versions come from \`clawcu upgrade --list-versions\`.`, "section-upgrade"],
+        ]
+          .map(
+            ([label, value, body, target]) => `
+              <button class="stat-card" type="button" data-stat-target="${target}">
+                <h3>${label}</h3>
+                <strong>${value}</strong>
+                <span>${body}</span>
+                <div class="stat-card-linkline">Open Module →</div>
+              </button>
+            `
+          )
+          .join("");
+      }
+
+      function instanceSecondary(record) {
+        const history = record.history || [];
+        if (history.some((event) => event && event.action === "rollback")) return "Rollback available";
+        if (history.some((event) => event && String(event.action || "").endsWith("failed"))) return "Failure history";
+        if (record.snapshot && record.snapshot !== "-") return record.snapshot;
+        return "Managed";
+      }
+
+      function accessShort(record) {
+        const url = String(resolvedAccessUrl(record, state.inspect) || "");
+        return url.replace(/^https?:\/\//, "").replace(/\/$/, "") || "-";
+      }
+
+      function ensureTrailingSlash(url) {
+        return String(url || "").endsWith("/") ? String(url || "") : `${String(url || "")}/`;
+      }
+
+      function resolvedAccessUrl(record, inspect = null) {
+        const inspectUrl = inspect?.access?.base_url;
+        const recordUrl = record?.access_url;
+        const baseUrl = String(inspectUrl || recordUrl || "").trim();
+        if (!baseUrl || baseUrl === "-") return "";
+        if (record?.service === "hermes") {
+          return `${ensureTrailingSlash(baseUrl)}healthz`;
+        }
+        return baseUrl;
+      }
+
+      function recordPorts(record) {
+        if (record.service === "hermes") {
+          return `Dashboard ${record.dashboard_port || record.port} / API ${record.port}`;
+        }
+        return `Gateway ${record.port}`;
+      }
+
+      function filterManaged() {
+        const managed = state.dashboard?.managed || [];
+        const q = state.filters.query.trim().toLowerCase();
+        return managed.filter((record) => {
+          if (state.filters.service !== "all" && record.service !== state.filters.service) return false;
+          if (state.filters.status !== "all" && String(record.status || "").toLowerCase() !== state.filters.status) return false;
+          if (!q) return true;
+          const haystack = [
+            record.name,
+            record.service,
+            record.version,
+            record.providers,
+            record.models,
+            record.snapshot,
+          ]
+            .join(" ")
+            .toLowerCase();
+          return haystack.includes(q);
+        });
+      }
+
+      function renderCards() {
+        const managed = filterManaged();
+        if (!managed.length) {
+          els.instanceList.innerHTML = `<div class="empty-state">No instances match the current filters.</div>`;
+          return;
+        }
+        els.instanceList.innerHTML = managed
+          .map((record) => {
+            const status = statusMeta(record);
+            return `
+              <article class="instance-card" data-instance="${record.name}">
+                <div class="instance-top">
+                  <div>
+                    <h4 class="instance-name">${record.name}</h4>
+                    <div class="instance-service">${serviceLabel(record.service)} · ${record.version}</div>
+                  </div>
+                  <div class="status ${status.className}">
+                    <span class="status-dot"></span>${status.label}
+                  </div>
+                </div>
+                <div class="instance-meta">
+                  <div class="kv">
+                    <label>Access</label>
+                    <span class="mono">${accessShort(record)}</span>
+                  </div>
+                  <div class="kv">
+                    <label>Ports</label>
+                    <span>${recordPorts(record)}</span>
+                  </div>
+                  <div class="kv">
+                    <label>Auth</label>
+                    <span>${record.auth_hint || record.auth_mode || "-"}</span>
+                  </div>
+                </div>
+                <div class="instance-foot">
+                  <div class="kv" style="max-width: 56%;">
+                    <label>Providers / Models</label>
+                    <span>${record.providers || "-"}<br />${record.models || "-"}</span>
+                  </div>
+                  <div class="kv">
+                    <label>Snapshot</label>
+                    <span>${record.snapshot || "-"}</span>
+                  </div>
+                </div>
+                <div class="tag-row">
+                  <span class="tag">${instanceSecondary(record)}</span>
+                  <span class="tag">${record.service}</span>
+                  <span class="tag">${record.status}</span>
+                </div>
+              <div class="instance-card-link">Open Workspace →</div>
+              </article>
+            `;
+          })
+          .join("");
+
+        els.instanceList.querySelectorAll("[data-instance]").forEach((card) => {
+          card.addEventListener("click", () => {
+            const nextName = card.getAttribute("data-instance");
+            window.location.href = `/workspace?name=${encodeURIComponent(nextName)}&lang=en`;
+          });
+        });
+      }
+
+      function renderLocalList() {
+        const local = state.dashboard?.local || [];
+        if (!local.length) {
+          els.localList.innerHTML = `<div class="empty-state">No local pseudo-instances were found.</div>`;
+          return;
+        }
+
+        els.localList.innerHTML = local
+          .map((record) => `
+            <article class="instance-card static">
+              <div class="instance-card-kicker">Local Source</div>
+              <div class="instance-top">
+                <div>
+                  <h4 class="instance-name">${record.name}</h4>
+                  <div class="instance-service">${serviceLabel(record.service)} · ${record.version || "-"}</div>
+                </div>
+                <div class="status attention">
+                  <span class="status-dot"></span>${record.status || "local"}
+                </div>
+              </div>
+              <div class="instance-meta">
+                <div class="kv">
+                  <label>Home</label>
+                  <span class="mono">${record.home || "-"}</span>
+                </div>
+                <div class="kv">
+                  <label>Ports</label>
+                  <span>${record.port || "-"}</span>
+                </div>
+                <div class="kv">
+                  <label>Access</label>
+                  <span class="mono">${accessShort(record)}</span>
+                </div>
+              </div>
+              <div class="instance-foot">
+                <div class="kv" style="max-width: 56%;">
+                  <label>Providers / Models</label>
+                  <span>${record.providers || "-"}<br />${record.models || "-"}</span>
+                </div>
+              </div>
+              <div class="tag-row">
+                <span class="tag">source=local</span>
+                <span class="tag">${record.service || "-"}</span>
+                <span class="tag">${record.status || "local"}</span>
+              </div>
+              <div class="instance-card-link muted">Pseudo-instance discovered from a local runtime home</div>
+            </article>
+          `)
+          .join("");
+      }
+
+      function renderUpgradeList() {
+        const upgrades = state.dashboard?.upgrade_lane || [];
+        if (!upgrades.length) {
+          els.upgradeList.innerHTML = `<div class="empty-state">No newer stable version is currently available.</div>`;
+          return;
+        }
+        els.upgradeList.innerHTML = upgrades
+          .map(
+            (item) => `
+              <div class="lane-item">
+                <strong>${item.name} · ${serviceLabel(item.service)} · ${item.current_version} -> ${item.target_version}</strong>
+                <p>${item.local_image_available ? "The target version is already available in the local image cache." : "The target version will be pulled from the configured remote registry."} Cloning first keeps the original instance online while the new version is validated.</p>
+                <div class="tag-row">
+                  <span class="tag">clone first</span>
+                  <span class="tag">${item.local_image_available ? "local image ready" : "remote pull required"}</span>
+                  <span class="tag">${item.history_versions.length} known versions</span>
+                </div>
+              </div>
+            `
+          )
+          .join("");
+      }
+
+      function renderAttentionQueue() {
+        const items = state.dashboard?.attention_queue || [];
+        if (!items.length) {
+          els.attentionQueue.innerHTML = `<div class="empty-state">Nothing needs attention right now.</div>`;
+          return;
+        }
+        els.attentionQueue.innerHTML = items
+          .map(
+            (item) => `
+              <div class="queue-item">
+                <strong>${item.title}</strong>
+                <p>${item.body}</p>
+              </div>
+            `
+          )
+          .join("");
+      }
+
+      function renderRecoveryList() {
+        const removed = state.dashboard?.removed || [];
+        if (!removed.length) {
+          els.recoveryList.innerHTML = `<div class="empty-state">No removed datadirs are available for recovery.</div>`;
+          return;
+        }
+        els.recoveryList.innerHTML = removed
+          .map(
+            (item) => `
+              <div class="recovery-item">
+                <strong>${item.name}</strong>
+                <p>${item.home} is still present under CLAWCU_HOME. This record comes from the removed source and should remain visible as a recovery or cleanup candidate.</p>
+                <div class="tag-row">
+                  <span class="tag">source=removed</span>
+                  <span class="tag">service=${item.service}</span>
+                  <span class="tag">version=${item.version || "-"}</span>
+                  <span class="tag">providers=${item.providers || "-"}</span>
+                </div>
+              </div>
+            `
+          )
+          .join("");
+      }
+
+      function renderProviders() {
+        const providers = state.dashboard?.providers || [];
+        els.providerGrid.innerHTML = providers.length
+          ? providers
+          .map((provider) => {
+            const models = provider.models || [];
+            const modelPreview =
+              models.length > 4
+                ? `${models.slice(0, 4).join(", ")} +${models.length - 4} more`
+                : models.join(", ") || "-";
+            return `
+              <div class="provider-card">
+                <strong>${provider.name}</strong>
+                <p>${provider.service} · ${provider.api_style} · ${provider.api_key_state}</p>
+                <p>${provider.endpoint || "local / default endpoint"}</p>
+                <div class="tag-row"><span class="tag">${modelPreview}</span></div>
+              </div>
+            `
+          })
+          .join("")
+          : `<div class="empty-state">No provider bundles have been collected yet.</div>`;
+      }
+
+      function renderHero() {
+        const { summary, env, generated_at } = state.dashboard;
+        els.heroTitle.textContent = "ClawCU Fleet Monitor";
+        els.heroBadge.innerHTML = `<span class="dot"></span>${generated_at}`;
+        els.heroSummary.textContent = `This machine currently has ${summary.managed_count} managed instances, ${summary.local_count} local pseudo-instances, and ${summary.removed_count} removed instance sources. ${summary.running_count} managed instances are running, with ${summary.upgrade_ready_count} upgrade paths available.`;
+        els.heroMeta.innerHTML = buildHeroMeta(summary, env);
+      }
+
+      function renderStats() {
+        els.statGrid.innerHTML = buildStatCards(state.dashboard.summary);
+        els.statGrid.querySelectorAll("[data-stat-target]").forEach((button) => {
+          button.addEventListener("click", () => {
+            const id = button.getAttribute("data-stat-target");
+            if (!id) return;
+            document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+          });
+        });
+      }
+
+      function selectedRecord() {
+        return (state.dashboard?.managed || []).find((row) => row.name === state.selectedName) || null;
+      }
+
+      function detailActions(record) {
+        if (!record) return [];
+        if (record.service === "hermes") {
+          return [
+            ["open_dashboard", "Open Health", true],
+            ["tui", "TUI Chat", false],
+            ["config", "Config", false],
+            ["logs", "Logs", false],
+            ["clone_for_upgrade", "Clone For Upgrade", false],
+            ["rollback", "Rollback", false],
+          ];
+        }
+        return [
+          ["open_dashboard", "Open Dashboard", true],
+          ["copy_token", "Copy Token", false],
+          ["inspect", "Inspect", false],
+          ["config", "Config", false],
+          ["logs", "Logs", false],
+          ["clone_for_upgrade", "Clone For Upgrade", false],
+        ];
+      }
+
+      function renderDetail() {
+        const record = selectedRecord();
+        if (!record) {
+          els.detailPanel.innerHTML = `<div class="detail-header"><h3>No Selection</h3><p>Select an instance to inspect it.</p></div>`;
+          return;
+        }
+
+        const inspect = state.inspect;
+        const snapshots = inspect?.snapshots || {};
+        const history = (inspect?.instance?.history || []).slice(-6).reverse();
+        const accessUrl = resolvedAccessUrl(record, inspect) || "-";
+        const logLines = String(state.logs?.output || "")
+          .split("\n")
+          .filter(Boolean)
+          .slice(-10);
+        const agent = (record.agents || [])[0];
+        const versions = state.versions || {};
+        const stableRemote = versions.stable_remote_versions || [];
+        const target = stableRemote.length ? stableRemote[stableRemote.length - 1] : null;
+        const detailReady = Boolean(inspect && state.logs);
+        const loadingDetail = state.detailLoading && !detailReady;
+        const headerSuffix = loadingDetail
+          ? "Loading live details…"
+          : target && normalizeVersion(target) !== normalizeVersion(record.version)
+            ? `Latest stable candidate is ${target}.`
+            : "No newer stable version currently available.";
+
+        els.detailPanel.innerHTML = `
+          <div class="detail-header">
+            <div class="detail-kicker">Instance Workspace</div>
+            <h3>${record.name}</h3>
+            <p>${serviceLabel(record.service)} · ${record.version} · ${record.status}. ${headerSuffix}</p>
+          </div>
+
+          <div class="detail-grid">
+            <div class="detail-block">
+              <h4>Primary Actions</h4>
+              <div class="detail-actions">
+                ${detailActions(record)
+                  .map(
+                    ([key, label, primary]) => `
+                      <button class="action ${primary ? "primary" : ""}" type="button" data-instance-action="${key}" data-instance="${record.name}">
+                        ${label}
+                      </button>
+                    `
+                  )
+                  .join("")}
+              </div>
+            </div>
+
+            <div class="detail-block">
+              <h4>Facts</h4>
+              <div class="fact-list">
+                <div class="fact"><label>Version</label><span>${record.version}</span></div>
+                <div class="fact"><label>Status</label><span>${record.status}</span></div>
+                <div class="fact"><label>Ports</label><span>${recordPorts(record)}</span></div>
+                <div class="fact"><label>Auth</label><span>${record.auth_hint || record.auth_mode || "-"}</span></div>
+                <div class="fact"><label>Provider</label><span>${record.providers || "-"}</span></div>
+                <div class="fact"><label>Primary</label><span>${agent?.primary || "-"}</span></div>
+                <div class="fact"><label>Data Dir</label><span class="mono">${record.datadir}</span></div>
+                <div class="fact"><label>${record.service === "hermes" ? "Health URL" : "Access URL"}</label><span class="mono">${accessUrl}</span></div>
+              </div>
+            </div>
+
+            <div class="detail-block">
+              <h4>Snapshots & History</h4>
+              <div class="detail-timeline">
+                ${Object.values(snapshots).filter(Boolean).length
+                  ? Object.entries(snapshots)
+                      .filter(([, value]) => value)
+                      .map(
+                        ([key, value]) => `
+                          <div class="timeline-item">
+                            <strong>${key}</strong>
+                            <p>${value}</p>
+                          </div>
+                        `
+                      )
+                      .join("")
+                  : ""}
+                ${loadingDetail && !Object.values(snapshots).filter(Boolean).length && !history.length
+                  ? `<div class="timeline-item"><strong>Loading inspect data</strong><p>Refreshing snapshots, history, and live container metadata.</p></div>`
+                  : ""}
+                ${history
+                  .map(
+                    (event) => `
+                      <div class="timeline-item">
+                        <strong>${event.action || "-"}</strong>
+                        <p>${Object.entries(event)
+                          .filter(([key]) => key !== "action")
+                          .map(([key, value]) => `${key}=${value}`)
+                          .join(", ")}</p>
+                      </div>
+                    `
+                  )
+                  .join("") || `<div class="timeline-item"><strong>No history</strong><p>No lifecycle events recorded yet.</p></div>`}
+              </div>
+            </div>
+
+            <div class="detail-block">
+              <h4>Recent Logs</h4>
+              <div class="log-box">
+                ${logLines.length
+                  ? logLines.map((line) => `<div class="log-line">${line}</div>`).join("")
+                  : `<div class="log-line">${loadingDetail ? "Loading recent logs…" : "No logs returned."}</div>`}
+              </div>
+            </div>
+          </div>
+        `;
+
+        els.detailPanel.querySelectorAll("[data-instance-action]").forEach((button) => {
+          button.addEventListener("click", () => {
+            handleInstanceAction(button.getAttribute("data-instance-action"), button.getAttribute("data-instance"));
+          });
+        });
+      }
+
+      function setConsole(title, output) {
+        els.consoleTitle.textContent = title;
+        els.consoleOutput.textContent = output || "No output.";
+        els.consolePanel.classList.add("open");
+      }
+
+      function closeDrawer(id) {
+        const target = document.getElementById(id);
+        target?.classList.remove("open");
+        if (id === "filter-drawer") {
+          els.filter?.setAttribute("aria-expanded", "false");
+        }
+      }
+
+      function toggleDrawer(id) {
+        const target = document.getElementById(id);
+        if (!target) return false;
+        const nextState = !target.classList.contains("open");
+        target.classList.toggle("open", nextState);
+        if (id === "filter-drawer") {
+          els.filter?.setAttribute("aria-expanded", String(nextState));
+        }
+        return nextState;
+      }
+
+      function showToast(message, isError = false) {
+        clearTimeout(state.toastTimer);
+        els.toast.textContent = message;
+        els.toast.style.background = isError ? "rgba(185, 95, 77, 0.96)" : "rgba(23, 32, 41, 0.94)";
+        els.toast.classList.add("show");
+        state.toastTimer = setTimeout(() => els.toast.classList.remove("show"), 2600);
+      }
+
+      function syncScrollTopButton() {
+        els.scrollTop?.classList.toggle("show", window.scrollY > 520);
+      }
+
+      function resetFilters({ focusQuery = false, announce = false } = {}) {
+        state.filters.service = "all";
+        state.filters.status = "all";
+        state.filters.query = "";
+        if (els.filterService) els.filterService.value = "all";
+        if (els.filterStatus) els.filterStatus.value = "all";
+        if (els.filterQuery) els.filterQuery.value = "";
+        renderCards();
+        if (focusQuery) {
+          window.setTimeout(() => els.filterQuery?.focus(), 20);
+        }
+        if (announce) {
+          showToast("Filters reset.");
+        }
+      }
+
+      async function apiGet(path) {
+        const response = await fetch(path);
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        return response.json();
+      }
+
+      async function apiPost(payload) {
+        const response = await fetch("/api/action", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        return response.json();
+      }
+
+      async function loadDashboard(preferredName) {
+        showToast("Refreshing local fleet…");
+        const dashboard = await apiGet("/api/dashboard");
+        state.dashboard = dashboard;
+        state.selectedName =
+          preferredName && dashboard.managed.some((row) => row.name === preferredName)
+            ? preferredName
+            : dashboard.managed[0]?.name || null;
+
+        renderHero();
+        renderStats();
+        renderLocalList();
+        renderProviders();
+        renderUpgradeList();
+        renderAttentionQueue();
+        renderRecoveryList();
+        renderCards();
+
+        document.querySelector('[data-nav="instances"] .count').textContent = String(dashboard.summary.managed_count).padStart(2, "0");
+        document.querySelector('[data-nav="local"] .count').textContent = String(dashboard.summary.local_count).padStart(2, "0");
+        document.querySelector('[data-nav="upgrade"] .count').textContent = String(dashboard.summary.upgrade_ready_count).padStart(2, "0");
+        document.querySelector('[data-nav="providers"] .count').textContent = String(dashboard.summary.provider_count).padStart(2, "0");
+        document.querySelector('[data-nav="removed"] .count').textContent = String(dashboard.summary.removed_count).padStart(2, "0");
+
+      }
+
+      async function loadInstanceDetails(name) {
+        const requestId = ++state.detailRequestId;
+        try {
+          const [inspect, logs] = await Promise.all([
+            apiGet(`/api/inspect?name=${encodeURIComponent(name)}`),
+            apiGet(`/api/logs?name=${encodeURIComponent(name)}&tail=120`),
+          ]);
+          if (requestId !== state.detailRequestId || state.selectedName !== name) return;
+          state.inspect = inspect;
+          state.logs = logs;
+          state.detailLoading = false;
+          renderDetail();
+        } catch (error) {
+          if (requestId !== state.detailRequestId || state.selectedName !== name) return;
+          state.detailLoading = false;
+          renderDetail();
+          throw error;
+        }
+      }
+
+      async function handleTopAction(kind) {
+        try {
+          if (kind === "refresh") {
+            await loadDashboard(state.selectedName);
+            showToast("Dashboard refreshed.");
+            return;
+          }
+          if (kind === "filter") {
+            const isOpen = toggleDrawer("filter-drawer");
+            if (isOpen) {
+              window.setTimeout(() => els.filterQuery?.focus(), 20);
+            }
+            return;
+          }
+          if (kind === "providers") {
+            document.getElementById("section-providers")?.scrollIntoView({ behavior: "smooth", block: "start" });
+            return;
+          }
+          if (kind === "open_cli") {
+            const result = await apiPost({ action: "open_cli" });
+            showToast(result.message || "Opened local terminal.");
+            return;
+          }
+          if (kind === "setup_check") {
+            const result = await apiPost({ action: "setup_check" });
+            setConsole("Setup Check", result.output || result.message);
+            showToast(result.message || "Setup check finished.", !result.ok);
+            return;
+          }
+        } catch (error) {
+          setConsole("Action Error", String(error.message || error));
+          showToast("Action failed.", true);
+        }
+      }
+
+      async function handleInstanceAction(action, name) {
+        const record = selectedRecord();
+        try {
+          if (action === "open_dashboard") {
+            if (record?.service === "openclaw") {
+              const token = await apiGet(`/api/token?name=${encodeURIComponent(name)}`);
+              window.open(token.url || record.access_url, "_blank", "noopener");
+            } else {
+              const url = resolvedAccessUrl(record, state.inspect);
+              if (!url) {
+                showToast(`No browser endpoint is available for ${name}.`, true);
+                return;
+              }
+              window.open(url, "_blank", "noopener");
+            }
+            return;
+          }
+          if (action === "copy_token") {
+            const token = await apiGet(`/api/token?name=${encodeURIComponent(name)}`);
+            await navigator.clipboard.writeText(token.token || "");
+            showToast(`Copied token for ${name}.`);
+            return;
+          }
+          if (action === "inspect") {
+            await loadInstanceDetails(name);
+            showToast(`Refreshed detail for ${name}.`);
+            return;
+          }
+          if (action === "logs") {
+            state.logs = await apiGet(`/api/logs?name=${encodeURIComponent(name)}&tail=120`);
+            renderDetail();
+            showToast(`Updated logs for ${name}.`);
+            return;
+          }
+          if (action === "config") {
+            const result = await apiPost({ action: "config", instance: name });
+            showToast(result.message || `Launched config for ${name}.`);
+            setConsole("Terminal Command", result.output || result.message);
+            return;
+          }
+          if (action === "tui") {
+            const result = await apiPost({ action: "tui", instance: name });
+            showToast(result.message || `Launched TUI for ${name}.`);
+            setConsole("Terminal Command", result.output || result.message);
+            return;
+          }
+          if (action === "clone_for_upgrade") {
+            const versions = state.versions || (await apiGet(`/api/versions?name=${encodeURIComponent(name)}`));
+            const latest = (versions.stable_remote_versions || []).slice(-1)[0] || "";
+            const cloneName = window.prompt("Clone name", `${name}-upgrade-test`);
+            if (!cloneName) return;
+            let targetVersion = "";
+            if (latest && normalizeVersion(latest) !== normalizeVersion(record?.version || "")) {
+              const shouldUpgrade = window.confirm(`Also upgrade the clone to ${latest}?`);
+              targetVersion = shouldUpgrade ? latest : "";
+            }
+            const result = await apiPost({
+              action: "clone_for_upgrade",
+              instance: name,
+              clone_name: cloneName,
+              target_version: targetVersion,
+            });
+            setConsole("Clone For Upgrade", result.output || result.message);
+            showToast(result.message || `Clone flow finished for ${cloneName}.`, !result.ok);
+            await loadDashboard(cloneName);
+            return;
+          }
+          if (action === "rollback") {
+            if (!window.confirm(`Rollback ${name} to the latest reversible snapshot?`)) return;
+            const result = await apiPost({ action: "rollback", instance: name });
+            setConsole("Rollback", result.output || result.message);
+            showToast(result.message || `Rollback finished for ${name}.`, !result.ok);
+            await loadDashboard(name);
+          }
+        } catch (error) {
+          setConsole("Action Error", String(error.message || error));
+          showToast(`Action failed for ${name}.`, true);
+        }
+      }
+
+      function bindFilters() {
+        els.filterService.addEventListener("change", (event) => {
+          state.filters.service = event.target.value;
+          renderCards();
+        });
+        els.filterStatus.addEventListener("change", (event) => {
+          state.filters.status = event.target.value;
+          renderCards();
+        });
+        els.filterQuery.addEventListener("input", (event) => {
+          state.filters.query = event.target.value;
+          renderCards();
+        });
+        els.filterReset.addEventListener("click", () => {
+          resetFilters({ focusQuery: true, announce: true });
+        });
+      }
+
+      function bindNavigation() {
+        document.querySelectorAll("[data-nav]").forEach((item) => {
+          item.addEventListener("click", () => {
+            const target = item.getAttribute("data-nav");
+            document.querySelectorAll("[data-nav]").forEach((node) => node.classList.remove("active"));
+            item.classList.add("active");
+            const map = {
+              overview: "section-overview",
+              instances: "section-instances",
+              local: "section-local",
+              upgrade: "section-upgrade",
+              providers: "section-providers",
+              removed: "section-removed",
+            };
+            const id = map[target];
+            if (id) {
+              document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+            }
+          });
+        });
+        document.querySelectorAll("[data-close-drawer]").forEach((button) => {
+          button.addEventListener("click", () => closeDrawer(button.getAttribute("data-close-drawer")));
+        });
+        document.addEventListener("click", (event) => {
+          if (!els.filterDrawer?.classList.contains("open")) return;
+          if (els.filterPopover?.contains(event.target)) return;
+          closeDrawer("filter-drawer");
+        });
+        document.addEventListener("keydown", (event) => {
+          if (event.key === "Escape") {
+            closeDrawer("filter-drawer");
+          }
+        });
+      }
+
+      function bindTopActions() {
+        els.refresh.addEventListener("click", () => handleTopAction("refresh"));
+        els.filter.addEventListener("click", () => handleTopAction("filter"));
+        els.providers.addEventListener("click", () => handleTopAction("providers"));
+        els.setupCheck.addEventListener("click", () => handleTopAction("setup_check"));
+        els.machineOpenCli.addEventListener("click", () => handleTopAction("open_cli"));
+      }
+
+      function bindScrollTop() {
+        els.scrollTop?.addEventListener("click", () => {
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        });
+        window.addEventListener("scroll", syncScrollTopButton, { passive: true });
+        syncScrollTopButton();
+      }
+
+      async function boot() {
+        bindFilters();
+        bindNavigation();
+        bindTopActions();
+        bindScrollTop();
+        try {
+          await loadDashboard();
+          showToast("Dashboard ready.");
+        } catch (error) {
+          setConsole("Startup Error", String(error.message || error));
+          showToast("Failed to load dashboard.", true);
+        }
+      }
+
+      boot();
+    </script>
+  </body>
+</html>

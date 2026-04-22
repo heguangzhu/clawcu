@@ -1,7 +1,10 @@
 """ClawCU package."""
 
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, version
 
 __all__ = ["__version__"]
 
-__version__ = version("clawcu")
+try:
+    __version__ = version("clawcu")
+except PackageNotFoundError:
+    __version__ = "0.0.0"
