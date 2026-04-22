@@ -23,6 +23,7 @@
 - [Opt-in: baking a sidecar into an instance](#opt-in-baking-a-sidecar-into-an-instance)
 - [Protocol surface (v0)](#protocol-surface-v0)
 - [Optional: thread_id for multi-turn context](#optional-thread_id-for-multi-turn-context)
+- [Outbound A2A from within the container (0.3.1)](#outbound-a2a-from-within-the-container-031)
 - [Operational internals](#operational-internals)
 - [Image lifecycle and the source-sha fingerprint](#image-lifecycle-and-the-source-sha-fingerprint)
 - [Two-instance walkthrough](#two-instance-walkthrough)
@@ -210,6 +211,191 @@ Storage format is JSONL (one message per line, append-only). One file per peer, 
 Security: `thread_id` is enforced to be a valid uuid v7. No `..`, no `/`, no path-traversal via the thread identifier. Peers that forget to pass one are fine — they just get stateless single-shot behaviour.
 
 * * *
+## Outbound A2A from within the container (0.3.1)
+
+0.3.0 shipped **inbound-only** — peers could hit your agent, but your agent couldn't *initiate* a call mid-turn. 0.3.1 adds the missing primitive: `POST /a2a/outbound` on the same sidecar port.
+
+Picture the scenario:
+
+> A user is chatting with **writer**. To answer the next question, the writer's LLM must pull yesterday's ingest counts from **analyst**. The native tool-calling system inside writer doesn't know about A2A — but we'd like the LLM to just invoke a tool like `call_peer(agent="analyst", message="…")` and have the call transparently traverse A2A.
+
+`POST /a2a/outbound` is the atomic primitive that unlocks this. Higher-level shims (MCP server, native-plugin tool shim, author-written HTTP tools) all sit on top of it.
+
+### Request
+
+```bash
+curl -sS -X POST http://127.0.0.1:18790/a2a/outbound \
+  -H 'content-type: application/json' \
+  -d '{
+    "to": "analyst",
+    "message": "give me yesterdays ingest counts",
+    "thread_id": "0192a3b4-1c47-7e12-8b81-5a2d3e4f5a6b",
+    "registry_url": "http://host.docker.internal:9100",
+    "timeout_ms": 60000
+  }'
+```
+
+| Field          | Type   | Required | Notes                                                                 |
+| -------------- | ------ | -------- | --------------------------------------------------------------------- |
+| `to`           | string | yes      | Peer's registered name. Resolved via `GET /agents/{to}` on registry.  |
+| `message`      | string | yes      | Message body forwarded verbatim.                                      |
+| `thread_id`    | string | no       | If set, propagates through to the peer's `/a2a/send` (uuid v7 shape). |
+| `registry_url` | string | no       | Override. Defaults to `$A2A_REGISTRY_URL` then `http://host.docker.internal:9100` (where `clawcu a2a up` binds). |
+| `timeout_ms`   | number | no       | Per-call HTTP timeout. Default `60000`.                               |
+
+### Response (2xx)
+
+```json
+{
+  "from": "writer",
+  "to": "analyst",
+  "reply": "3,421 rows across 7 sources.",
+  "thread_id": "0192a3b4-1c47-7e12-8b81-5a2d3e4f5a6b"
+}
+```
+
+`from` is **self** (the caller's sidecar name) and `to` is the peer, matching the tool-call shape the LLM expects: *who answered, what did they say, and what thread did this land in.*
+
+### Errors
+
+| Status | Meaning                                                         |
+| ------ | --------------------------------------------------------------- |
+| `400`  | Malformed body: missing `to`/`message`, wrong `thread_id` type. |
+| `404`  | Peer not found in registry.                                     |
+| `429`  | Peer rate-limited us (surfaced from their `/a2a/send`).         |
+| `502`  | Peer responded with non-2xx or non-JSON.                        |
+| `503`  | Registry unreachable / malformed. Retriable.                    |
+| `504`  | Peer socket failure or timeout.                                 |
+| `508`  | Hop budget exceeded — see **Loop protection** below.            |
+
+### Loop protection (`X-A2A-Hop`)
+
+Every outbound call adds `X-A2A-Hop: N` (starting at 1; incoming requests that already carry the header get `N+1`). Inbound `/a2a/send` rejects with **`508 Loop Detected`** when `N >= A2A_HOP_BUDGET` (default `8`). This is what prevents an A→B→A→B runaway burning your provider quota before you notice.
+
+### Configuring the hop budget
+
+Set the budget at instance creation:
+
+```bash
+clawcu create openclaw --name writer --version 2026.4.1 --a2a --a2a-hop-budget 4
+```
+
+The value is validated (`N >= 1`, requires `--a2a`) and persisted to the instance env file as `A2A_HOP_BUDGET`, so it survives `clawcu recreate`. To change it later, `clawcu setenv <instance> A2A_HOP_BUDGET=<N>` + restart. Raise it carefully — it's the circuit breaker, not the operating point.
+
+### Request correlation (`X-A2A-Request-Id`)
+
+Both sidecars surface an `X-A2A-Request-Id` header on every `/a2a/send` and `/a2a/outbound` call. The sidecar:
+
+- **Reads the inbound header if the caller supplied one** (uuid4, uuid7, ulid — any opaque ≤128-char token with no whitespace or control bytes). Lets higher layers pre-tag federation calls with their own trace id.
+- **Mints an opaque id if absent** so you always have something to grep on.
+- **Logs the id at entry + exit** of every handler on every hop.
+- **Forwards it to the next hop** when `/a2a/outbound` forwards to a peer's `/a2a/send`. That means a single A→B→C federation call shares one id end-to-end.
+- **Echoes it back in the JSON body** (`"request_id": "..."`) and as a response header, so JSON clients and `curl | grep` users can both recover it.
+
+To correlate a federation call across containers: `grep request_id=<id> ~/.clawcu/*/a2a-sidecar.log`.
+
+### LLM-facing MCP tool (0.3.3)
+
+As of 0.3.3 the sidecar also speaks **MCP over streamable-http** on the same port at `POST /mcp`, exposing a single tool `a2a_call_peer` that wraps `/a2a/outbound` in-process:
+
+```jsonc
+// POST /mcp  (JSON-RPC 2.0)
+{"jsonrpc":"2.0","id":1,"method":"tools/call",
+ "params":{"name":"a2a_call_peer",
+           "arguments":{"to":"analyst","message":"Q1 revenue?","thread_id":"t-1"}}}
+
+// response
+{"jsonrpc":"2.0","id":1,
+ "result":{"content":[{"type":"text","text":"Q1 revenue was +18%"}],
+           "isError":false,
+           "structuredContent":{
+             "from":"analyst","to":"analyst","reply":"Q1 revenue was +18%",
+             "thread_id":"t-1","request_id":"..."}}}
+```
+
+The MCP request shares the `X-A2A-Request-Id` correlation header with `/a2a/send` and `/a2a/outbound`, so an LLM→MCP→peer chain greps as one transaction. An MCP tool call is a function call inside the sidecar process — it does not incur a second HTTP hop to `/a2a/outbound`.
+
+Supported JSON-RPC methods: `initialize`, `tools/list`, `tools/call` (tool: `a2a_call_peer`), `ping`, `notifications/initialized`.
+
+### MCP auto-wiring (0.3.4)
+
+A fresh `clawcu create --a2a` or `clawcu restart --a2a` no longer requires hand-editing the service config. On sidecar start the bootstrap hook merges an `mcp.servers.a2a = {"url": "http://127.0.0.1:<bind-port>/mcp"}` entry into the service's config file:
+
+- **OpenClaw:** JSON at `/home/node/.openclaw/openclaw.json`
+- **Hermes:** YAML at `/opt/data/config.yaml`
+
+The hook is safe by construction:
+
+- Writes via temp file + atomic rename. Existing keys at any nesting level are preserved — only `mcp.servers.a2a` is touched.
+- If `A2A_ENABLED` is unset/false it reverses the merge (removes a stale `a2a` entry) so disabling the feature cleans up after itself.
+- Malformed JSON/YAML aborts with a warning and the original file is untouched.
+- Tunable: `A2A_SERVICE_MCP_CONFIG_PATH`, `A2A_SERVICE_MCP_CONFIG_FORMAT` (`json`|`yaml`), `A2A_ENABLED`. The `clawcu` adapter injects defaults; a user-provided env file wins.
+
+### Templated tool description with live peers (0.3.5)
+
+`tools/list` used to return a static description for `a2a_call_peer`. As of 0.3.5 the description is templated on each call with a live peer summary pulled from the registry's `GET /agents` endpoint, so the LLM reads something like:
+
+```text
+Call another agent in the A2A federation and return its reply.
+
+Available peers:
+  - analyst (market data, charting, forecasting)
+  - editor (prose, copyediting)
+  - researcher (web search, citations, ...)
+
+Use when the current task needs data or work owned by a different agent.
+The target agent name must match one of the peers above.
+```
+
+Caching and safety:
+
+- 30-second TTL per sidecar process. A chatty LLM that calls `tools/list` every turn hits the registry at most twice per minute.
+- 5-minute stale-OK window. If the registry is briefly unreachable, the last known peer list is returned rather than failing the call.
+- Generic fallback if the registry has never answered inside the stale window — `tools/list` still succeeds so the LLM still sees the tool at all.
+- Self-exclusion: the caller's own name is filtered out (agents don't list themselves as callable peers).
+- Cap at 16 peers; overflow collapses to `...and N more`. Skills list per peer capped at 3 with `...` suffix.
+- **Rollback:** set `A2A_TOOL_DESC_MODE=static` to disable the live peer summary and restore the 0.3.4 static description. Gated in the descriptor function; no other change required.
+
+Registry contract: `GET /agents` returns a JSON array of `{name, role, skills}` objects. The reference registry script in `scripts/` already implements this; custom registries missing the endpoint cleanly fall back to the generic description.
+
+#### Opt-in role rendering (0.3.6)
+
+By default the per-peer line shows only the name + first three skills. Set `A2A_TOOL_DESC_INCLUDE_ROLE=true` (per sidecar, via `clawcu setenv <instance> A2A_TOOL_DESC_INCLUDE_ROLE=true` + `clawcu restart <instance>`) to render the peer's `role` in square brackets after the name:
+
+```text
+  - analyst [senior market analyst] (market data, charting, ...)
+```
+
+Useful when a federation has multiple peers with overlapping skills and the role text disambiguates them. An empty `role` field omits the brackets cleanly (no bare `[]` artifact). Default stays off to keep the tool description short.
+
+### Self-origin outbound rate limit (0.3.4)
+
+The per-peer `A2A_RATE_LIMIT_PER_MINUTE` cap protects *inbound* traffic. The new self-origin cap protects the LLM's own outbound behavior — one turn firing 200 parallel `a2a_call_peer` calls will no longer nuke the provider quota.
+
+- Shared bucket across `/a2a/outbound` and `/mcp` tool-call. An LLM can't bypass it by switching paths.
+- Key: `thread:<thread_id>` when set, else `self:<agent-name>`. Default: **60 calls / rolling 60s / key**.
+- Tunable via `A2A_OUTBOUND_RATE_LIMIT` (positive integer; invalid values fall back to default).
+- Over-limit response:
+  - `/a2a/outbound` → `HTTP 429` with `{"error": "self-origin rate limit exceeded (N/min)", "retry_after_ms": ...}`
+  - `/mcp` tool-call → JSON-RPC error `{code: -32001, data: {httpStatus: 429, retryAfterMs: ...}}`
+
+#### Empty-bucket cleanup (0.3.5 → 0.3.6)
+
+0.3.5 added a `sweep()` primitive that drops empty-deque buckets so the `hits` map doesn't grow forever across many one-shot `thread_id`s. 0.3.6 wires a background timer in both sidecars that calls `sweep()` every 5 minutes by default. Set `A2A_OUTBOUND_SWEEP_INTERVAL_MS=0` to disable the timer entirely (operators who want strict manual control keep it); any positive integer overrides the cadence. The Node timer is `.unref()`'d and the Python version runs on a daemon thread, so neither blocks graceful shutdown.
+
+0.3.7 added a one-line log on sweep failure. Sweep is opportunistic — a throwing `sweep()` is still swallowed so the cleanup thread/timer stays alive and never touches the request path — but operators grepping sidecar logs for `outbound-sweep failed` can now see that something went wrong. Happy-path sweeps still emit no log line.
+
+### Why this endpoint, not a native tool
+
+The sidecar deliberately does **not** touch the service's tool-calling system (see [§Why a sidecar, not a gateway plugin](#why-a-sidecar-not-a-gateway-plugin)). To give the LLM a tool it can invoke, *something* still has to register that tool inside the service. `POST /a2a/outbound` is the shared foundation that any of those higher-level approaches can build on — one registry-lookup / auth / error-handling / hop-increment implementation, used by all of them, so none of them have to re-derive it. As of 0.3.3 the sidecar itself hosts the MCP server (see above); earlier approaches (author-written HTTP tool in IDENTITY.md) still work.
+
+No auth is enforced on this endpoint: the sidecar binds `127.0.0.1` inside the container, so only in-container callers can reach it. Cross-host usage is out of scope until the protocol grows auth.
+
+### Not a CLI surface
+
+0.3.1 does **not** add a `clawcu a2a outbound ...` wrapper. The endpoint is container-local plumbing for in-container tools. Operator-side messaging from the host continues to use `clawcu a2a send --to …`.
+
+* * *
 ## Operational internals
 
 These are baked into the sidecar; there are no user-tuneable flags today. Called out here so you know what to expect:
@@ -347,11 +533,20 @@ You're on an editable install and `A2AImageBuilder` sees the new sha but the old
 * * *
 ## Current limits
 
-- **Protocol version: v0.** The contract may extend (streaming, auth, multi-recipient, richer error taxonomy) before `v1`. Pin your client to the v0 request/response shape and expect backward-compatible additions, not breaking changes, over the `0.3.x` line.
+- **Protocol version: v0.** The contract may extend (streaming, auth, multi-recipient) before `v1`. Pin your client to the v0 request/response shape and expect backward-compatible additions, not breaking changes, over the `0.3.x` line.
 - **No built-in auth.** `/a2a/send` accepts any request from any peer that can reach the port. The sidecar binds 127.0.0.1 by default, so on a single-host setup this is fine. For multi-host, put it behind a reverse proxy that does auth, or wait for the protocol extension.
 - **Local-only registry.** The registry aggregates cards for **this host's** managed instances. Cross-host federation isn't in v0.
 - **Stock / A2A is a hard switch at create time.** No in-place enable; use clone-first.
 - **Sidecar has no streaming.** v0 is request/response. If the native service streams, the sidecar waits for the full reply and returns it as one JSON.
+
+### Intentional non-goals (0.3.8)
+
+A2A reached feature-complete at **0.3.8**. A handful of follow-on ideas were considered across the iteration cycle and consciously left unshipped because no real-world deployment has triggered the need. Each has a documented re-open clause — the moment a real scenario shows up, the item gets picked back up:
+
+- **Fleet-wide shared outbound-rate-limit quota.** The self-origin `A2A_OUTBOUND_RATE_LIMIT` is per-sidecar. Every current deployment is 1 sidecar per instance; shared quota becomes interesting only when a pool of sidecars sits behind a load balancer. Re-open if that changes.
+- **Push-based peer-cache refresh.** Today the templated tool description refreshes on a 30 s TTL with a 5-minute stale-OK window. A push channel (SSE from the registry) would cut sub-30 s discovery latency but adds a second transport and a drop-reconnect failure mode. Re-open if a user workflow needs sub-30 s peer discovery *and* can't tolerate the stale-OK fallback.
+- **Separate `a2a_list_peers` / `a2a_get_peer_card` MCP tools.** The live peer summary is already embedded in the `a2a_call_peer` description text, so the LLM sees the roster on every `tools/list`. Standalone enumeration tools would 3× the tool surface for negligible gain. Re-open if a concrete scenario needs peer data back as JSON instead of prose.
+- **Per-request `role` flag.** `A2A_TOOL_DESC_INCLUDE_ROLE` is per-sidecar. Every deployment is one LLM per sidecar today. Re-open if a single sidecar ever serves multiple MCP clients with distinct description preferences.
 
 * * *
 ## FAQ
