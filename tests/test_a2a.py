@@ -1122,6 +1122,26 @@ class _StubService:
     def _make_runtime_tree_writable(self, datadir):
         return None
 
+    def _load_env_file(self, path):
+        """Mirror ClawCUService._load_env_file for adapter unit tests.
+
+        Minimal KEY=VALUE parser — adapter code only reads keys back out, not
+        writes, so we don't need quote handling or escape sequences.
+        """
+        if path is None:
+            return {}
+        p = Path(path)
+        if not p.exists():
+            return {}
+        out: dict[str, str] = {}
+        for raw in p.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip()
+        return out
+
 
 def test_openclaw_adapter_writes_chat_completions_flag_when_a2a_enabled(tmp_path):
     from clawcu.openclaw.adapter import OpenClawAdapter
@@ -1171,6 +1191,98 @@ def test_openclaw_adapter_run_spec_exposes_gateway_port_when_a2a(tmp_path):
     assert record.port + 1 in host_ports, (
         "sidecar must be published on record.port + 1 for neighbor-port federation"
     )
+
+
+# Review-1 P0-B: registry URL auto-discovery. All four tests here guard the
+# adapter-layer fix: --add-host flag on Linux + auto-injected default
+# registry URL with user-override precedence.
+
+
+def test_openclaw_adapter_a2a_adds_host_gateway_flag(tmp_path):
+    from clawcu.openclaw.adapter import OpenClawAdapter
+
+    adapter = OpenClawAdapter(manager=None)
+    record = _make_openclaw_record(tmp_path, a2a_enabled=True)
+    spec = adapter.run_spec(_StubService(), record)
+    assert ("host.docker.internal", "host-gateway") in spec.extra_hosts, (
+        "A2A-enabled instances must map host.docker.internal so Linux hosts "
+        "can reach the clawcu registry on the host network"
+    )
+
+
+def test_openclaw_adapter_does_not_add_host_flag_when_a2a_disabled(tmp_path):
+    from clawcu.openclaw.adapter import OpenClawAdapter
+
+    adapter = OpenClawAdapter(manager=None)
+    record = _make_openclaw_record(tmp_path, a2a_enabled=False)
+    spec = adapter.run_spec(_StubService(), record)
+    assert spec.extra_hosts == [], (
+        "stock instances stay clean — no mesh-specific docker args"
+    )
+
+
+def test_openclaw_adapter_a2a_injects_default_registry_url(tmp_path):
+    from clawcu.openclaw.adapter import OpenClawAdapter
+
+    adapter = OpenClawAdapter(manager=None)
+    record = _make_openclaw_record(tmp_path, a2a_enabled=True)
+    spec = adapter.run_spec(_StubService(), record)
+    assert spec.extra_env.get("A2A_REGISTRY_URL") == "http://host.docker.internal:9100"
+
+
+def test_openclaw_adapter_preserves_user_registry_url_override(tmp_path):
+    """Parity with review-12 P2-B: user-set env in the file wins."""
+    from clawcu.openclaw.adapter import OpenClawAdapter
+
+    env_file = tmp_path / "writer.env"
+    env_file.write_text("A2A_REGISTRY_URL=http://proxy.internal:9100\n", encoding="utf-8")
+    adapter = OpenClawAdapter(manager=None)
+    record = _make_openclaw_record(tmp_path, a2a_enabled=True)
+    spec = adapter.run_spec(_StubService(env_file=env_file), record)
+    assert "A2A_REGISTRY_URL" not in spec.extra_env, (
+        "adapter must not shadow a user-set registry URL; user env file wins"
+    )
+
+
+def test_openclaw_adapter_a2a_injects_mcp_bootstrap_env(tmp_path):
+    """a2a-design-4.md §P0-A: auto-wiring env for the MCP bootstrap."""
+    from clawcu.openclaw.adapter import OpenClawAdapter
+
+    adapter = OpenClawAdapter(manager=None)
+    record = _make_openclaw_record(tmp_path, a2a_enabled=True)
+    spec = adapter.run_spec(_StubService(), record)
+    assert spec.extra_env.get("A2A_ENABLED") == "true"
+    assert (
+        spec.extra_env.get("A2A_SERVICE_MCP_CONFIG_PATH")
+        == "/home/node/.openclaw/openclaw.json"
+    )
+    assert spec.extra_env.get("A2A_SERVICE_MCP_CONFIG_FORMAT") == "json"
+
+
+def test_openclaw_adapter_stock_omits_mcp_bootstrap_env(tmp_path):
+    from clawcu.openclaw.adapter import OpenClawAdapter
+
+    adapter = OpenClawAdapter(manager=None)
+    record = _make_openclaw_record(tmp_path, a2a_enabled=False)
+    spec = adapter.run_spec(_StubService(), record)
+    for key in ("A2A_ENABLED", "A2A_SERVICE_MCP_CONFIG_PATH", "A2A_SERVICE_MCP_CONFIG_FORMAT"):
+        assert key not in spec.extra_env, f"{key} must not leak into stock instance spec"
+
+
+def test_openclaw_adapter_user_override_of_mcp_bootstrap_env_wins(tmp_path):
+    from clawcu.openclaw.adapter import OpenClawAdapter
+
+    env_file = tmp_path / "writer.env"
+    env_file.write_text(
+        "A2A_SERVICE_MCP_CONFIG_PATH=/custom/path.json\n"
+        "A2A_SERVICE_MCP_CONFIG_FORMAT=json\n",
+        encoding="utf-8",
+    )
+    adapter = OpenClawAdapter(manager=None)
+    record = _make_openclaw_record(tmp_path, a2a_enabled=True)
+    spec = adapter.run_spec(_StubService(env_file=env_file), record)
+    assert "A2A_SERVICE_MCP_CONFIG_PATH" not in spec.extra_env
+    assert "A2A_SERVICE_MCP_CONFIG_FORMAT" not in spec.extra_env
 
 
 def _make_hermes_record(tmp_path, *, a2a_enabled: bool = True):
@@ -1299,6 +1411,190 @@ def test_hermes_adapter_run_spec_sets_gateway_ready_path_to_health(tmp_path):
     spec = adapter.run_spec(stub, record)
 
     assert spec.extra_env["A2A_GATEWAY_READY_PATH"] == "/health"
+
+
+# Review-1 P0-B mirrors for hermes adapter.
+
+
+def test_hermes_adapter_a2a_adds_host_gateway_flag(tmp_path):
+    from clawcu.hermes.adapter import HermesAdapter
+
+    adapter = HermesAdapter(manager=None)
+    record = _make_hermes_record(tmp_path, a2a_enabled=True)
+    stub = _StubServiceHermes()
+    stub._load_env_file = lambda path: {"API_SERVER_KEY": "test-key"}  # type: ignore[method-assign]
+    spec = adapter.run_spec(stub, record)
+    assert ("host.docker.internal", "host-gateway") in spec.extra_hosts
+
+
+def test_hermes_adapter_does_not_add_host_flag_when_a2a_disabled(tmp_path):
+    from clawcu.hermes.adapter import HermesAdapter
+
+    adapter = HermesAdapter(manager=None)
+    record = _make_hermes_record(tmp_path, a2a_enabled=False)
+    stub = _StubServiceHermes()
+    stub._load_env_file = lambda path: {"API_SERVER_KEY": "test-key"}  # type: ignore[method-assign]
+    spec = adapter.run_spec(stub, record)
+    assert spec.extra_hosts == []
+
+
+def test_hermes_adapter_a2a_injects_default_registry_url(tmp_path):
+    from clawcu.hermes.adapter import HermesAdapter
+
+    adapter = HermesAdapter(manager=None)
+    record = _make_hermes_record(tmp_path, a2a_enabled=True)
+    stub = _StubServiceHermes()
+    stub._load_env_file = lambda path: {"API_SERVER_KEY": "test-key"}  # type: ignore[method-assign]
+    spec = adapter.run_spec(stub, record)
+    assert spec.extra_env.get("A2A_REGISTRY_URL") == "http://host.docker.internal:9100"
+
+
+def test_hermes_adapter_preserves_user_registry_url_override(tmp_path):
+    from clawcu.hermes.adapter import HermesAdapter
+
+    adapter = HermesAdapter(manager=None)
+    record = _make_hermes_record(tmp_path, a2a_enabled=True)
+    stub = _StubServiceHermes()
+    stub._load_env_file = lambda path: {
+        "API_SERVER_KEY": "test-key",
+        "A2A_REGISTRY_URL": "http://proxy.internal:9100",
+    }  # type: ignore[method-assign]
+    spec = adapter.run_spec(stub, record)
+    assert "A2A_REGISTRY_URL" not in spec.extra_env, (
+        "user-set override wins over adapter default"
+    )
+
+
+def test_hermes_adapter_a2a_injects_mcp_bootstrap_env(tmp_path):
+    """a2a-design-4.md §P0-A: auto-wiring env for the Hermes MCP bootstrap."""
+    from clawcu.hermes.adapter import HermesAdapter
+
+    adapter = HermesAdapter(manager=None)
+    record = _make_hermes_record(tmp_path, a2a_enabled=True)
+    stub = _StubServiceHermes()
+    stub._load_env_file = lambda path: {"API_SERVER_KEY": "test-key"}  # type: ignore[method-assign]
+    spec = adapter.run_spec(stub, record)
+    assert spec.extra_env.get("A2A_ENABLED") == "true"
+    assert spec.extra_env.get("A2A_SERVICE_MCP_CONFIG_PATH") == "/opt/data/config.yaml"
+    assert spec.extra_env.get("A2A_SERVICE_MCP_CONFIG_FORMAT") == "yaml"
+
+
+def test_hermes_adapter_stock_omits_mcp_bootstrap_env(tmp_path):
+    from clawcu.hermes.adapter import HermesAdapter
+
+    adapter = HermesAdapter(manager=None)
+    record = _make_hermes_record(tmp_path, a2a_enabled=False)
+    stub = _StubServiceHermes()
+    stub._load_env_file = lambda path: {"API_SERVER_KEY": "test-key"}  # type: ignore[method-assign]
+    spec = adapter.run_spec(stub, record)
+    for key in ("A2A_ENABLED", "A2A_SERVICE_MCP_CONFIG_PATH", "A2A_SERVICE_MCP_CONFIG_FORMAT"):
+        assert key not in spec.extra_env, f"{key} must not leak into stock hermes spec"
+
+
+def test_hermes_adapter_user_override_of_mcp_bootstrap_env_wins(tmp_path):
+    from clawcu.hermes.adapter import HermesAdapter
+
+    adapter = HermesAdapter(manager=None)
+    record = _make_hermes_record(tmp_path, a2a_enabled=True)
+    stub = _StubServiceHermes()
+    stub._load_env_file = lambda path: {
+        "API_SERVER_KEY": "test-key",
+        "A2A_SERVICE_MCP_CONFIG_PATH": "/alt/config.yaml",
+    }  # type: ignore[method-assign]
+    spec = adapter.run_spec(stub, record)
+    assert "A2A_SERVICE_MCP_CONFIG_PATH" not in spec.extra_env
+
+
+# -- P1-I: adapter × bootstrap integration (a2a-design-5.md) ----------------
+
+
+def test_hermes_adapter_extra_env_drives_bootstrap_merge_into_yaml(tmp_path):
+    """Operator flow: adapter computes env → bootstrap merges `mcp.servers.a2a`
+    into config.yaml. Asserts the contract end-to-end (Hermes YAML path)."""
+    yaml = pytest.importorskip("yaml")
+    from clawcu.hermes.adapter import HermesAdapter
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "model:\n  provider: openrouter\napi_server:\n  host: 0.0.0.0\n",
+        encoding="utf-8",
+    )
+
+    adapter = HermesAdapter(manager=None)
+    record = _make_hermes_record(tmp_path, a2a_enabled=True)
+    stub = _StubServiceHermes()
+    stub._load_env_file = lambda path: {"API_SERVER_KEY": "test-key"}  # type: ignore[method-assign]
+    spec = adapter.run_spec(stub, record)
+
+    # Container-path override: point the bootstrap at the host temp file.
+    env = dict(spec.extra_env)
+    env["A2A_SERVICE_MCP_CONFIG_PATH"] = str(config_path)
+
+    mod = _load_hermes_bootstrap_module()
+    result = mod.run_bootstrap(env=env)
+    assert result["ok"] is True
+    assert result["action"] in {"create", "merge"}
+
+    merged = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert merged["mcp"]["servers"]["a2a"]["url"].startswith("http://127.0.0.1:")
+    assert merged["mcp"]["servers"]["a2a"]["url"].endswith("/mcp")
+    # Unrelated sections must survive the merge.
+    assert merged["model"] == {"provider": "openrouter"}
+    assert merged["api_server"] == {"host": "0.0.0.0"}
+
+
+def test_openclaw_adapter_extra_env_drives_node_bootstrap_merge_into_json(tmp_path):
+    """Operator flow: OpenClaw adapter (Python) → Node bootstrap.js → merged
+    openclaw.json. One subprocess to Node to honour the cross-runtime contract."""
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node not available")
+
+    from clawcu.openclaw.adapter import OpenClawAdapter
+
+    config_path = tmp_path / "openclaw.json"
+    config_path.write_text(
+        json.dumps({"gateway": {"mode": "local"}, "llm": {"provider": "openrouter"}}),
+        encoding="utf-8",
+    )
+
+    adapter = OpenClawAdapter(manager=None)
+    record = _make_openclaw_record(tmp_path, a2a_enabled=True)
+    spec = adapter.run_spec(_StubService(), record)
+    env = dict(spec.extra_env)
+    env["A2A_SERVICE_MCP_CONFIG_PATH"] = str(config_path)  # map container path → host path
+
+    bootstrap_js = (
+        Path(__file__).resolve().parent.parent
+        / "src" / "clawcu" / "a2a" / "sidecar_plugin"
+        / "openclaw" / "sidecar" / "bootstrap.js"
+    )
+    script = (
+        f'const {{ runBootstrap }} = require({json.dumps(str(bootstrap_js))});'
+        'const r = runBootstrap({ env: process.env, logger: { log(){}, warn(){} } });'
+        'process.stdout.write(JSON.stringify(r));'
+    )
+    proc = subprocess.run(
+        [node, "-e", script],
+        env={**env, "PATH": "/usr/bin:/bin:/usr/local/bin"},
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout)
+    assert result["ok"] is True
+    assert result["action"] in {"create", "merge"}
+
+    merged = json.loads(config_path.read_text(encoding="utf-8"))
+    assert merged["mcp"]["servers"]["a2a"]["url"].startswith("http://127.0.0.1:")
+    assert merged["mcp"]["servers"]["a2a"]["url"].endswith("/mcp")
+    # Sibling sections untouched.
+    assert merged["gateway"] == {"mode": "local"}
+    assert merged["llm"] == {"provider": "openrouter"}
 
 
 def test_openclaw_adapter_run_spec_sets_sidecar_log_dir_under_mount(tmp_path):
@@ -2152,3 +2448,1952 @@ def test_hermes_safe_id_contract():
     assert mod.safe_id("peer with space") is None
     assert mod.safe_id(None) is None
     assert mod.safe_id("x" * 129) is None  # length cap at 128
+
+
+# ---------------------------------------------------------------------------
+# Iter-1 (0.3.1) outbound primitive — a2a-design-1.md §Protocol.
+# Exercises lookup_peer / forward_to_peer / read_hop_header plus the full
+# POST /a2a/outbound handler against stub registry + stub peer HTTP servers.
+# ---------------------------------------------------------------------------
+
+
+def _start_http(handler_cls):
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    return srv, t
+
+
+def _stop_http(srv, t):
+    srv.shutdown()
+    srv.server_close()
+    t.join(timeout=2)
+
+
+def _stub_registry(cards: dict) -> type[BaseHTTPRequestHandler]:
+    """Return a handler class that serves `/agents/<name>` from the given map."""
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw):
+            return
+
+        def do_GET(self):  # noqa: N802
+            prefix = "/agents/"
+            if self.path.startswith(prefix):
+                name = self.path[len(prefix):]
+                card = cards.get(name)
+                if card is None:
+                    body = json.dumps({"error": "not_found"}).encode()
+                    self.send_response(404)
+                else:
+                    body = json.dumps(card).encode()
+                    self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    return H
+
+
+def test_hermes_sidecar_lookup_peer_returns_card_on_200():
+    mod = _load_hermes_sidecar_module()
+    cards = {
+        "analyst": {
+            "name": "analyst",
+            "role": "hermes",
+            "skills": ["chat"],
+            "endpoint": "http://127.0.0.1:9129/a2a/send",
+        }
+    }
+    srv, t = _start_http(_stub_registry(cards))
+    try:
+        host, port = srv.server_address
+        got = mod.lookup_peer(f"http://{host}:{port}", "analyst", timeout=2.0)
+        assert got["endpoint"] == "http://127.0.0.1:9129/a2a/send"
+    finally:
+        _stop_http(srv, t)
+
+
+def test_hermes_sidecar_lookup_peer_404_raises_outbounderror_404():
+    mod = _load_hermes_sidecar_module()
+    srv, t = _start_http(_stub_registry({}))
+    try:
+        host, port = srv.server_address
+        with pytest.raises(mod.OutboundError) as exc:
+            mod.lookup_peer(f"http://{host}:{port}", "missing", timeout=2.0)
+        assert exc.value.http_status == 404
+    finally:
+        _stop_http(srv, t)
+
+
+def test_hermes_sidecar_lookup_peer_registry_5xx_maps_to_503():
+    mod = _load_hermes_sidecar_module()
+
+    class Boom(BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw):
+            return
+
+        def do_GET(self):  # noqa: N802
+            self.send_response(500)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    srv, t = _start_http(Boom)
+    try:
+        host, port = srv.server_address
+        with pytest.raises(mod.OutboundError) as exc:
+            mod.lookup_peer(f"http://{host}:{port}", "analyst", timeout=2.0)
+        assert exc.value.http_status == 503
+    finally:
+        _stop_http(srv, t)
+
+
+def test_hermes_sidecar_forward_to_peer_propagates_hop_header_and_body():
+    mod = _load_hermes_sidecar_module()
+    observed = {}
+
+    class PeerH(BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw):
+            return
+
+        def do_POST(self):  # noqa: N802
+            observed["hop"] = self.headers.get("X-A2A-Hop")
+            length = int(self.headers.get("Content-Length") or 0)
+            observed["body"] = json.loads(self.rfile.read(length).decode("utf-8"))
+            body = json.dumps(
+                {"from": "analyst", "reply": "42", "thread_id": None}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv, t = _start_http(PeerH)
+    try:
+        host, port = srv.server_address
+        got = mod.forward_to_peer(
+            endpoint=f"http://{host}:{port}/a2a/send",
+            self_name="writer",
+            peer_name="analyst",
+            message="hi",
+            thread_id=None,
+            hop=3,
+            timeout=2.0,
+        )
+        assert got["reply"] == "42"
+        assert observed["hop"] == "3"
+        assert observed["body"]["from"] == "writer"
+        assert observed["body"]["to"] == "analyst"
+        assert observed["body"]["message"] == "hi"
+        assert "thread_id" not in observed["body"]
+    finally:
+        _stop_http(srv, t)
+
+
+def test_hermes_sidecar_forward_to_peer_thread_id_propagated():
+    mod = _load_hermes_sidecar_module()
+    observed = {}
+
+    class PeerH(BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw):
+            return
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length") or 0)
+            observed["body"] = json.loads(self.rfile.read(length).decode("utf-8"))
+            body = json.dumps(
+                {"from": "analyst", "reply": "ok", "thread_id": "t-1"}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv, t = _start_http(PeerH)
+    try:
+        host, port = srv.server_address
+        mod.forward_to_peer(
+            endpoint=f"http://{host}:{port}/a2a/send",
+            self_name="writer",
+            peer_name="analyst",
+            message="hi",
+            thread_id="t-1",
+            hop=1,
+            timeout=2.0,
+        )
+        assert observed["body"]["thread_id"] == "t-1"
+    finally:
+        _stop_http(srv, t)
+
+
+def test_hermes_sidecar_forward_to_peer_508_surfaces_as_508():
+    mod = _load_hermes_sidecar_module()
+
+    class PeerH(BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw):
+            return
+
+        def do_POST(self):  # noqa: N802
+            body = json.dumps({"error": "hop budget exceeded"}).encode()
+            self.send_response(508)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv, t = _start_http(PeerH)
+    try:
+        host, port = srv.server_address
+        with pytest.raises(mod.OutboundError) as exc:
+            mod.forward_to_peer(
+                endpoint=f"http://{host}:{port}/a2a/send",
+                self_name="writer",
+                peer_name="analyst",
+                message="hi",
+                thread_id=None,
+                hop=9,
+                timeout=2.0,
+            )
+        assert exc.value.http_status == 508
+    finally:
+        _stop_http(srv, t)
+
+
+def test_hermes_sidecar_forward_to_peer_peer_500_maps_to_502():
+    mod = _load_hermes_sidecar_module()
+
+    class PeerH(BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw):
+            return
+
+        def do_POST(self):  # noqa: N802
+            self.send_response(500)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    srv, t = _start_http(PeerH)
+    try:
+        host, port = srv.server_address
+        with pytest.raises(mod.OutboundError) as exc:
+            mod.forward_to_peer(
+                endpoint=f"http://{host}:{port}/a2a/send",
+                self_name="writer",
+                peer_name="analyst",
+                message="hi",
+                thread_id=None,
+                hop=1,
+                timeout=2.0,
+            )
+        assert exc.value.http_status == 502
+        assert exc.value.peer_status == 500
+    finally:
+        _stop_http(srv, t)
+
+
+def test_hermes_sidecar_read_hop_header_variants():
+    mod = _load_hermes_sidecar_module()
+
+    class HM:
+        def __init__(self, **kv):
+            self.kv = {k: str(v) for k, v in kv.items()}
+
+        def get(self, k, default=None):
+            return self.kv.get(k, default)
+
+    assert mod.read_hop_header(HM()) == 0
+    assert mod.read_hop_header(HM(**{"X-A2A-Hop": "3"})) == 3
+    assert mod.read_hop_header(HM(**{"X-A2A-Hop": "-2"})) == 0
+    assert mod.read_hop_header(HM(**{"X-A2A-Hop": "abc"})) == 0
+
+
+def test_hermes_sidecar_outbound_handler_end_to_end(monkeypatch):
+    """Boot the handler inside a fake HTTP server, fire /a2a/outbound at it.
+
+    Mirrors the openclaw node-test path: stub registry + stub peer sit on
+    two separate ephemeral ports. The outbound handler resolves 'analyst'
+    via the registry, then POSTs /a2a/send on the stub peer and relays the
+    reply to the caller.
+    """
+    mod = _load_hermes_sidecar_module()
+    monkeypatch.setattr(mod, "_GATEWAY_READY_UNTIL", 0.0, raising=False)
+    monkeypatch.setenv("A2A_SELF_NAME", "writer-hermes")
+    monkeypatch.setenv("API_SERVER_KEY", "k")
+
+    # --- stub peer ---
+    class PeerH(BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw):
+            return
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length") or 0)
+            _ = self.rfile.read(length)
+            body = json.dumps(
+                {"from": "analyst", "reply": "3,421 rows", "thread_id": None}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    peer_srv, peer_t = _start_http(PeerH)
+    peer_host, peer_port = peer_srv.server_address
+
+    # --- stub registry ---
+    registry_srv, registry_t = _start_http(
+        _stub_registry(
+            {
+                "analyst": {
+                    "name": "analyst",
+                    "role": "hermes",
+                    "skills": ["chat"],
+                    "endpoint": f"http://{peer_host}:{peer_port}/a2a/send",
+                }
+            }
+        )
+    )
+    reg_host, reg_port = registry_srv.server_address
+
+    # --- sidecar handler under test, bound to ephemeral port ---
+    cfg = mod.Config()
+    sidecar_srv = ThreadingHTTPServer(("127.0.0.1", 0), mod.build_handler(cfg))
+    sidecar_t = threading.Thread(target=sidecar_srv.serve_forever, daemon=True)
+    sidecar_t.start()
+    side_host, side_port = sidecar_srv.server_address
+    try:
+        body = json.dumps(
+            {
+                "to": "analyst",
+                "message": "ingest counts?",
+                "registry_url": f"http://{reg_host}:{reg_port}",
+                "timeout_ms": 3000,
+            }
+        ).encode()
+        req = urllib.request.Request(
+            f"http://{side_host}:{side_port}/a2a/outbound",
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            assert resp.status == 200
+            out = json.loads(resp.read().decode("utf-8"))
+        assert out["from"] == "writer-hermes"
+        assert out["to"] == "analyst"
+        assert out["reply"] == "3,421 rows"
+    finally:
+        sidecar_srv.shutdown()
+        sidecar_srv.server_close()
+        sidecar_t.join(timeout=2)
+        _stop_http(peer_srv, peer_t)
+        _stop_http(registry_srv, registry_t)
+
+
+def test_hermes_sidecar_send_rejects_hop_budget(monkeypatch):
+    """Inbound /a2a/send with X-A2A-Hop >= budget returns 508 before any gateway work."""
+    mod = _load_hermes_sidecar_module()
+    monkeypatch.setenv("API_SERVER_KEY", "k")
+    monkeypatch.setenv("A2A_HOP_BUDGET", "4")
+
+    cfg = mod.Config()
+    sidecar_srv = ThreadingHTTPServer(("127.0.0.1", 0), mod.build_handler(cfg))
+    sidecar_t = threading.Thread(target=sidecar_srv.serve_forever, daemon=True)
+    sidecar_t.start()
+    side_host, side_port = sidecar_srv.server_address
+    try:
+        body = json.dumps({"from": "x", "to": cfg.self_name, "message": "y"}).encode()
+        req = urllib.request.Request(
+            f"http://{side_host}:{side_port}/a2a/send",
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json", "X-A2A-Hop": "4"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=2)
+        assert exc.value.code == 508
+    finally:
+        sidecar_srv.shutdown()
+        sidecar_srv.server_close()
+        sidecar_t.join(timeout=2)
+
+
+def test_hermes_sidecar_outbound_rejects_bad_body(monkeypatch):
+    mod = _load_hermes_sidecar_module()
+    monkeypatch.setenv("API_SERVER_KEY", "k")
+
+    cfg = mod.Config()
+    sidecar_srv = ThreadingHTTPServer(("127.0.0.1", 0), mod.build_handler(cfg))
+    sidecar_t = threading.Thread(target=sidecar_srv.serve_forever, daemon=True)
+    sidecar_t.start()
+    side_host, side_port = sidecar_srv.server_address
+    try:
+        # missing 'to' → 400
+        req = urllib.request.Request(
+            f"http://{side_host}:{side_port}/a2a/outbound",
+            data=b'{"message": "x"}',
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=2)
+        assert exc.value.code == 400
+        # thread_id wrong type → 400
+        req = urllib.request.Request(
+            f"http://{side_host}:{side_port}/a2a/outbound",
+            data=b'{"to":"a","message":"x","thread_id":123}',
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=2)
+        assert exc.value.code == 400
+    finally:
+        sidecar_srv.shutdown()
+        sidecar_srv.server_close()
+        sidecar_t.join(timeout=2)
+
+
+# -----------------------------------------------------------------------------
+# Review-2 P1-D: X-A2A-Request-Id correlation (Hermes sidecar)
+# -----------------------------------------------------------------------------
+
+
+def test_hermes_sidecar_read_or_mint_request_id_accepts_valid_header():
+    mod = _load_hermes_sidecar_module()
+
+    class HM:
+        def __init__(self, **kw):
+            self._kw = kw
+
+        def get(self, k, default=None):
+            return self._kw.get(k, default)
+
+    assert mod.read_or_mint_request_id(HM(**{"X-A2A-Request-Id": "abc-42"})) == "abc-42"
+    # Surrounding whitespace is trimmed.
+    assert mod.read_or_mint_request_id(HM(**{"X-A2A-Request-Id": "  zzz "})) == "zzz"
+
+
+def test_hermes_sidecar_read_or_mint_request_id_mints_when_missing_or_invalid():
+    mod = _load_hermes_sidecar_module()
+
+    class HM:
+        def __init__(self, **kw):
+            self._kw = kw
+
+        def get(self, k, default=None):
+            return self._kw.get(k, default)
+
+    # Missing → minted, non-empty.
+    minted = mod.read_or_mint_request_id(HM())
+    assert isinstance(minted, str) and len(minted) >= 16
+    # Control chars → minted.
+    rejected_in = "bad\nvalue"
+    minted_again = mod.read_or_mint_request_id(
+        HM(**{"X-A2A-Request-Id": rejected_in})
+    )
+    assert minted_again != rejected_in
+    # Oversized → minted.
+    huge = "x" * 200
+    minted3 = mod.read_or_mint_request_id(HM(**{"X-A2A-Request-Id": huge}))
+    assert minted3 != huge
+    assert len(minted3) <= 64
+
+
+def test_hermes_sidecar_forward_to_peer_propagates_request_id_header(monkeypatch):
+    mod = _load_hermes_sidecar_module()
+
+    seen = {"header": None}
+
+    class PeerH(BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw):
+            return
+
+        def do_POST(self):  # noqa: N802
+            seen["header"] = self.headers.get("X-A2A-Request-Id")
+            length = int(self.headers.get("Content-Length") or 0)
+            _ = self.rfile.read(length)
+            body = json.dumps(
+                {"from": "peer", "reply": "ok", "thread_id": None}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    peer_srv, peer_t = _start_http(PeerH)
+    peer_host, peer_port = peer_srv.server_address
+    try:
+        mod.forward_to_peer(
+            endpoint=f"http://{peer_host}:{peer_port}/a2a/send",
+            self_name="caller",
+            peer_name="peer",
+            message="hi",
+            thread_id=None,
+            hop=1,
+            timeout=2.0,
+            request_id="corr-99",
+        )
+        assert seen["header"] == "corr-99"
+    finally:
+        _stop_http(peer_srv, peer_t)
+
+
+def test_hermes_sidecar_send_echoes_request_id_in_body_and_header(monkeypatch):
+    """Caller sends X-A2A-Request-Id; sidecar echoes it in body + response header."""
+    mod = _load_hermes_sidecar_module()
+    # hop-budget check fires first (508) before any gateway work — we use
+    # hop >= budget so the sidecar refuses without needing a real gateway,
+    # but still sees the request_id and echoes it.
+    monkeypatch.setenv("API_SERVER_KEY", "k")
+    monkeypatch.setenv("A2A_HOP_BUDGET", "2")
+    cfg = mod.Config()
+    sidecar_srv = ThreadingHTTPServer(("127.0.0.1", 0), mod.build_handler(cfg))
+    sidecar_t = threading.Thread(target=sidecar_srv.serve_forever, daemon=True)
+    sidecar_t.start()
+    side_host, side_port = sidecar_srv.server_address
+    try:
+        body = json.dumps({"from": "x", "to": cfg.self_name, "message": "y"}).encode()
+        req = urllib.request.Request(
+            f"http://{side_host}:{side_port}/a2a/send",
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "X-A2A-Hop": "2",
+                "X-A2A-Request-Id": "caller-42",
+            },
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=2)
+        assert exc.value.code == 508
+        # Response header carries it back.
+        assert exc.value.headers.get("X-A2A-Request-Id") == "caller-42"
+        # And the body too so JSON clients can pick it up.
+        payload = json.loads(exc.value.read().decode("utf-8"))
+        assert payload["request_id"] == "caller-42"
+    finally:
+        sidecar_srv.shutdown()
+        sidecar_srv.server_close()
+        sidecar_t.join(timeout=2)
+
+
+def test_hermes_sidecar_outbound_mints_request_id_when_absent(monkeypatch):
+    """Outbound with no X-A2A-Request-Id header mints one and returns it."""
+    mod = _load_hermes_sidecar_module()
+    monkeypatch.setenv("API_SERVER_KEY", "k")
+    monkeypatch.setenv("A2A_SELF_NAME", "writer")
+
+    class PeerH(BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw):
+            return
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length") or 0)
+            _ = self.rfile.read(length)
+            body = json.dumps(
+                {"from": "analyst", "reply": "ok", "thread_id": None}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    peer_srv, peer_t = _start_http(PeerH)
+    peer_host, peer_port = peer_srv.server_address
+    registry_srv, registry_t = _start_http(
+        _stub_registry(
+            {
+                "analyst": {
+                    "name": "analyst",
+                    "role": "hermes",
+                    "skills": ["chat"],
+                    "endpoint": f"http://{peer_host}:{peer_port}/a2a/send",
+                }
+            }
+        )
+    )
+    reg_host, reg_port = registry_srv.server_address
+
+    cfg = mod.Config()
+    sidecar_srv = ThreadingHTTPServer(("127.0.0.1", 0), mod.build_handler(cfg))
+    sidecar_t = threading.Thread(target=sidecar_srv.serve_forever, daemon=True)
+    sidecar_t.start()
+    side_host, side_port = sidecar_srv.server_address
+    try:
+        body = json.dumps(
+            {
+                "to": "analyst",
+                "message": "ping",
+                "registry_url": f"http://{reg_host}:{reg_port}",
+                "timeout_ms": 3000,
+            }
+        ).encode()
+        req = urllib.request.Request(
+            f"http://{side_host}:{side_port}/a2a/outbound",
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            assert resp.status == 200
+            header_id = resp.headers.get("X-A2A-Request-Id")
+            out = json.loads(resp.read().decode("utf-8"))
+        assert header_id, "response must include X-A2A-Request-Id header"
+        assert out["request_id"] == header_id
+        # Minted id is opaque but stable: non-empty, >=16 chars, no whitespace.
+        assert len(out["request_id"]) >= 16
+        assert out["request_id"].strip() == out["request_id"]
+    finally:
+        sidecar_srv.shutdown()
+        sidecar_srv.server_close()
+        sidecar_t.join(timeout=2)
+        _stop_http(peer_srv, peer_t)
+        _stop_http(registry_srv, registry_t)
+
+
+def test_hermes_sidecar_outbound_forwards_caller_request_id_to_peer(monkeypatch):
+    """Outbound with a caller-supplied request_id forwards it as X-A2A-Request-Id."""
+    mod = _load_hermes_sidecar_module()
+    monkeypatch.setenv("API_SERVER_KEY", "k")
+    monkeypatch.setenv("A2A_SELF_NAME", "writer")
+
+    seen = {"header": None}
+
+    class PeerH(BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw):
+            return
+
+        def do_POST(self):  # noqa: N802
+            seen["header"] = self.headers.get("X-A2A-Request-Id")
+            length = int(self.headers.get("Content-Length") or 0)
+            _ = self.rfile.read(length)
+            body = json.dumps(
+                {"from": "analyst", "reply": "ok", "thread_id": None}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    peer_srv, peer_t = _start_http(PeerH)
+    peer_host, peer_port = peer_srv.server_address
+    registry_srv, registry_t = _start_http(
+        _stub_registry(
+            {
+                "analyst": {
+                    "name": "analyst",
+                    "role": "hermes",
+                    "skills": ["chat"],
+                    "endpoint": f"http://{peer_host}:{peer_port}/a2a/send",
+                }
+            }
+        )
+    )
+    reg_host, reg_port = registry_srv.server_address
+
+    cfg = mod.Config()
+    sidecar_srv = ThreadingHTTPServer(("127.0.0.1", 0), mod.build_handler(cfg))
+    sidecar_t = threading.Thread(target=sidecar_srv.serve_forever, daemon=True)
+    sidecar_t.start()
+    side_host, side_port = sidecar_srv.server_address
+    try:
+        body = json.dumps(
+            {
+                "to": "analyst",
+                "message": "ping",
+                "registry_url": f"http://{reg_host}:{reg_port}",
+                "timeout_ms": 3000,
+            }
+        ).encode()
+        req = urllib.request.Request(
+            f"http://{side_host}:{side_port}/a2a/outbound",
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "X-A2A-Request-Id": "caller-777",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            assert resp.status == 200
+            assert resp.headers.get("X-A2A-Request-Id") == "caller-777"
+            out = json.loads(resp.read().decode("utf-8"))
+        assert out["request_id"] == "caller-777"
+        # Peer saw the same ID when the outbound forwarded its request.
+        assert seen["header"] == "caller-777"
+    finally:
+        sidecar_srv.shutdown()
+        sidecar_srv.server_close()
+        sidecar_t.join(timeout=2)
+        _stop_http(peer_srv, peer_t)
+        _stop_http(registry_srv, registry_t)
+
+
+# ---------------------------------------------------------------------------
+# Iter-3 (0.3.3) MCP server — a2a-design-3.md §P0-A.
+# Exercises handle_mcp_request dispatch + tool-call round-trip + /mcp
+# over the full HTTP server.
+# ---------------------------------------------------------------------------
+
+
+def _mcp_deps(mod, **overrides):
+    return {
+        "self_name": "writer",
+        "registry_url": "http://127.0.0.1:9100",
+        "timeout": 2.0,
+        "request_id": "req-mcp-1",
+        "plugin_version": "0.3.3.testsha",
+        "lookup_peer_fn": overrides.pop(
+            "lookup_peer_fn",
+            lambda _reg, _name, _t: {
+                "name": "analyst",
+                "endpoint": "http://127.0.0.1:9999/a2a/send",
+            },
+        ),
+        "forward_to_peer_fn": overrides.pop(
+            "forward_to_peer_fn",
+            lambda *_a, **_kw: {"from": "analyst", "reply": "42", "thread_id": None},
+        ),
+        **overrides,
+    }
+
+
+def test_hermes_mcp_initialize_returns_protocol_version_and_info():
+    mod = _load_hermes_sidecar_module()
+    body = {"jsonrpc": "2.0", "id": 1, "method": "initialize"}
+    resp = mod.handle_mcp_request(body, **_mcp_deps(mod))
+    assert resp["jsonrpc"] == "2.0"
+    assert resp["id"] == 1
+    assert resp["result"]["protocolVersion"] == mod.MCP_PROTOCOL_VERSION
+    assert resp["result"]["serverInfo"] == {
+        "name": "clawcu-a2a",
+        "version": "0.3.3.testsha",
+    }
+    assert "tools" in resp["result"]["capabilities"]
+
+
+def test_hermes_mcp_tools_list_exposes_call_peer_only():
+    mod = _load_hermes_sidecar_module()
+    body = {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
+    resp = mod.handle_mcp_request(body, **_mcp_deps(mod))
+    tools = resp["result"]["tools"]
+    assert len(tools) == 1
+    assert tools[0]["name"] == "a2a_call_peer"
+    assert tools[0]["inputSchema"]["required"] == ["to", "message"]
+
+
+def test_hermes_mcp_tools_call_happy_path():
+    mod = _load_hermes_sidecar_module()
+    captured: dict = {}
+
+    def fake_lookup(reg, name, timeout):
+        captured["lookup"] = (reg, name, timeout)
+        return {"name": name, "endpoint": "http://peer/a2a/send"}
+
+    def fake_forward(endpoint, self_name, peer, message, thread_id, hop, timeout, request_id):
+        captured["forward"] = {
+            "endpoint": endpoint,
+            "self_name": self_name,
+            "peer": peer,
+            "message": message,
+            "thread_id": thread_id,
+            "hop": hop,
+            "request_id": request_id,
+        }
+        return {"from": "analyst", "reply": "Q1 was +18%", "thread_id": "t-9"}
+
+    body = {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "a2a_call_peer",
+            "arguments": {"to": "analyst", "message": "Q1?", "thread_id": "t-9"},
+        },
+    }
+    resp = mod.handle_mcp_request(
+        body,
+        **_mcp_deps(
+            mod,
+            lookup_peer_fn=fake_lookup,
+            forward_to_peer_fn=fake_forward,
+        ),
+    )
+    assert "error" not in resp
+    assert resp["result"]["isError"] is False
+    assert resp["result"]["content"] == [{"type": "text", "text": "Q1 was +18%"}]
+    sc = resp["result"]["structuredContent"]
+    assert sc["to"] == "analyst"
+    assert sc["reply"] == "Q1 was +18%"
+    assert sc["thread_id"] == "t-9"
+    assert sc["request_id"] == "req-mcp-1"
+    assert captured["lookup"] == ("http://127.0.0.1:9100", "analyst", 2.0)
+    assert captured["forward"]["hop"] == 1
+    assert captured["forward"]["request_id"] == "req-mcp-1"
+    assert captured["forward"]["self_name"] == "writer"
+
+
+def test_hermes_mcp_tools_call_missing_to_returns_invalid_params():
+    mod = _load_hermes_sidecar_module()
+    body = {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": {"name": "a2a_call_peer", "arguments": {"message": "hi"}},
+    }
+    resp = mod.handle_mcp_request(body, **_mcp_deps(mod))
+    assert resp["error"]["code"] == mod.MCP_ERR_INVALID_PARAMS
+
+
+def test_hermes_mcp_tools_call_missing_message_returns_invalid_params():
+    mod = _load_hermes_sidecar_module()
+    body = {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "tools/call",
+        "params": {"name": "a2a_call_peer", "arguments": {"to": "analyst"}},
+    }
+    resp = mod.handle_mcp_request(body, **_mcp_deps(mod))
+    assert resp["error"]["code"] == mod.MCP_ERR_INVALID_PARAMS
+
+
+def test_hermes_mcp_tools_call_unknown_tool_name():
+    mod = _load_hermes_sidecar_module()
+    body = {
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "tools/call",
+        "params": {"name": "nope", "arguments": {}},
+    }
+    resp = mod.handle_mcp_request(body, **_mcp_deps(mod))
+    assert resp["error"]["code"] == mod.MCP_ERR_METHOD_NOT_FOUND
+
+
+def test_hermes_mcp_tools_call_registry_lookup_failure_surfaces_http_status():
+    mod = _load_hermes_sidecar_module()
+
+    def failing_lookup(_reg, _name, _t):
+        raise mod.OutboundError(404, "peer 'analyst' not found in registry")
+
+    body = {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": {
+            "name": "a2a_call_peer",
+            "arguments": {"to": "analyst", "message": "hi"},
+        },
+    }
+    resp = mod.handle_mcp_request(
+        body, **_mcp_deps(mod, lookup_peer_fn=failing_lookup)
+    )
+    assert resp["error"]["code"] == mod.MCP_ERR_A2A_UPSTREAM
+    assert resp["error"]["data"]["httpStatus"] == 404
+    assert "registry lookup failed" in resp["error"]["message"]
+
+
+def test_hermes_mcp_tools_call_peer_forward_failure_includes_peer_status():
+    mod = _load_hermes_sidecar_module()
+
+    def failing_forward(*_a, **_kw):
+        raise mod.OutboundError(502, "peer HTTP 500", peer_status=500)
+
+    body = {
+        "jsonrpc": "2.0",
+        "id": 8,
+        "method": "tools/call",
+        "params": {
+            "name": "a2a_call_peer",
+            "arguments": {"to": "analyst", "message": "hi"},
+        },
+    }
+    resp = mod.handle_mcp_request(
+        body, **_mcp_deps(mod, forward_to_peer_fn=failing_forward)
+    )
+    assert resp["error"]["code"] == mod.MCP_ERR_A2A_UPSTREAM
+    assert resp["error"]["data"]["httpStatus"] == 502
+    assert resp["error"]["data"]["peerStatus"] == 500
+
+
+def test_hermes_mcp_unknown_method_returns_method_not_found():
+    mod = _load_hermes_sidecar_module()
+    body = {"jsonrpc": "2.0", "id": 9, "method": "resources/list"}
+    resp = mod.handle_mcp_request(body, **_mcp_deps(mod))
+    assert resp["error"]["code"] == mod.MCP_ERR_METHOD_NOT_FOUND
+
+
+def test_hermes_mcp_non_jsonrpc_returns_invalid_request():
+    mod = _load_hermes_sidecar_module()
+    resp = mod.handle_mcp_request({"method": "initialize"}, **_mcp_deps(mod))
+    assert resp["error"]["code"] == mod.MCP_ERR_INVALID_REQUEST
+
+
+def test_hermes_mcp_ping_acknowledged_with_empty_result():
+    mod = _load_hermes_sidecar_module()
+    body = {"jsonrpc": "2.0", "id": 10, "method": "ping"}
+    resp = mod.handle_mcp_request(body, **_mcp_deps(mod))
+    assert "error" not in resp
+    assert resp["result"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Iter-3 (0.3.3) P1-C — socket-error status code unification.
+#   - Network-layer failures (URLError/timeout/connection refused) → 504.
+#   - Peer HTTP errors (HTTPError/non-2xx status) → 502 (unchanged).
+# Unifies /a2a/send and /a2a/outbound surface so operators can grep for
+# "504" = "network broken" vs "502" = "peer broken".
+# ---------------------------------------------------------------------------
+
+
+def test_hermes_sidecar_forward_to_peer_unreachable_maps_to_504():
+    """Connect refused at the peer → OutboundError(504)."""
+    mod = _load_hermes_sidecar_module()
+    # Bind-then-close a server to grab a truly-unused port.
+    probe = ThreadingHTTPServer(("127.0.0.1", 0), BaseHTTPRequestHandler)
+    port = probe.server_address[1]
+    probe.server_close()
+    with pytest.raises(mod.OutboundError) as excinfo:
+        mod.forward_to_peer(
+            f"http://127.0.0.1:{port}/a2a/send",
+            "writer",
+            "analyst",
+            "hi",
+            None,
+            1,
+            2.0,
+        )
+    assert excinfo.value.http_status == 504
+
+
+def test_hermes_sidecar_forward_to_peer_hangs_maps_to_504():
+    """Peer accepts the connection but never responds → OutboundError(504)."""
+    mod = _load_hermes_sidecar_module()
+
+    class Hang(BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw):
+            return
+
+        def do_POST(self):  # noqa: N802
+            time.sleep(2)  # longer than the caller's timeout
+
+    srv, t = _start_http(Hang)
+    try:
+        host, port = srv.server_address
+        with pytest.raises(mod.OutboundError) as excinfo:
+            mod.forward_to_peer(
+                f"http://{host}:{port}/a2a/send",
+                "writer",
+                "analyst",
+                "hi",
+                None,
+                1,
+                0.3,
+            )
+        assert excinfo.value.http_status == 504
+    finally:
+        _stop_http(srv, t)
+
+
+def test_hermes_mcp_endpoint_end_to_end(monkeypatch):
+    """Boot the handler, POST /mcp tools/call, watch it reach the peer.
+
+    Exercises the actual /mcp HTTP route (not just handle_mcp_request in
+    isolation) — so a regression in routing or request-id wiring is
+    caught. Mirrors the outbound end-to-end test.
+    """
+    mod = _load_hermes_sidecar_module()
+    monkeypatch.setenv("A2A_SELF_NAME", "writer-hermes")
+    monkeypatch.setenv("API_SERVER_KEY", "k")
+
+    class PeerH(BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw):
+            return
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length") or 0)
+            _ = self.rfile.read(length)
+            body = json.dumps(
+                {"from": "analyst", "reply": "mcp ok", "thread_id": None}
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    peer_srv, peer_t = _start_http(PeerH)
+    peer_host, peer_port = peer_srv.server_address
+
+    registry_srv, registry_t = _start_http(
+        _stub_registry(
+            {
+                "analyst": {
+                    "name": "analyst",
+                    "role": "hermes",
+                    "skills": ["chat"],
+                    "endpoint": f"http://{peer_host}:{peer_port}/a2a/send",
+                }
+            }
+        )
+    )
+    reg_host, reg_port = registry_srv.server_address
+    monkeypatch.setenv(
+        "A2A_REGISTRY_URL", f"http://{reg_host}:{reg_port}"
+    )
+
+    cfg = mod.Config()
+    sidecar_srv = ThreadingHTTPServer(("127.0.0.1", 0), mod.build_handler(cfg))
+    sidecar_t = threading.Thread(target=sidecar_srv.serve_forever, daemon=True)
+    sidecar_t.start()
+    side_host, side_port = sidecar_srv.server_address
+    try:
+        rpc_body = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 42,
+                "method": "tools/call",
+                "params": {
+                    "name": "a2a_call_peer",
+                    "arguments": {"to": "analyst", "message": "tell me"},
+                },
+            }
+        ).encode()
+        req = urllib.request.Request(
+            f"http://{side_host}:{side_port}/mcp",
+            data=rpc_body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "X-A2A-Request-Id": "corr-mcp-e2e",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            assert resp.status == 200
+            assert resp.headers.get("X-A2A-Request-Id") == "corr-mcp-e2e"
+            out = json.loads(resp.read().decode("utf-8"))
+        assert out["jsonrpc"] == "2.0"
+        assert out["id"] == 42
+        assert out["result"]["content"] == [{"type": "text", "text": "mcp ok"}]
+        assert out["result"]["structuredContent"]["request_id"] == "corr-mcp-e2e"
+    finally:
+        sidecar_srv.shutdown()
+        sidecar_srv.server_close()
+        sidecar_t.join(timeout=2)
+        _stop_http(peer_srv, peer_t)
+        _stop_http(registry_srv, registry_t)
+
+
+def test_hermes_mcp_endpoint_tools_list_end_to_end():
+    """Plain tools/list over /mcp — no peer, no registry; verifies route works."""
+    mod = _load_hermes_sidecar_module()
+    cfg = mod.Config()
+    sidecar_srv = ThreadingHTTPServer(("127.0.0.1", 0), mod.build_handler(cfg))
+    sidecar_t = threading.Thread(target=sidecar_srv.serve_forever, daemon=True)
+    sidecar_t.start()
+    try:
+        side_host, side_port = sidecar_srv.server_address
+        rpc_body = json.dumps(
+            {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+        ).encode()
+        req = urllib.request.Request(
+            f"http://{side_host}:{side_port}/mcp",
+            data=rpc_body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            assert resp.status == 200
+            out = json.loads(resp.read().decode("utf-8"))
+        assert [tool["name"] for tool in out["result"]["tools"]] == [
+            "a2a_call_peer"
+        ]
+    finally:
+        sidecar_srv.shutdown()
+        sidecar_srv.server_close()
+        sidecar_t.join(timeout=2)
+
+
+# ---------------------------------------------------------------------------
+# iter 4 P0-A — auto-wiring bootstrap for the Hermes sidecar (bootstrap.py).
+# ---------------------------------------------------------------------------
+
+
+def _load_hermes_bootstrap_module():
+    """Load bootstrap.py standalone (matches _load_hermes_sidecar_module pattern)."""
+    import importlib.util
+
+    path = (
+        Path(__file__).resolve().parent.parent
+        / "src"
+        / "clawcu"
+        / "a2a"
+        / "sidecar_plugin"
+        / "hermes"
+        / "bootstrap.py"
+    )
+    spec = importlib.util.spec_from_file_location("_hermes_bootstrap_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_hermes_bootstrap_build_mcp_url_shape():
+    mod = _load_hermes_bootstrap_module()
+    assert mod.build_mcp_url(port=9119) == "http://127.0.0.1:9119/mcp"
+
+
+def test_hermes_bootstrap_plan_merges_when_enabled_and_absent():
+    mod = _load_hermes_bootstrap_module()
+    plan = mod.plan_bootstrap(
+        enabled=True, config={"model": {"provider": "openrouter"}}, url="http://127.0.0.1:9119/mcp"
+    )
+    assert plan["action"] == "merge"
+    assert plan["config"]["mcp"]["servers"]["a2a"] == {"url": "http://127.0.0.1:9119/mcp"}
+    assert plan["config"]["model"] == {"provider": "openrouter"}
+
+
+def test_hermes_bootstrap_plan_noops_when_already_present():
+    mod = _load_hermes_bootstrap_module()
+    plan = mod.plan_bootstrap(
+        enabled=True,
+        config={"mcp": {"servers": {"a2a": {"url": "http://127.0.0.1:9119/mcp"}}}},
+        url="http://127.0.0.1:9119/mcp",
+    )
+    assert plan["action"] == "noop"
+
+
+def test_hermes_bootstrap_plan_rewrites_when_url_differs():
+    mod = _load_hermes_bootstrap_module()
+    plan = mod.plan_bootstrap(
+        enabled=True,
+        config={"mcp": {"servers": {"a2a": {"url": "http://127.0.0.1:1/mcp"}}}},
+        url="http://127.0.0.1:9119/mcp",
+    )
+    assert plan["action"] == "merge"
+    assert plan["config"]["mcp"]["servers"]["a2a"]["url"] == "http://127.0.0.1:9119/mcp"
+
+
+def test_hermes_bootstrap_plan_removes_stale_entry_when_disabled():
+    mod = _load_hermes_bootstrap_module()
+    plan = mod.plan_bootstrap(
+        enabled=False,
+        config={"mcp": {"servers": {"a2a": {"url": "x"}, "keep": {"url": "y"}}}},
+        url=None,
+    )
+    assert plan["action"] == "remove"
+    assert "a2a" not in plan["config"]["mcp"]["servers"]
+    assert plan["config"]["mcp"]["servers"]["keep"] == {"url": "y"}
+
+
+def test_hermes_bootstrap_plan_noop_disabled_and_absent():
+    mod = _load_hermes_bootstrap_module()
+    plan = mod.plan_bootstrap(
+        enabled=False, config={"model": {"provider": "x"}}, url=None
+    )
+    assert plan["action"] == "noop"
+
+
+def test_hermes_bootstrap_runs_against_yaml_file(tmp_path):
+    mod = _load_hermes_bootstrap_module()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("model:\n  provider: openrouter\n", encoding="utf-8")
+    result = mod.run_bootstrap(
+        env={
+            "A2A_SERVICE_MCP_CONFIG_PATH": str(config_path),
+            "A2A_SERVICE_MCP_CONFIG_FORMAT": "yaml",
+            "A2A_ENABLED": "true",
+            "A2A_BIND_PORT": "9119",
+        }
+    )
+    assert result["ok"] and result["action"] == "merge"
+    import yaml
+
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert data["model"]["provider"] == "openrouter"
+    assert data["mcp"]["servers"]["a2a"]["url"] == "http://127.0.0.1:9119/mcp"
+
+
+def test_hermes_bootstrap_creates_yaml_when_absent_and_enabled(tmp_path):
+    mod = _load_hermes_bootstrap_module()
+    config_path = tmp_path / "nested" / "config.yaml"
+    result = mod.run_bootstrap(
+        env={
+            "A2A_SERVICE_MCP_CONFIG_PATH": str(config_path),
+            "A2A_SERVICE_MCP_CONFIG_FORMAT": "yaml",
+            "A2A_ENABLED": "true",
+            "A2A_BIND_PORT": "9119",
+        }
+    )
+    assert result["ok"] and result["action"] == "create"
+    assert config_path.exists()
+
+
+def test_hermes_bootstrap_skips_when_absent_and_disabled(tmp_path):
+    mod = _load_hermes_bootstrap_module()
+    config_path = tmp_path / "config.yaml"
+    result = mod.run_bootstrap(
+        env={
+            "A2A_SERVICE_MCP_CONFIG_PATH": str(config_path),
+            "A2A_SERVICE_MCP_CONFIG_FORMAT": "yaml",
+            "A2A_ENABLED": "false",
+        }
+    )
+    assert result["action"] == "skip"
+    assert not config_path.exists()
+
+
+def test_hermes_bootstrap_removes_stale_entry_from_yaml(tmp_path):
+    mod = _load_hermes_bootstrap_module()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "mcp:\n  servers:\n    a2a:\n      url: http://127.0.0.1:9999/mcp\n    keep:\n      url: y\n",
+        encoding="utf-8",
+    )
+    result = mod.run_bootstrap(
+        env={
+            "A2A_SERVICE_MCP_CONFIG_PATH": str(config_path),
+            "A2A_SERVICE_MCP_CONFIG_FORMAT": "yaml",
+            "A2A_ENABLED": "false",
+        }
+    )
+    assert result["action"] == "remove"
+    import yaml
+
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert "a2a" not in data["mcp"]["servers"]
+    assert data["mcp"]["servers"]["keep"] == {"url": "y"}
+
+
+def test_hermes_bootstrap_skips_on_unset_path():
+    mod = _load_hermes_bootstrap_module()
+    result = mod.run_bootstrap(env={"A2A_ENABLED": "true", "A2A_BIND_PORT": "9119"})
+    assert result["action"] == "skip"
+    assert result["reason"] == "no-config-path"
+
+
+def test_hermes_bootstrap_refuses_to_overwrite_malformed_yaml(tmp_path):
+    mod = _load_hermes_bootstrap_module()
+    config_path = tmp_path / "config.yaml"
+    bad = "foo: [not closed\n"
+    config_path.write_text(bad, encoding="utf-8")
+    result = mod.run_bootstrap(
+        env={
+            "A2A_SERVICE_MCP_CONFIG_PATH": str(config_path),
+            "A2A_SERVICE_MCP_CONFIG_FORMAT": "yaml",
+            "A2A_ENABLED": "true",
+            "A2A_BIND_PORT": "9119",
+        }
+    )
+    assert result["ok"] is False
+    assert config_path.read_text(encoding="utf-8") == bad
+
+
+def test_hermes_bootstrap_idempotent_across_two_runs(tmp_path):
+    mod = _load_hermes_bootstrap_module()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("model: {}\n", encoding="utf-8")
+    env = {
+        "A2A_SERVICE_MCP_CONFIG_PATH": str(config_path),
+        "A2A_SERVICE_MCP_CONFIG_FORMAT": "yaml",
+        "A2A_ENABLED": "true",
+        "A2A_BIND_PORT": "9119",
+    }
+    first = mod.run_bootstrap(env=env)
+    second = mod.run_bootstrap(env=env)
+    assert first["action"] == "merge"
+    assert second["action"] == "noop"
+
+
+def test_hermes_bootstrap_handles_json_format_roundtrip(tmp_path):
+    mod = _load_hermes_bootstrap_module()
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"gateway":{"port":18789}}', encoding="utf-8")
+    result = mod.run_bootstrap(
+        env={
+            "A2A_SERVICE_MCP_CONFIG_PATH": str(config_path),
+            "A2A_SERVICE_MCP_CONFIG_FORMAT": "json",
+            "A2A_ENABLED": "true",
+            "A2A_BIND_PORT": "9119",
+        }
+    )
+    assert result["ok"] and result["action"] == "merge"
+    import json as _json
+
+    data = _json.loads(config_path.read_text(encoding="utf-8"))
+    assert data["gateway"]["port"] == 18789
+    assert data["mcp"]["servers"]["a2a"]["url"] == "http://127.0.0.1:9119/mcp"
+
+
+# --- Hermes outbound rate limiter (a2a-design-4.md §P1-B) --------------------
+
+def _load_hermes_outbound_limit_module():
+    """Load outbound_limit.py standalone (same pattern as bootstrap loader)."""
+    import importlib.util
+
+    path = (
+        Path(__file__).resolve().parent.parent
+        / "src"
+        / "clawcu"
+        / "a2a"
+        / "sidecar_plugin"
+        / "hermes"
+        / "outbound_limit.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "_hermes_outbound_limit_under_test", path
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_hermes_outbound_limit_read_rpm_defaults_on_unset_or_invalid():
+    mod = _load_hermes_outbound_limit_module()
+    assert mod.read_rpm({}) == mod.DEFAULT_RPM
+    assert mod.read_rpm({"A2A_OUTBOUND_RATE_LIMIT": ""}) == mod.DEFAULT_RPM
+    assert mod.read_rpm({"A2A_OUTBOUND_RATE_LIMIT": "abc"}) == mod.DEFAULT_RPM
+    assert mod.read_rpm({"A2A_OUTBOUND_RATE_LIMIT": "-5"}) == mod.DEFAULT_RPM
+    assert mod.read_rpm({"A2A_OUTBOUND_RATE_LIMIT": "3.7"}) == mod.DEFAULT_RPM
+
+
+def test_hermes_outbound_limit_read_rpm_parses_positive_integers():
+    mod = _load_hermes_outbound_limit_module()
+    assert mod.read_rpm({"A2A_OUTBOUND_RATE_LIMIT": "10"}) == 10
+    assert mod.read_rpm({"A2A_OUTBOUND_RATE_LIMIT": "1000"}) == 1000
+
+
+def test_hermes_outbound_limit_key_prefers_thread_over_self():
+    mod = _load_hermes_outbound_limit_module()
+    assert mod.key_for(thread_id="t-1", self_name="javis") == "thread:t-1"
+    assert mod.key_for(thread_id="", self_name="javis") == "self:javis"
+    assert mod.key_for(self_name="javis") == "self:javis"
+    assert mod.key_for() == "self:anon"
+
+
+def test_hermes_outbound_limit_allows_up_to_rpm_then_rejects():
+    mod = _load_hermes_outbound_limit_module()
+    now = [1000.0]
+    lim = mod.create_outbound_limiter(rpm=3, now_fn=lambda: now[0])
+    assert lim.check("k")["allowed"] is True
+    assert lim.check("k")["allowed"] is True
+    assert lim.check("k")["allowed"] is True
+    r = lim.check("k")
+    assert r["allowed"] is False
+    assert 0 < r["retry_after_ms"] <= mod.WINDOW_MS
+    assert r["limit"] == 3
+
+
+def test_hermes_outbound_limit_prunes_after_window_slides_past():
+    mod = _load_hermes_outbound_limit_module()
+    now = [1000.0]
+    lim = mod.create_outbound_limiter(rpm=2, now_fn=lambda: now[0])
+    assert lim.check("k")["allowed"] is True
+    assert lim.check("k")["allowed"] is True
+    assert lim.check("k")["allowed"] is False
+    now[0] += mod.WINDOW_MS + 1
+    assert lim.check("k")["allowed"] is True
+
+
+def test_hermes_outbound_limit_buckets_are_per_key():
+    mod = _load_hermes_outbound_limit_module()
+    now = [1000.0]
+    lim = mod.create_outbound_limiter(rpm=1, now_fn=lambda: now[0])
+    assert lim.check("thread:a")["allowed"] is True
+    assert lim.check("thread:b")["allowed"] is True
+    assert lim.check("thread:a")["allowed"] is False
+    assert lim.check("thread:b")["allowed"] is False
+
+
+def test_hermes_outbound_limit_default_rpm_when_no_args():
+    mod = _load_hermes_outbound_limit_module()
+    lim = mod.create_outbound_limiter()
+    assert lim.limit == mod.DEFAULT_RPM
+
+
+def test_hermes_outbound_limit_reset_clears_buckets():
+    mod = _load_hermes_outbound_limit_module()
+    now = [1000.0]
+    lim = mod.create_outbound_limiter(rpm=1, now_fn=lambda: now[0])
+    lim.check("k")
+    assert lim.check("k")["allowed"] is False
+    lim.reset()
+    assert lim.check("k")["allowed"] is True
+
+
+# -- P1-J: empty-bucket sweep (a2a-design-5.md) ------------------------------
+
+
+def test_hermes_outbound_limit_sweep_drops_empty_buckets_past_window():
+    mod = _load_hermes_outbound_limit_module()
+    now = [1000.0]
+    lim = mod.create_outbound_limiter(rpm=5, now_fn=lambda: now[0])
+    lim.check("a")
+    lim.check("b")
+    lim.check("c")
+    assert lim.size() == 3
+    now[0] += mod.WINDOW_MS + 1
+    lim.sweep()
+    assert lim.size() == 0
+
+
+def test_hermes_outbound_limit_sweep_leaves_active_buckets_alone():
+    mod = _load_hermes_outbound_limit_module()
+    now = [1000.0]
+    lim = mod.create_outbound_limiter(rpm=5, now_fn=lambda: now[0])
+    lim.check("a")
+    now[0] += mod.WINDOW_MS + 1
+    lim.check("b")
+    lim.sweep()
+    assert lim.size() == 1
+
+
+# -- P2-L: sweep timer (a2a-design-6.md) ------------------------------------
+
+
+def test_hermes_read_sweep_interval_ms_default_and_invalid():
+    mod = _load_hermes_outbound_limit_module()
+    assert mod.read_sweep_interval_ms({}) == mod.DEFAULT_SWEEP_INTERVAL_MS
+    assert mod.read_sweep_interval_ms({"A2A_OUTBOUND_SWEEP_INTERVAL_MS": ""}) == mod.DEFAULT_SWEEP_INTERVAL_MS
+    assert mod.read_sweep_interval_ms({"A2A_OUTBOUND_SWEEP_INTERVAL_MS": "abc"}) == mod.DEFAULT_SWEEP_INTERVAL_MS
+    assert mod.read_sweep_interval_ms({"A2A_OUTBOUND_SWEEP_INTERVAL_MS": "1.5"}) == mod.DEFAULT_SWEEP_INTERVAL_MS
+
+
+def test_hermes_read_sweep_interval_ms_parses_valid_values():
+    mod = _load_hermes_outbound_limit_module()
+    assert mod.read_sweep_interval_ms({"A2A_OUTBOUND_SWEEP_INTERVAL_MS": "60000"}) == 60000
+    assert mod.read_sweep_interval_ms({"A2A_OUTBOUND_SWEEP_INTERVAL_MS": "0"}) == 0
+    assert mod.read_sweep_interval_ms({"A2A_OUTBOUND_SWEEP_INTERVAL_MS": "-10"}) == 0
+
+
+def test_hermes_create_sweep_thread_returns_none_when_disabled():
+    mod = _load_hermes_outbound_limit_module()
+    lim = mod.create_outbound_limiter(rpm=1)
+    assert mod.create_sweep_thread(lim, 0) is None
+    assert mod.create_sweep_thread(lim, -5) is None
+
+
+def test_hermes_create_sweep_thread_fires_and_calls_sweep():
+    """Verify the daemon thread actually calls sweep(): populate the limiter,
+    advance the monotonic clock used by the limiter past the window, then let
+    the sweep thread tick once (short 50 ms interval) and confirm size → 0."""
+    import threading
+    mod = _load_hermes_outbound_limit_module()
+    now = [1000.0]
+    lim = mod.create_outbound_limiter(rpm=5, now_fn=lambda: now[0])
+    lim.check("a")
+    lim.check("b")
+    lim.check("c")
+    assert lim.size() == 3
+    now[0] += mod.WINDOW_MS + 1  # slide past the limiter's window
+    stop = threading.Event()
+    t = mod.create_sweep_thread(lim, 50, stop_event=stop)
+    assert t is not None
+    # Poll for the sweep to land; bounded loop so a stuck thread can't hang CI.
+    for _ in range(40):  # up to ~2s
+        if lim.size() == 0:
+            break
+        time.sleep(0.05)
+    stop.set()
+    t.join(timeout=2.0)
+    assert lim.size() == 0
+
+
+def test_hermes_outbound_sweep_logs_on_failure(caplog):
+    """a2a-design-7.md §P2-N: when sweep() raises, the daemon thread must
+    emit a one-line warning and keep looping (swallowing the exception
+    would hide degraded behavior; re-raising would kill cleanup)."""
+    import logging as _logging
+    import threading
+    mod = _load_hermes_outbound_limit_module()
+
+    class _ExplodingLimiter:
+        def __init__(self):
+            self.calls = 0
+
+        def sweep(self):
+            self.calls += 1
+            raise RuntimeError("boom from sweep")
+
+    lim = _ExplodingLimiter()
+    stop = threading.Event()
+    caplog.set_level(_logging.WARNING, logger="clawcu.a2a.outbound_limit")
+    t = mod.create_sweep_thread(lim, 50, stop_event=stop)
+    assert t is not None
+    # Poll for at least one call to land; bounded so a stuck thread can't hang CI.
+    for _ in range(40):  # up to ~2s
+        if lim.calls >= 1:
+            break
+        time.sleep(0.05)
+    stop.set()
+    t.join(timeout=2.0)
+    assert lim.calls >= 1, "sweep must have been invoked at least once"
+    matching = [
+        rec for rec in caplog.records
+        if rec.name == "clawcu.a2a.outbound_limit"
+        and "outbound-sweep failed" in rec.getMessage()
+        and "boom from sweep" in rec.getMessage()
+    ]
+    assert matching, f"expected a sweep-failure warning; got {[r.getMessage() for r in caplog.records]}"
+
+
+def test_hermes_mcp_tool_call_rate_limits_after_rpm_and_returns_retry_after():
+    """Integration-style: fire rpm+1 MCP tool/call invocations sharing the
+    limiter instance and assert the last one comes back as JSON-RPC error with
+    httpStatus=429. Covers the /mcp path (a2a-design-4.md §P1-B)."""
+    sidecar_mod = _load_hermes_sidecar_module()
+    limit_mod = _load_hermes_outbound_limit_module()
+    limiter = limit_mod.create_outbound_limiter(rpm=2)
+
+    peer_card = {
+        "name": "analyst",
+        "endpoint": "http://stub-peer/a2a/send",
+        "role": "r",
+        "skills": [],
+    }
+
+    def _fake_lookup(registry_url, peer, timeout):
+        return peer_card
+
+    def _fake_forward(endpoint, self_name, peer_name, message, thread_id, hop, timeout, request_id):
+        return {"from": peer_name, "reply": "ok", "thread_id": thread_id}
+
+    def _call():
+        return sidecar_mod.handle_mcp_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": sidecar_mod.MCP_TOOL_NAME,
+                    "arguments": {"to": "analyst", "message": "hi", "thread_id": "t-lim"},
+                },
+            },
+            self_name="javis",
+            registry_url="http://stub-registry",
+            timeout=5.0,
+            request_id="req-lim",
+            plugin_version="test",
+            lookup_peer_fn=_fake_lookup,
+            forward_to_peer_fn=_fake_forward,
+            outbound_limiter=limiter,
+        )
+
+    r1 = _call()
+    r2 = _call()
+    r3 = _call()
+    assert "result" in r1 and "result" in r2
+    assert "error" in r3
+    assert r3["error"]["code"] == sidecar_mod.MCP_ERR_A2A_UPSTREAM
+    assert r3["error"]["data"]["httpStatus"] == 429
+    assert r3["error"]["data"]["retryAfterMs"] > 0
+
+
+# --- Hermes MCP templated tool description (a2a-design-5.md §P1-H) ---------
+
+def _mk_mcp_req(rpc_id=1, method="tools/list", params=None):
+    body = {"jsonrpc": "2.0", "id": rpc_id, "method": method}
+    if params is not None:
+        body["params"] = params
+    return body
+
+
+def test_hermes_mcp_tools_list_without_list_peers_is_static():
+    mod = _load_hermes_sidecar_module()
+    resp = mod.handle_mcp_request(
+        _mk_mcp_req(method="tools/list"),
+        self_name="javis",
+        registry_url="http://stub",
+        timeout=1.0,
+        request_id="r",
+        plugin_version="test",
+    )
+    desc = resp["result"]["tools"][0]["description"]
+    assert "Available peers" not in desc
+    assert "A2A registry" in desc
+
+
+def test_hermes_mcp_tools_list_injects_peers_and_excludes_self():
+    mod = _load_hermes_sidecar_module()
+    peers = [
+        {"name": "javis", "skills": ["chat"]},  # self — filtered
+        {"name": "analyst", "skills": ["market data", "charts"]},
+        {"name": "editor", "skills": ["copyedit"]},
+    ]
+    resp = mod.handle_mcp_request(
+        _mk_mcp_req(),
+        self_name="javis",
+        registry_url="http://stub",
+        timeout=1.0,
+        request_id="r",
+        plugin_version="test",
+        list_peers_fn=lambda: peers,
+    )
+    desc = resp["result"]["tools"][0]["description"]
+    assert "Available peers:" in desc
+    assert "- analyst (market data, charts)" in desc
+    assert "- editor (copyedit)" in desc
+    assert "- javis" not in desc
+
+
+def test_hermes_mcp_tools_list_truncates_long_peer_list():
+    mod = _load_hermes_sidecar_module()
+    peers = [{"name": f"p-{i}", "skills": [f"s{i}"]} for i in range(20)]
+    resp = mod.handle_mcp_request(
+        _mk_mcp_req(),
+        self_name="javis",
+        registry_url="http://stub",
+        timeout=1.0,
+        request_id="r",
+        plugin_version="test",
+        list_peers_fn=lambda: peers,
+    )
+    desc = resp["result"]["tools"][0]["description"]
+    assert "- p-0 " in desc
+    assert "- p-15 " in desc
+    assert "...and 4 more" in desc
+    assert "- p-16 " not in desc
+
+
+def test_hermes_mcp_tools_list_elides_skill_tail():
+    mod = _load_hermes_sidecar_module()
+    peers = [{"name": "poly", "skills": ["a", "b", "c", "d", "e"]}]
+    resp = mod.handle_mcp_request(
+        _mk_mcp_req(),
+        self_name="javis",
+        registry_url="http://stub",
+        timeout=1.0,
+        request_id="r",
+        plugin_version="test",
+        list_peers_fn=lambda: peers,
+    )
+    desc = resp["result"]["tools"][0]["description"]
+    assert "- poly (a, b, c, ...)" in desc
+
+
+def test_hermes_mcp_tools_list_survives_list_peers_exception():
+    mod = _load_hermes_sidecar_module()
+
+    def _boom():
+        raise RuntimeError("registry down")
+
+    resp = mod.handle_mcp_request(
+        _mk_mcp_req(),
+        self_name="javis",
+        registry_url="http://stub",
+        timeout=1.0,
+        request_id="r",
+        plugin_version="test",
+        list_peers_fn=_boom,
+    )
+    assert "result" in resp, "tools/list must never fail on registry errors"
+    desc = resp["result"]["tools"][0]["description"]
+    assert "Available peers" not in desc
+
+
+def test_hermes_mcp_tools_list_only_self_registered_renders_static():
+    mod = _load_hermes_sidecar_module()
+    peers = [{"name": "javis", "skills": []}]
+    resp = mod.handle_mcp_request(
+        _mk_mcp_req(),
+        self_name="javis",
+        registry_url="http://stub",
+        timeout=1.0,
+        request_id="r",
+        plugin_version="test",
+        list_peers_fn=lambda: peers,
+    )
+    desc = resp["result"]["tools"][0]["description"]
+    assert "Available peers" not in desc
+
+
+# --- P1-M: optional role in peer summary (a2a-design-6.md) -----------------
+
+
+def test_hermes_mcp_tools_list_omits_role_by_default():
+    mod = _load_hermes_sidecar_module()
+    peers = [{"name": "analyst", "role": "senior market analyst", "skills": ["market data"]}]
+    resp = mod.handle_mcp_request(
+        _mk_mcp_req(),
+        self_name="javis",
+        registry_url="http://stub",
+        timeout=1.0,
+        request_id="r",
+        plugin_version="test",
+        list_peers_fn=lambda: peers,
+    )
+    desc = resp["result"]["tools"][0]["description"]
+    assert "- analyst (market data)" in desc
+    assert "[senior market analyst]" not in desc
+
+
+def test_hermes_mcp_tools_list_renders_role_when_include_role_true():
+    mod = _load_hermes_sidecar_module()
+    peers = [{"name": "analyst", "role": "senior market analyst", "skills": ["market data"]}]
+    resp = mod.handle_mcp_request(
+        _mk_mcp_req(),
+        self_name="javis",
+        registry_url="http://stub",
+        timeout=1.0,
+        request_id="r",
+        plugin_version="test",
+        list_peers_fn=lambda: peers,
+        include_role=True,
+    )
+    desc = resp["result"]["tools"][0]["description"]
+    assert "- analyst [senior market analyst] (market data)" in desc
+
+
+def test_hermes_mcp_tools_list_include_role_empty_role_omits_brackets():
+    mod = _load_hermes_sidecar_module()
+    peers = [{"name": "analyst", "role": "", "skills": ["market data"]}]
+    resp = mod.handle_mcp_request(
+        _mk_mcp_req(),
+        self_name="javis",
+        registry_url="http://stub",
+        timeout=1.0,
+        request_id="r",
+        plugin_version="test",
+        list_peers_fn=lambda: peers,
+        include_role=True,
+    )
+    desc = resp["result"]["tools"][0]["description"]
+    assert "- analyst (market data)" in desc
+    assert "[]" not in desc
+
+
+# --- Hermes peer-list fetcher + cache (a2a-design-5.md §P1-H) --------------
+
+def test_hermes_fetch_peer_list_returns_array_on_ok(monkeypatch):
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import json as _json
+
+    mod = _load_hermes_sidecar_module()
+
+    class _H(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            assert self.path == "/agents"
+            body = _json.dumps([{"name": "a", "skills": ["s"]}]).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a, **k):  # noqa: N802
+            pass
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _H)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        port = srv.server_port
+        peers = mod.fetch_peer_list(f"http://127.0.0.1:{port}", timeout=2.0)
+        assert peers == [{"name": "a", "skills": ["s"]}]
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_hermes_fetch_peer_list_returns_none_on_404(monkeypatch):
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    mod = _load_hermes_sidecar_module()
+
+    class _H(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, *a, **k):  # noqa: N802
+            pass
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _H)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        port = srv.server_port
+        peers = mod.fetch_peer_list(f"http://127.0.0.1:{port}", timeout=2.0)
+        assert peers is None
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
+def test_hermes_peer_cache_serves_cached_result_within_fresh_window():
+    mod = _load_hermes_sidecar_module()
+    calls = [0]
+    now = [1000.0]
+
+    def _fake_fetch(url, timeout):
+        calls[0] += 1
+        return [{"name": "a"}]
+
+    cache = mod.create_peer_cache(
+        "http://stub",
+        fresh_s=30,
+        stale_s=300,
+        now_fn=lambda: now[0],
+        fetch_fn=_fake_fetch,
+    )
+    assert cache.get() == [{"name": "a"}]
+    assert cache.get() == [{"name": "a"}]
+    assert calls[0] == 1
+
+
+def test_hermes_peer_cache_refetches_after_ttl():
+    mod = _load_hermes_sidecar_module()
+    calls = [0]
+    now = [1000.0]
+
+    def _fake_fetch(url, timeout):
+        calls[0] += 1
+        return [{"name": "a"}]
+
+    cache = mod.create_peer_cache(
+        "http://stub",
+        fresh_s=30,
+        stale_s=300,
+        now_fn=lambda: now[0],
+        fetch_fn=_fake_fetch,
+    )
+    cache.get()
+    now[0] += 31.0
+    cache.get()
+    assert calls[0] == 2
+
+
+def test_hermes_peer_cache_serves_stale_on_failure_in_stale_window():
+    mod = _load_hermes_sidecar_module()
+    calls = [0]
+    now = [1000.0]
+
+    def _fake_fetch(url, timeout):
+        calls[0] += 1
+        return [{"name": "a"}] if calls[0] == 1 else None
+
+    cache = mod.create_peer_cache(
+        "http://stub",
+        fresh_s=30,
+        stale_s=300,
+        now_fn=lambda: now[0],
+        fetch_fn=_fake_fetch,
+    )
+    assert cache.get() == [{"name": "a"}]
+    now[0] += 60.0
+    assert cache.get() == [{"name": "a"}]  # stale-OK
+
+
+def test_hermes_peer_cache_returns_none_past_stale_window():
+    mod = _load_hermes_sidecar_module()
+    calls = [0]
+    now = [1000.0]
+
+    def _fake_fetch(url, timeout):
+        calls[0] += 1
+        return [{"name": "a"}] if calls[0] == 1 else None
+
+    cache = mod.create_peer_cache(
+        "http://stub",
+        fresh_s=30,
+        stale_s=300,
+        now_fn=lambda: now[0],
+        fetch_fn=_fake_fetch,
+    )
+    cache.get()
+    now[0] += 400.0
+    assert cache.get() is None
+
+
+# --- Hermes MCP request_id on error data (a2a-design-5.md §P2-K) -----------
+
+def test_hermes_mcp_tool_call_error_carries_request_id_in_data():
+    mod = _load_hermes_sidecar_module()
+
+    def _lookup(registry_url, peer, timeout):
+        raise mod.OutboundError(404, f"peer '{peer}' not found")
+
+    def _forward(*a, **k):
+        raise AssertionError("should not be called")
+
+    resp = mod.handle_mcp_request(
+        _mk_mcp_req(
+            rpc_id=77,
+            method="tools/call",
+            params={
+                "name": mod.MCP_TOOL_NAME,
+                "arguments": {"to": "ghost", "message": "hi"},
+            },
+        ),
+        self_name="javis",
+        registry_url="http://stub",
+        timeout=1.0,
+        request_id="rid-77",
+        plugin_version="test",
+        lookup_peer_fn=_lookup,
+        forward_to_peer_fn=_forward,
+    )
+    assert resp["error"]["code"] == mod.MCP_ERR_A2A_UPSTREAM
+    assert resp["error"]["data"]["httpStatus"] == 404
+    assert resp["error"]["data"]["requestId"] == "rid-77"
+
+
+def test_hermes_mcp_invalid_params_error_also_carries_request_id():
+    mod = _load_hermes_sidecar_module()
+    resp = mod.handle_mcp_request(
+        _mk_mcp_req(
+            rpc_id=78,
+            method="tools/call",
+            params={"name": mod.MCP_TOOL_NAME, "arguments": {"message": "hi"}},
+        ),
+        self_name="javis",
+        registry_url="http://stub",
+        timeout=1.0,
+        request_id="rid-78",
+        plugin_version="test",
+    )
+    assert resp["error"]["code"] == mod.MCP_ERR_INVALID_PARAMS
+    assert resp["error"]["data"]["requestId"] == "rid-78"
+
+
+def test_hermes_mcp_tool_call_no_limiter_is_permissive():
+    """Without a limiter wired in, the MCP tool call must not error out —
+    proves the feature is opt-in via the deps kwarg."""
+    sidecar_mod = _load_hermes_sidecar_module()
+
+    def _fake_lookup(registry_url, peer, timeout):
+        return {"name": peer, "endpoint": "http://peer/a2a/send", "role": "r", "skills": []}
+
+    def _fake_forward(*a, **k):
+        return {"from": "analyst", "reply": "ok", "thread_id": None}
+
+    r = sidecar_mod.handle_mcp_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": sidecar_mod.MCP_TOOL_NAME,
+                "arguments": {"to": "analyst", "message": "hi"},
+            },
+        },
+        self_name="javis",
+        registry_url="http://stub-registry",
+        timeout=5.0,
+        request_id="req",
+        plugin_version="test",
+        lookup_peer_fn=_fake_lookup,
+        forward_to_peer_fn=_fake_forward,
+    )
+    assert "result" in r

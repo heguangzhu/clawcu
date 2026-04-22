@@ -106,10 +106,12 @@ import os
 import re
 import sys
 import traceback
+import urllib.parse
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 
 
@@ -416,16 +418,565 @@ def call_hermes(
         ) from exc
 
 
-def _write_json(h: BaseHTTPRequestHandler, status: int, obj: Any) -> None:
+def _write_json(
+    h: BaseHTTPRequestHandler,
+    status: int,
+    obj: Any,
+    extra_headers: dict[str, str] | None = None,
+) -> None:
     data = json.dumps(obj).encode("utf-8")
     h.send_response(status)
     h.send_header("Content-Type", "application/json")
     h.send_header("Content-Length", str(len(data)))
+    if extra_headers:
+        for name, value in extra_headers.items():
+            h.send_header(name, value)
     h.end_headers()
     h.wfile.write(data)
 
 
-def build_handler(cfg: Config) -> type[BaseHTTPRequestHandler]:
+# Review-2 P1-D: request correlation.
+#
+# A single outbound-initiated hop chain (A→B→C) should share one stable ID
+# so operators can grep sidecar logs across containers for a single
+# federation call. We accept a caller-supplied X-A2A-Request-Id (so higher
+# layers can pre-tag) and synthesize uuid4 if absent. The ID is then:
+#   * logged at entry + exit on every sidecar that handles it,
+#   * forwarded to the next hop via X-A2A-Request-Id,
+#   * echoed back in the JSON body AND the response header so both
+#     JSON-parsing clients and curl-pipe-grep users can recover it.
+
+_REQUEST_ID_HEADER = "X-A2A-Request-Id"
+
+
+def _looks_like_request_id(value: str) -> bool:
+    # Accept anything that a careful caller might generate (uuid4, uuid7,
+    # ulid, short opaque tags). Reject control chars / whitespace / empty
+    # to keep logs greppable.
+    if not value or len(value) > 128:
+        return False
+    for ch in value:
+        if ord(ch) < 0x20 or ch in (" ", "\t", "\n", "\r"):
+            return False
+    return True
+
+
+def read_or_mint_request_id(headers: Any) -> str:
+    raw = headers.get(_REQUEST_ID_HEADER) if hasattr(headers, "get") else None
+    if isinstance(raw, str):
+        candidate = raw.strip()
+        if _looks_like_request_id(candidate):
+            return candidate
+    return uuid.uuid4().hex
+
+
+# --- Outbound helpers (iter-1, a2a-design-1.md) ---
+#
+# Kept top-level so tests can call lookup_peer / forward_to_peer without
+# standing up the full HTTP server. registry_url comes from body override
+# → A2A_REGISTRY_URL → container-default (host.docker.internal:9100 which
+# is where `clawcu a2a up` binds on the host).
+
+DEFAULT_REGISTRY_URL = "http://host.docker.internal:9100"
+
+
+class OutboundError(Exception):
+    def __init__(self, http_status: int, message: str, peer_status: int | None = None) -> None:
+        super().__init__(message)
+        self.http_status = http_status
+        self.peer_status = peer_status
+
+
+def _default_registry_url() -> str:
+    return (os.environ.get("A2A_REGISTRY_URL") or DEFAULT_REGISTRY_URL).strip() or DEFAULT_REGISTRY_URL
+
+
+# Hop budget — see a2a-design-1.md §Loop protection. X-A2A-Hop increments
+# on every mesh hop; an inbound /a2a/send that sees hop>=budget is refused
+# with 508 before any gateway work happens.
+def _hop_budget() -> int:
+    try:
+        v = int(os.environ.get("A2A_HOP_BUDGET") or "8")
+    except ValueError:
+        return 8
+    return v if v >= 1 else 8
+
+
+def read_hop_header(headers: Any) -> int:
+    raw = headers.get("X-A2A-Hop") if hasattr(headers, "get") else None
+    if raw is None:
+        return 0
+    try:
+        n = int(str(raw).strip())
+    except ValueError:
+        return 0
+    return n if n >= 0 else 0
+
+
+def lookup_peer(
+    registry_url: str, peer_name: str, timeout: float
+) -> dict[str, Any]:
+    base = registry_url.rstrip("/")
+    url = f"{base}/agents/{urllib.parse.quote(peer_name, safe='')}"
+    req = urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            status = resp.status
+    except HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
+        if e.code == 404:
+            raise OutboundError(404, f"peer '{peer_name}' not found in registry") from e
+        raise OutboundError(503, f"registry lookup {e.code}: {body[:200]}") from e
+    except URLError as e:
+        raise OutboundError(503, f"registry unreachable: {e.reason}") from e
+    except (OSError, TimeoutError) as e:
+        raise OutboundError(503, f"registry request failed: {e}") from e
+    if status != 200:
+        raise OutboundError(503, f"registry lookup {status}: {raw[:200]}")
+    try:
+        card = json.loads(raw)
+    except Exception as e:
+        raise OutboundError(503, f"registry returned non-json: {e}") from e
+    if not isinstance(card, dict) or not isinstance(card.get("endpoint"), str) or not card["endpoint"]:
+        raise OutboundError(503, f"registry card for '{peer_name}' missing endpoint")
+    return card
+
+
+def fetch_peer_list(registry_url: str, timeout: float) -> list[dict[str, Any]] | None:
+    """Fetch the full peer list from the registry's `GET /agents` endpoint.
+
+    Returns a filtered list of peer dicts on 2xx + JSON array response, or
+    None on any failure (404, 5xx, network, non-JSON, non-array). Callers
+    fall back to a static tool description; tools/list must never fail
+    because of a registry hiccup (a2a-design-5.md §P1-H).
+    """
+    base = registry_url.rstrip("/")
+    url = f"{base}/agents"
+    req = urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            status = resp.status
+    except (HTTPError, URLError, OSError, TimeoutError):
+        return None
+    if status < 200 or status >= 300:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(parsed, list):
+        return None
+    return [p for p in parsed if isinstance(p, dict) and isinstance(p.get("name"), str)]
+
+
+def create_peer_cache(
+    registry_url: str,
+    timeout: float = 5.0,
+    fresh_s: float = 30.0,
+    stale_s: float = 300.0,
+    now_fn: Callable[[], float] = lambda: __import__("time").monotonic(),
+    fetch_fn: Any = None,
+) -> Any:
+    """TTL cache around fetch_peer_list. See a2a-design-5.md §P1-H for the
+    cache strategy (30s fresh, 5min stale-OK on failure, null fallback)."""
+    import threading as _threading
+
+    fetcher = fetch_fn if fetch_fn is not None else fetch_peer_list
+    state = {"cached": None, "fetched_at": 0.0}
+    lock = _threading.Lock()
+
+    def get() -> list[dict[str, Any]] | None:
+        now = now_fn()
+        with lock:
+            if state["cached"] is not None and now - state["fetched_at"] < fresh_s:
+                return state["cached"]
+        # Fetch outside the lock so concurrent callers in other threads can
+        # observe a fresh cache once it lands (one extra fetch worst-case;
+        # acceptable).
+        got = fetcher(registry_url, timeout)
+        with lock:
+            if got is not None:
+                state["cached"] = got
+                state["fetched_at"] = now_fn()
+                return state["cached"]
+            if state["cached"] is not None and now_fn() - state["fetched_at"] < stale_s:
+                return state["cached"]
+            state["cached"] = None
+            return None
+
+    return type("PeerCache", (), {"get": staticmethod(get)})
+
+
+def forward_to_peer(
+    endpoint: str,
+    self_name: str,
+    peer_name: str,
+    message: str,
+    thread_id: str | None,
+    hop: int,
+    timeout: float,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {"from": self_name, "to": peer_name, "message": message}
+    if thread_id:
+        body["thread_id"] = thread_id
+    data = json.dumps(body).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "X-A2A-Hop": str(hop),
+        "User-Agent": "a2a-bridge-sidecar/0.3",
+    }
+    if request_id:
+        headers[_REQUEST_ID_HEADER] = request_id
+    req = urllib.request.Request(endpoint, data=data, method="POST", headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            status = resp.status
+    except HTTPError as e:
+        body_raw = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
+        if e.code == 508:
+            raise OutboundError(508, f"peer rejected hop limit: {body_raw[:200]}", e.code) from e
+        if e.code == 429:
+            raise OutboundError(429, f"peer rate-limited: {body_raw[:200]}", e.code) from e
+        raise OutboundError(502, f"peer HTTP {e.code}: {body_raw[:200]}", e.code) from e
+    except URLError as e:
+        raise OutboundError(504, f"peer unreachable or timed out: {e.reason}") from e
+    except (OSError, TimeoutError) as e:
+        raise OutboundError(504, f"peer request failed: {e}") from e
+    if status < 200 or status >= 300:
+        raise OutboundError(502, f"peer HTTP {status}: {raw[:200]}", status)
+    try:
+        return json.loads(raw)
+    except Exception as e:
+        raise OutboundError(502, f"peer returned non-json: {e}") from e
+
+
+# --- MCP server (a2a-design-3.md §P0-A) ---
+#
+# Minimal JSON-RPC 2.0 over POST /mcp. Exposes one tool `a2a_call_peer`
+# that wraps forward_to_peer in-process — every MCP tool call is a
+# function call, not a second HTTP hop. The handler is kept dependency-
+# injected (lookup + forward passed in) so tests don't need a stub
+# registry + a stub peer; unit tests drive the shape, the full
+# HTTP-server end-to-end lives in tests/test_a2a.py.
+
+MCP_PROTOCOL_VERSION = "2024-11-05"
+MCP_TOOL_NAME = "a2a_call_peer"
+MCP_MAX_PEERS_IN_DESCRIPTION = 16
+MCP_MAX_SKILLS_IN_PEER_LINE = 3
+
+# JSON-RPC 2.0 + MCP error codes.
+MCP_ERR_PARSE = -32700
+MCP_ERR_INVALID_REQUEST = -32600
+MCP_ERR_METHOD_NOT_FOUND = -32601
+MCP_ERR_INVALID_PARAMS = -32602
+MCP_ERR_INTERNAL = -32603
+MCP_ERR_A2A_UPSTREAM = -32001
+
+_MCP_BASE_DESCRIPTION = (
+    "Call another agent in the A2A federation and return its reply. "
+    "Use when the current task needs data or work owned by a different "
+    "agent (e.g., an analyst for market data, a writer for prose)."
+)
+
+
+def _format_peer_line(peer: dict[str, Any], *, include_role: bool = False) -> str:
+    skills = peer.get("skills") if isinstance(peer.get("skills"), list) else []
+    head = ", ".join(str(s) for s in skills[:MCP_MAX_SKILLS_IN_PEER_LINE])
+    tail = ", ..." if len(skills) > MCP_MAX_SKILLS_IN_PEER_LINE else ""
+    name = peer.get("name")
+    # a2a-design-6.md §P1-M: operator-gated role field (default off).
+    role_raw = peer.get("role") if include_role else None
+    role = f" [{role_raw}]" if isinstance(role_raw, str) and role_raw else ""
+    if not head:
+        return f"  - {name}{role}"
+    return f"  - {name}{role} ({head}{tail})"
+
+
+def _format_peer_summary(peers: Any, self_name: str | None, *, include_role: bool = False) -> str:
+    """Produce the multi-line summary injected into the tool description.
+    Excludes self and caps at MCP_MAX_PEERS_IN_DESCRIPTION entries. Returns
+    an empty string when the list is empty or only contains self (callers
+    then fall back to the static description).
+    """
+    if not isinstance(peers, list) or not peers:
+        return ""
+    others = [
+        p for p in peers
+        if isinstance(p, dict)
+        and isinstance(p.get("name"), str)
+        and p.get("name") != self_name
+    ]
+    if not others:
+        return ""
+    shown = others[:MCP_MAX_PEERS_IN_DESCRIPTION]
+    hidden = len(others) - len(shown)
+    lines = ["", "Available peers:"] + [
+        _format_peer_line(p, include_role=include_role) for p in shown
+    ]
+    if hidden > 0:
+        lines.append(f"  ...and {hidden} more")
+    return "\n".join(lines)
+
+
+def mcp_tool_descriptor(
+    peers: Any = None, self_name: str | None = None, *, include_role: bool = False
+) -> dict[str, Any]:
+    description = _MCP_BASE_DESCRIPTION
+    summary = _format_peer_summary(peers, self_name, include_role=include_role)
+    if summary:
+        description += summary
+        description += (
+            "\n\nThe `to` field must match one of the peers above "
+            "(case-sensitive)."
+        )
+    else:
+        description += (
+            " The target agent name must be registered in the A2A registry."
+        )
+    return {
+        "name": MCP_TOOL_NAME,
+        "description": description,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "to": {
+                    "type": "string",
+                    "description": "Peer agent name as registered in the A2A registry.",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "The question or task for the peer agent.",
+                },
+                "thread_id": {
+                    "type": "string",
+                    "description": "Optional. Reuse a prior conversation thread with the peer.",
+                },
+            },
+            "required": ["to", "message"],
+        },
+    }
+
+
+def _jsonrpc_result(rpc_id: Any, result: Any) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": rpc_id, "result": result}
+
+
+def _jsonrpc_error(
+    rpc_id: Any, code: int, message: str, data: Any = None
+) -> dict[str, Any]:
+    err: dict[str, Any] = {"code": code, "message": message}
+    if data is not None:
+        err["data"] = data
+    return {"jsonrpc": "2.0", "id": rpc_id, "error": err}
+
+
+def handle_mcp_request(
+    body: Any,
+    *,
+    self_name: str,
+    registry_url: str,
+    timeout: float,
+    request_id: str | None,
+    plugin_version: str,
+    lookup_peer_fn: Any = lookup_peer,
+    forward_to_peer_fn: Any = forward_to_peer,
+    outbound_limiter: Any = None,
+    list_peers_fn: Any = None,
+    include_role: bool = False,
+) -> dict[str, Any]:
+    if (
+        not isinstance(body, dict)
+        or body.get("jsonrpc") != "2.0"
+        or not isinstance(body.get("method"), str)
+    ):
+        rpc_id = body.get("id") if isinstance(body, dict) else None
+        return _jsonrpc_error(
+            rpc_id, MCP_ERR_INVALID_REQUEST, "expected JSON-RPC 2.0 request"
+        )
+    rpc_id = body.get("id")
+    method = body["method"]
+    params = body.get("params") or {}
+    try:
+        if method == "initialize":
+            return _jsonrpc_result(
+                rpc_id,
+                {
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "serverInfo": {
+                        "name": "clawcu-a2a",
+                        "version": plugin_version,
+                    },
+                    "capabilities": {"tools": {}},
+                },
+            )
+        if method == "tools/list":
+            peers: Any = None
+            if callable(list_peers_fn):
+                try:
+                    peers = list_peers_fn()
+                except Exception:  # noqa: BLE001
+                    # tools/list must never fail because of a registry hiccup
+                    # — the LLM must still see the tool. Fallback = static
+                    # description (a2a-design-5.md §P1-H).
+                    peers = None
+            return _jsonrpc_result(
+                rpc_id,
+                {
+                    "tools": [
+                        mcp_tool_descriptor(
+                            peers=peers,
+                            self_name=self_name,
+                            include_role=include_role,
+                        )
+                    ]
+                },
+            )
+        if method == "tools/call":
+            return _handle_mcp_tools_call(
+                rpc_id,
+                params,
+                self_name=self_name,
+                registry_url=registry_url,
+                timeout=timeout,
+                request_id=request_id,
+                lookup_peer_fn=lookup_peer_fn,
+                forward_to_peer_fn=forward_to_peer_fn,
+                outbound_limiter=outbound_limiter,
+            )
+        if method in ("notifications/initialized", "ping"):
+            return _jsonrpc_result(rpc_id, {})
+        return _jsonrpc_error(
+            rpc_id, MCP_ERR_METHOD_NOT_FOUND, f"unknown method: {method}"
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _jsonrpc_error(rpc_id, MCP_ERR_INTERNAL, str(exc))
+
+
+def _handle_mcp_tools_call(
+    rpc_id: Any,
+    params: Any,
+    *,
+    self_name: str,
+    registry_url: str,
+    timeout: float,
+    request_id: str | None,
+    lookup_peer_fn: Any,
+    forward_to_peer_fn: Any,
+    outbound_limiter: Any = None,
+) -> dict[str, Any]:
+    # P2-K: every error response in this handler carries requestId in data
+    # so a JSON-RPC-only client can correlate to X-A2A-Request-Id.
+    def _with_rid(extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        merged: dict[str, Any] = dict(extra or {})
+        merged["requestId"] = request_id
+        return merged
+
+    if not isinstance(params, dict) or params.get("name") != MCP_TOOL_NAME:
+        return _jsonrpc_error(
+            rpc_id,
+            MCP_ERR_METHOD_NOT_FOUND,
+            f"unknown tool: {params.get('name') if isinstance(params, dict) else None}",
+            _with_rid(),
+        )
+    args = params.get("arguments") or {}
+    if not isinstance(args.get("to"), str) or not args["to"]:
+        return _jsonrpc_error(
+            rpc_id, MCP_ERR_INVALID_PARAMS, "missing 'to' (string)", _with_rid()
+        )
+    if not isinstance(args.get("message"), str) or not args["message"]:
+        return _jsonrpc_error(
+            rpc_id, MCP_ERR_INVALID_PARAMS, "missing 'message' (string)", _with_rid()
+        )
+    raw_thread = args.get("thread_id")
+    thread_id = raw_thread if isinstance(raw_thread, str) and raw_thread else None
+
+    # Self-origin rate limit (a2a-design-4.md §P1-B). Shared bucket with
+    # /a2a/outbound so the LLM firing 200 a2a_call_peer calls in one turn
+    # can't nuke the provider quota. Inline the key (two lines) rather than
+    # crossing a package boundary — sidecar.py is loaded as a top-level
+    # script in tests so `from .outbound_limit import key_for` fails.
+    if outbound_limiter is not None:
+        key = (
+            f"thread:{thread_id}"
+            if isinstance(thread_id, str) and thread_id
+            else f"self:{self_name or 'anon'}"
+        )
+        decision = outbound_limiter.check(key)
+        if not decision["allowed"]:
+            return _jsonrpc_error(
+                rpc_id,
+                MCP_ERR_A2A_UPSTREAM,
+                f"self-origin rate limit exceeded ({decision['limit']}/min)",
+                _with_rid(
+                    {
+                        "httpStatus": 429,
+                        "retryAfterMs": decision["retry_after_ms"],
+                    }
+                ),
+            )
+
+    try:
+        card = lookup_peer_fn(registry_url, args["to"], timeout)
+    except OutboundError as exc:
+        return _jsonrpc_error(
+            rpc_id,
+            MCP_ERR_A2A_UPSTREAM,
+            f"registry lookup failed: {exc}",
+            _with_rid({"httpStatus": exc.http_status}),
+        )
+
+    try:
+        peer_resp = forward_to_peer_fn(
+            card["endpoint"],
+            self_name,
+            args["to"],
+            args["message"],
+            thread_id,
+            1,
+            timeout,
+            request_id,
+        )
+    except OutboundError as exc:
+        return _jsonrpc_error(
+            rpc_id,
+            MCP_ERR_A2A_UPSTREAM,
+            f"peer call failed: {exc}",
+            _with_rid({
+                "httpStatus": exc.http_status,
+                "peerStatus": exc.peer_status,
+            }),
+        )
+
+    reply = peer_resp.get("reply") if isinstance(peer_resp.get("reply"), str) else ""
+    returned_thread = peer_resp.get("thread_id")
+    return _jsonrpc_result(
+        rpc_id,
+        {
+            "content": [{"type": "text", "text": reply}],
+            "isError": False,
+            "structuredContent": {
+                "from": peer_resp.get("from") or self_name,
+                "to": args["to"],
+                "reply": reply,
+                "thread_id": returned_thread
+                if isinstance(returned_thread, str)
+                else thread_id,
+                "request_id": request_id,
+            },
+        },
+    )
+
+
+def build_handler(
+    cfg: Config,
+    outbound_limiter: Any = None,
+    peer_cache: Any = None,
+) -> type[BaseHTTPRequestHandler]:
     thread_store = ThreadStore(
         storage_dir=cfg.thread_dir,
         max_history_pairs=cfg.thread_max_history_pairs,
@@ -465,8 +1016,40 @@ def build_handler(cfg: Config) -> type[BaseHTTPRequestHandler]:
             _write_json(self, 404, {"error": f"not found: {self.path}"})
 
         def do_POST(self) -> None:  # noqa: N802
+            if self.path == "/a2a/outbound":
+                self._handle_outbound()
+                return
+            if self.path == "/mcp":
+                self._handle_mcp()
+                return
             if self.path != "/a2a/send":
                 _write_json(self, 404, {"error": f"not found: {self.path}"})
+                return
+
+            # Review-15 P0-A: hop-budget check lives BEFORE body parsing so a
+            # runaway loop can't even spend JSON-parse cycles on us.
+            incoming_hop = read_hop_header(self.headers)
+            budget = _hop_budget()
+            request_id = read_or_mint_request_id(self.headers)
+            rid_headers = {_REQUEST_ID_HEADER: request_id}
+            if incoming_hop >= budget:
+                log.warning(
+                    "a2a.send refused request_id=%s hop=%s budget=%s",
+                    request_id,
+                    incoming_hop,
+                    budget,
+                )
+                _write_json(
+                    self,
+                    508,
+                    {
+                        "error": (
+                            f"hop budget exceeded (hop={incoming_hop}, budget={budget})"
+                        ),
+                        "request_id": request_id,
+                    },
+                    extra_headers=rid_headers,
+                )
                 return
 
             length = int(self.headers.get("Content-Length") or 0)
@@ -474,19 +1057,40 @@ def build_handler(cfg: Config) -> type[BaseHTTPRequestHandler]:
             try:
                 payload = json.loads(raw.decode("utf-8"))
             except Exception as exc:
-                _write_json(self, 400, {"error": f"bad json: {exc}"})
+                _write_json(
+                    self,
+                    400,
+                    {"error": f"bad json: {exc}", "request_id": request_id},
+                    extra_headers=rid_headers,
+                )
                 return
 
             if not isinstance(payload, dict):
-                _write_json(self, 400, {"error": "body must be a JSON object"})
+                _write_json(
+                    self,
+                    400,
+                    {"error": "body must be a JSON object", "request_id": request_id},
+                    extra_headers=rid_headers,
+                )
                 return
 
             peer_from = str(payload.get("from") or "")
             peer_to = str(payload.get("to") or "")
             message = payload.get("message")
             if not isinstance(message, str) or not message:
-                _write_json(self, 400, {"error": "`message` must be a non-empty string"})
+                _write_json(
+                    self,
+                    400,
+                    {"error": "`message` must be a non-empty string", "request_id": request_id},
+                    extra_headers=rid_headers,
+                )
                 return
+            log.info(
+                "a2a.send accepted request_id=%s from=%s hop=%s",
+                request_id,
+                peer_from or "?",
+                incoming_hop,
+            )
 
             # Review-14 P1-C: thread_id is OPTIONAL. Absent → stateless turn
             # (identical to pre-iter-14 behavior). Present but wrong type
@@ -501,7 +1105,8 @@ def build_handler(cfg: Config) -> type[BaseHTTPRequestHandler]:
                 _write_json(
                     self,
                     400,
-                    {"error": "'thread_id' must be a non-empty string when provided"},
+                    {"error": "'thread_id' must be a non-empty string when provided", "request_id": request_id},
+                    extra_headers=rid_headers,
                 )
                 return
 
@@ -518,7 +1123,8 @@ def build_handler(cfg: Config) -> type[BaseHTTPRequestHandler]:
                 _write_json(
                     self,
                     503,
-                    {"error": f"gateway not ready after {cfg.ready_deadline}s"},
+                    {"error": f"gateway not ready after {cfg.ready_deadline}s", "request_id": request_id},
+                    extra_headers=rid_headers,
                 )
                 return
 
@@ -530,7 +1136,7 @@ def build_handler(cfg: Config) -> type[BaseHTTPRequestHandler]:
                 reply = call_hermes(cfg, message, peer_from, history=history)
             except HTTPError as e:
                 body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
-                log.error("Hermes HTTPError %s: %s", e.code, body[:500])
+                log.error("Hermes HTTPError %s request_id=%s: %s", e.code, request_id, body[:500])
                 if e.code >= 500:
                     # 5xx suggests gateway is sick; drop the ready-cache so the
                     # next request re-probes instead of blindly retrying.
@@ -538,31 +1144,287 @@ def build_handler(cfg: Config) -> type[BaseHTTPRequestHandler]:
                 _write_json(
                     self,
                     502,
-                    {"error": f"upstream Hermes HTTP {e.code}", "detail": body[:500]},
+                    {"error": f"upstream Hermes HTTP {e.code}", "detail": body[:500], "request_id": request_id},
+                    extra_headers=rid_headers,
                 )
                 return
             except URLError as e:
-                log.error("Hermes URLError: %s", e)
+                log.error("Hermes URLError request_id=%s: %s", request_id, e)
                 # Socket failures mean the gateway process is almost certainly
                 # gone; invalidate so the sidecar doesn't keep pushing blind
                 # for the remainder of the 5-min TTL.
                 invalidate_gateway_ready_cache()
+                # Review-2 P1-C (iter 3): network-layer (URLError) → 504,
+                # distinct from peer HTTP errors above (502). Unifies with
+                # /a2a/outbound's forward_to_peer.
                 _write_json(
-                    self, 502, {"error": f"upstream Hermes unreachable: {e.reason}"}
+                    self, 504, {"error": f"upstream Hermes unreachable: {e.reason}", "request_id": request_id},
+                    extra_headers=rid_headers,
                 )
                 return
             except Exception as e:  # noqa: BLE001 — we want to surface anything
-                log.exception("unexpected error while calling Hermes")
-                _write_json(self, 500, {"error": f"internal: {e}"})
+                log.exception("unexpected error while calling Hermes request_id=%s", request_id)
+                _write_json(
+                    self,
+                    500,
+                    {"error": f"internal: {e}", "request_id": request_id},
+                    extra_headers=rid_headers,
+                )
                 return
 
             if thread_id and thread_store.enabled:
                 thread_store.append_turn(peer_from, thread_id, message, reply)
 
+            log.info("a2a.send replied request_id=%s from=%s", request_id, peer_from or "?")
             _write_json(
                 self,
                 200,
-                {"from": cfg.self_name, "reply": reply, "thread_id": thread_id},
+                {
+                    "from": cfg.self_name,
+                    "reply": reply,
+                    "thread_id": thread_id,
+                    "request_id": request_id,
+                },
+                extra_headers=rid_headers,
+            )
+
+        def _handle_mcp(self) -> None:
+            """MCP streamable-http endpoint. See a2a-design-3.md §P0-A.
+
+            Minimal JSON-RPC 2.0 over POST /mcp. Shares request-id with
+            /a2a/outbound so an LLM→MCP→peer chain is one grep-able
+            transaction. Dispatches to handle_mcp_request, which calls
+            forward_to_peer in-process (no second HTTP hop).
+            """
+            request_id = read_or_mint_request_id(self.headers)
+            rid_headers = {_REQUEST_ID_HEADER: request_id}
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length) if length else b""
+            try:
+                payload = json.loads(raw.decode("utf-8")) if raw else None
+            except Exception as exc:  # noqa: BLE001
+                _write_json(
+                    self,
+                    400,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {
+                            "code": MCP_ERR_PARSE,
+                            "message": f"bad json: {exc}",
+                        },
+                    },
+                    extra_headers=rid_headers,
+                )
+                return
+            log.info(
+                "mcp.request request_id=%s method=%s",
+                request_id,
+                (payload or {}).get("method") if isinstance(payload, dict) else None,
+            )
+            _list_peers_fn: Any = None
+            if (
+                peer_cache is not None
+                and os.environ.get("A2A_TOOL_DESC_MODE") != "static"
+            ):
+                _list_peers_fn = peer_cache.get
+            response = handle_mcp_request(
+                payload,
+                self_name=cfg.self_name,
+                registry_url=_default_registry_url(),
+                timeout=float(cfg.timeout),
+                request_id=request_id,
+                plugin_version=os.environ.get("CLAWCU_PLUGIN_VERSION", "unknown"),
+                outbound_limiter=outbound_limiter,
+                list_peers_fn=_list_peers_fn,
+                include_role=(
+                    os.environ.get("A2A_TOOL_DESC_INCLUDE_ROLE", "").lower() == "true"
+                ),
+            )
+            _write_json(self, 200, response, extra_headers=rid_headers)
+
+        def _handle_outbound(self) -> None:
+            """Container-local outbound primitive. See a2a-design-1.md §Protocol.
+
+            Caller is always inside the same netns (sidecar binds 0.0.0.0 but
+            the adapter only publishes 127.0.0.1). Body: {to, message,
+            thread_id?, registry_url?, timeout_ms?}. Returns {from, to, reply,
+            thread_id, request_id}.
+            """
+            incoming_hop = read_hop_header(self.headers)
+            budget = _hop_budget()
+            request_id = read_or_mint_request_id(self.headers)
+            rid_headers = {_REQUEST_ID_HEADER: request_id}
+            if incoming_hop >= budget:
+                log.warning(
+                    "a2a.outbound refused request_id=%s hop=%s budget=%s",
+                    request_id,
+                    incoming_hop,
+                    budget,
+                )
+                _write_json(
+                    self,
+                    508,
+                    {
+                        "error": (
+                            f"hop budget exceeded (hop={incoming_hop}, budget={budget})"
+                        ),
+                        "request_id": request_id,
+                    },
+                    extra_headers=rid_headers,
+                )
+                return
+
+            length = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(length) if length else b""
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+            except Exception as exc:
+                _write_json(
+                    self,
+                    400,
+                    {"error": f"bad json: {exc}", "request_id": request_id},
+                    extra_headers=rid_headers,
+                )
+                return
+            if not isinstance(payload, dict):
+                _write_json(
+                    self,
+                    400,
+                    {"error": "body must be a JSON object", "request_id": request_id},
+                    extra_headers=rid_headers,
+                )
+                return
+            to = payload.get("to")
+            if not isinstance(to, str) or not to:
+                _write_json(
+                    self,
+                    400,
+                    {"error": "missing 'to' (string)", "request_id": request_id},
+                    extra_headers=rid_headers,
+                )
+                return
+            message = payload.get("message")
+            if not isinstance(message, str) or not message:
+                _write_json(
+                    self,
+                    400,
+                    {"error": "'message' must be a non-empty string", "request_id": request_id},
+                    extra_headers=rid_headers,
+                )
+                return
+            raw_thread = payload.get("thread_id", None)
+            if raw_thread is None:
+                out_thread: str | None = None
+            elif isinstance(raw_thread, str) and raw_thread:
+                out_thread = raw_thread
+            else:
+                _write_json(
+                    self,
+                    400,
+                    {"error": "'thread_id' must be a non-empty string when provided", "request_id": request_id},
+                    extra_headers=rid_headers,
+                )
+                return
+            registry_url = payload.get("registry_url")
+            if not isinstance(registry_url, str) or not registry_url:
+                registry_url = _default_registry_url()
+            raw_timeout = payload.get("timeout_ms")
+            if isinstance(raw_timeout, (int, float)) and raw_timeout > 0:
+                timeout_s = float(raw_timeout) / 1000.0
+            else:
+                timeout_s = 60.0
+
+            # Self-origin rate limit shared with /mcp tool-call path
+            # (a2a-design-4.md §P1-B). Checked after input validation so
+            # malformed requests aren't counted against the quota.
+            if outbound_limiter is not None:
+                limit_key = (
+                    f"thread:{out_thread}"
+                    if isinstance(out_thread, str) and out_thread
+                    else f"self:{cfg.self_name or 'anon'}"
+                )
+                decision = outbound_limiter.check(limit_key)
+                if not decision["allowed"]:
+                    log.warning(
+                        "a2a.outbound rate-limited request_id=%s key=%s limit=%s",
+                        request_id,
+                        limit_key,
+                        decision["limit"],
+                    )
+                    _write_json(
+                        self,
+                        429,
+                        {
+                            "error": f"self-origin rate limit exceeded ({decision['limit']}/min)",
+                            "request_id": request_id,
+                            "retry_after_ms": decision["retry_after_ms"],
+                        },
+                        extra_headers=rid_headers,
+                    )
+                    return
+
+            log.info(
+                "a2a.outbound begin request_id=%s to=%s hop=%s",
+                request_id,
+                to,
+                incoming_hop,
+            )
+            try:
+                card = lookup_peer(registry_url, to, timeout=timeout_s)
+            except OutboundError as e:
+                log.warning(
+                    "a2a.outbound lookup-failed request_id=%s to=%s status=%s",
+                    request_id,
+                    to,
+                    e.http_status,
+                )
+                _write_json(
+                    self,
+                    e.http_status,
+                    {"error": str(e), "request_id": request_id},
+                    extra_headers=rid_headers,
+                )
+                return
+            try:
+                peer_resp = forward_to_peer(
+                    endpoint=card["endpoint"],
+                    self_name=cfg.self_name,
+                    peer_name=to,
+                    message=message,
+                    thread_id=out_thread,
+                    hop=incoming_hop + 1,
+                    timeout=timeout_s,
+                    request_id=request_id,
+                )
+            except OutboundError as e:
+                log.warning(
+                    "a2a.outbound forward-failed request_id=%s to=%s status=%s peer_status=%s",
+                    request_id,
+                    to,
+                    e.http_status,
+                    e.peer_status,
+                )
+                body: dict[str, Any] = {"error": str(e), "request_id": request_id}
+                if e.peer_status is not None:
+                    body["peer_status"] = e.peer_status
+                _write_json(self, e.http_status, body, extra_headers=rid_headers)
+                return
+
+            reply = peer_resp.get("reply") if isinstance(peer_resp, dict) else None
+            resp_thread = peer_resp.get("thread_id") if isinstance(peer_resp, dict) else None
+            log.info("a2a.outbound done request_id=%s to=%s", request_id, to)
+            _write_json(
+                self,
+                200,
+                {
+                    "from": cfg.self_name,
+                    "to": to,
+                    "reply": reply if isinstance(reply, str) else "",
+                    "thread_id": resp_thread if isinstance(resp_thread, str) else out_thread,
+                    "request_id": request_id,
+                },
+                extra_headers=rid_headers,
             )
 
     return Handler
@@ -587,7 +1449,70 @@ def main(argv: list[str] | None = None) -> int:
         cfg.model,
     )
 
-    server = ThreadingHTTPServer((cfg.bind_host, cfg.bind_port), build_handler(cfg))
+    # Auto-wire the `a2a` MCP entry into the Hermes service config file on
+    # start (a2a-design-4.md §P0-A). Never raises operationally — any
+    # failure logs and returns so the sidecar still comes up.
+    try:
+        import importlib.util as _ilu
+        import pathlib as _pl
+
+        _spec = _ilu.spec_from_file_location(
+            "_a2a_bootstrap",
+            str(_pl.Path(__file__).parent / "bootstrap.py"),
+        )
+        if _spec and _spec.loader:
+            _boot = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(_boot)
+            _env = dict(os.environ)
+            _env.setdefault("A2A_BIND_PORT", str(cfg.bind_port))
+            _boot.run_bootstrap(env=_env)
+    except Exception as exc:  # pragma: no cover - defensive path
+        log.warning("mcp-bootstrap threw: %s; continuing", exc)
+
+    # Shared outbound rate limiter: same bucket for /a2a/outbound and /mcp
+    # tool-call so an LLM can't bypass the cap by picking a different path
+    # (a2a-design-4.md §P1-B).
+    try:
+        import importlib.util as _ilu2
+        import pathlib as _pl2
+
+        _lim_spec = _ilu2.spec_from_file_location(
+            "_a2a_outbound_limit",
+            str(_pl2.Path(__file__).parent / "outbound_limit.py"),
+        )
+        if _lim_spec and _lim_spec.loader:
+            _lim_mod = _ilu2.module_from_spec(_lim_spec)
+            _lim_spec.loader.exec_module(_lim_mod)
+            outbound_limiter = _lim_mod.create_outbound_limiter(
+                rpm=_lim_mod.read_rpm(os.environ)
+            )
+            # a2a-design-6.md §P2-L: periodic empty-bucket sweep so
+            # long-running sidecars with high thread_id churn don't
+            # grow their hits map unboundedly. Daemon thread; dies
+            # with the process. Disable via A2A_OUTBOUND_SWEEP_INTERVAL_MS=0.
+            _lim_mod.create_sweep_thread(
+                outbound_limiter,
+                _lim_mod.read_sweep_interval_ms(os.environ),
+            )
+        else:
+            outbound_limiter = None
+    except Exception as exc:  # pragma: no cover - defensive path
+        log.warning("outbound-limiter init failed: %s; running unthrottled", exc)
+        outbound_limiter = None
+
+    # Peer cache for templated tool descriptions (a2a-design-5.md §P1-H).
+    # Registry URL doesn't change within a process lifetime in practice, so
+    # one cache per sidecar is fine.
+    try:
+        peer_cache = create_peer_cache(_default_registry_url(), timeout=5.0)
+    except Exception as exc:  # pragma: no cover - defensive
+        log.warning("peer-cache init failed: %s; static tool description only", exc)
+        peer_cache = None
+
+    server = ThreadingHTTPServer(
+        (cfg.bind_host, cfg.bind_port),
+        build_handler(cfg, outbound_limiter=outbound_limiter, peer_cache=peer_cache),
+    )
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -65,6 +65,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { URL } = require("node:url");
 const { execFileSync } = require("node:child_process");
+const crypto = require("node:crypto");
 
 // Gateway readiness primitives (probe / cache / invalidate) live in
 // readiness.js so they can be node-unit-tested without bringing up the
@@ -83,6 +84,28 @@ const { createRateLimiter } = require(path.join(__dirname, "ratelimit.js"));
 // sidecar's own audit trail survives `clawcu recreate`. Review-10 P2-C.
 const { setupFileLog } = require(path.join(__dirname, "logsink.js"));
 setupFileLog(process.env.A2A_SIDECAR_LOG_DIR || "");
+
+// MCP server (a2a-design-3.md §P0-A). Exposes /mcp on the same port so
+// the LLM can call `a2a_call_peer` as a native tool. The handler reuses
+// lookupPeer/forwardToPeer below, so every MCP tool call is an in-process
+// function call, not a second HTTP hop.
+const { handleMcpRequest } = require(path.join(__dirname, "mcp.js"));
+
+// Auto-wire the `a2a` MCP entry into the OpenClaw config file on start
+// (a2a-design-4.md §P0-A). Runs once just before server.listen; safe by
+// construction (any failure logs a warning and continues).
+const { runBootstrap: runMcpBootstrap } = require(path.join(__dirname, "bootstrap.js"));
+
+// Self-origin outbound rate limit (a2a-design-4.md §P1-B). Hop budget caps
+// depth; this caps breadth. Shared by /a2a/outbound and /mcp tool-call so
+// one LLM turn can't nuke the provider quota by firing 200 parallel calls.
+const {
+  createOutboundLimiter,
+  readRpm: readOutboundRpm,
+  readSweepIntervalMs: readOutboundSweepIntervalMs,
+  keyFor: outboundLimitKey,
+  createSweepTimer: createOutboundSweepTimer,
+} = require(path.join(__dirname, "outbound_limit.js"));
 
 // Per-peer / per-thread conversation history so /a2a/send can carry
 // context across turns when the peer supplies an optional thread_id.
@@ -218,6 +241,275 @@ function postJson({ host, port, path, headers, bodyObj, timeoutMs = 120000 }) {
   });
 }
 
+// Parses an arbitrary absolute http URL to the pieces `postJson` / `http.request`
+// want. Kept tolerant — the registry_url comes from env/config and typos
+// shouldn't turn into unhandled throws inside the request handler.
+function parseHttpUrl(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (e) {
+    throw new Error(`invalid url '${url}': ${e.message}`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`unsupported protocol in '${url}'`);
+  }
+  const port = parsed.port
+    ? Number(parsed.port)
+    : parsed.protocol === "https:"
+      ? 443
+      : 80;
+  return {
+    host: parsed.hostname,
+    port,
+    pathname: parsed.pathname || "/",
+    search: parsed.search || "",
+  };
+}
+
+function httpRequestRaw({ method, host, port, path, headers, timeoutMs }) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { method, host, port, path, headers },
+      (res) => {
+        let raw = "";
+        res.on("data", (chunk) => {
+          raw += chunk;
+        });
+        res.on("end", () => {
+          resolve({ status: res.statusCode ?? 0, body: raw });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error(`request timed out after ${timeoutMs}ms`));
+    });
+    req.end();
+  });
+}
+
+// Fetches the registry's full peer list. Registry contract: GET /agents
+// returns a JSON array of {name, role, skills, endpoint} entries. On any
+// failure (404, 5xx, network, non-json, non-array) returns null — callers
+// are expected to fall back to a static description. See a2a-design-5.md
+// §P1-H: tools/list must never fail because of a registry hiccup.
+async function fetchPeerList({ registryUrl, timeoutMs }) {
+  const { host, port, pathname } = parseHttpUrl(registryUrl);
+  const base = pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+  const path = `${base}/agents`;
+  let resp;
+  try {
+    resp = await httpRequestRaw({
+      method: "GET",
+      host,
+      port,
+      path,
+      headers: { accept: "application/json", "user-agent": "a2a-bridge-sidecar/0.3" },
+      timeoutMs,
+    });
+  } catch {
+    return null;
+  }
+  if (resp.status < 200 || resp.status >= 300) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(resp.body);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  return parsed.filter((p) => p && typeof p.name === "string");
+}
+
+// TTL cache on top of fetchPeerList. 30s fresh window, then a 5-minute
+// "stale OK on registry failure" window before falling back to null.
+// Shared by tools/list — an LLM refreshing tools every turn does not
+// stampede the registry.
+function createPeerCache({ registryUrl, timeoutMs, freshMs = 30_000, staleMs = 300_000, nowFn = Date.now, fetchFn = fetchPeerList }) {
+  let cached = null;
+  let fetchedAt = 0;
+  let inflight = null;
+  async function get() {
+    const now = nowFn();
+    if (cached && now - fetchedAt < freshMs) return cached;
+    if (inflight) return inflight;
+    inflight = (async () => {
+      const got = await fetchFn({ registryUrl, timeoutMs });
+      if (got !== null) {
+        cached = got;
+        fetchedAt = nowFn();
+      } else if (cached && nowFn() - fetchedAt < staleMs) {
+        // Keep serving the stale copy within the stale-OK window.
+      } else {
+        cached = null;
+      }
+      return cached;
+    })();
+    try {
+      return await inflight;
+    } finally {
+      inflight = null;
+    }
+  }
+  return { get };
+}
+
+// Outbound helpers — used by /a2a/outbound. Kept top-level so tests can
+// import them without booting the full HTTP server.
+async function lookupPeer({ registryUrl, peerName, timeoutMs }) {
+  const { host, port, pathname } = parseHttpUrl(registryUrl);
+  const base = pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+  const path = `${base}/agents/${encodeURIComponent(peerName)}`;
+  const { status, body } = await httpRequestRaw({
+    method: "GET",
+    host,
+    port,
+    path,
+    headers: { accept: "application/json", "user-agent": "a2a-bridge-sidecar/0.3" },
+    timeoutMs,
+  });
+  if (status === 404) {
+    const err = new Error(`peer '${peerName}' not found in registry`);
+    err.httpStatus = 404;
+    throw err;
+  }
+  if (status < 200 || status >= 300) {
+    const err = new Error(`registry lookup ${status}: ${body.slice(0, 200)}`);
+    err.httpStatus = 503;
+    throw err;
+  }
+  let card;
+  try {
+    card = JSON.parse(body);
+  } catch (e) {
+    const err = new Error(`registry returned non-json: ${e.message}`);
+    err.httpStatus = 503;
+    throw err;
+  }
+  if (!card || typeof card.endpoint !== "string" || !card.endpoint) {
+    const err = new Error(`registry card for '${peerName}' missing endpoint`);
+    err.httpStatus = 503;
+    throw err;
+  }
+  return card;
+}
+
+async function forwardToPeer({
+  endpoint,
+  selfName,
+  peerName,
+  message,
+  threadId,
+  hop,
+  timeoutMs,
+  requestId,
+}) {
+  const { host, port, pathname, search } = parseHttpUrl(endpoint);
+  const bodyObj = { from: selfName, to: peerName, message };
+  if (threadId) bodyObj.thread_id = threadId;
+  const headers = { "x-a2a-hop": String(hop) };
+  if (requestId) headers[REQUEST_ID_HEADER] = requestId;
+  // Review-2 P1-C (iter 3): socket-layer failures (ECONNREFUSED, timeouts,
+  // DNS) map to 504. Peer-reported HTTP errors below keep mapping to 502.
+  // Unifies the status surface with /a2a/send so a single grep across
+  // sidecar logs can separate "network is broken" from "peer is broken."
+  let status, body;
+  try {
+    ({ status, body } = await postJson({
+      host,
+      port,
+      path: pathname + search,
+      headers,
+      bodyObj,
+      timeoutMs,
+    }));
+  } catch (e) {
+    const err = new Error(`peer unreachable or timed out: ${e.message}`);
+    err.httpStatus = 504;
+    throw err;
+  }
+  if (status >= 200 && status < 300) {
+    let parsed;
+    try {
+      parsed = JSON.parse(body);
+    } catch (e) {
+      const err = new Error(`peer returned non-json: ${e.message}`);
+      err.httpStatus = 502;
+      throw err;
+    }
+    return parsed;
+  }
+  if (status === 508) {
+    const err = new Error(`peer rejected hop limit: ${body.slice(0, 200)}`);
+    err.httpStatus = 508;
+    throw err;
+  }
+  if (status === 429) {
+    const err = new Error(`peer rate-limited: ${body.slice(0, 200)}`);
+    err.httpStatus = 429;
+    throw err;
+  }
+  const err = new Error(`peer HTTP ${status}: ${body.slice(0, 200)}`);
+  err.httpStatus = 502;
+  err.peerStatus = status;
+  err.peerBody = body;
+  throw err;
+}
+
+// Loop protection — see a2a-design-1.md §Loop protection. X-A2A-Hop is an
+// integer header that increments on every hop across the mesh. An inbound
+// /a2a/send reads the incoming value (0 if absent), and if it's already
+// equal to or past the budget we refuse with 508. /a2a/outbound forwards
+// the value + 1 to the peer so downstream sidecars keep counting.
+const A2A_HOP_BUDGET = Number(process.env.A2A_HOP_BUDGET || 8);
+const OUTBOUND_LIMITER = createOutboundLimiter({ rpm: readOutboundRpm(process.env) });
+// a2a-design-7.md §P1-N: the sweep timer is wired inside main() (see
+// below), not here, so `require("server.js")` from a test file never
+// starts a real setInterval. The limiter itself stays module-scope
+// because handlers close over it.
+
+function readHopHeader(req) {
+  const raw = req.headers["x-a2a-hop"];
+  if (raw === undefined) return 0;
+  const n = Number(Array.isArray(raw) ? raw[0] : raw);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.floor(n);
+}
+
+// Review-2 P1-D: request correlation.
+//
+// A single outbound-initiated hop chain (A→B→C) should share one stable ID
+// so operators can grep sidecar logs across containers for a federation
+// call. Accept a caller-supplied X-A2A-Request-Id (higher layers may
+// pre-tag) and mint a fresh uuid4 when absent. The ID is logged at entry
+// + exit, forwarded to the next hop, and echoed in the JSON body AND the
+// response header so both JSON-parsing clients and curl-pipe-grep users
+// can recover it.
+const REQUEST_ID_HEADER = "x-a2a-request-id";
+
+function looksLikeRequestId(value) {
+  if (typeof value !== "string") return false;
+  if (!value || value.length > 128) return false;
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code < 0x20) return false;
+    if (code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0d) return false;
+  }
+  return true;
+}
+
+function readOrMintRequestId(req) {
+  const raw = req.headers[REQUEST_ID_HEADER];
+  const candidate = Array.isArray(raw) ? raw[0] : raw;
+  if (looksLikeRequestId(typeof candidate === "string" ? candidate.trim() : "")) {
+    return candidate.trim();
+  }
+  // uuid4 without dashes keeps the log format tight; full uuid is still
+  // accepted when minted elsewhere.
+  return crypto.randomUUID().replace(/-/g, "");
+}
+
 async function postChatCompletion({
   gatewayHost,
   gatewayPort,
@@ -263,12 +555,18 @@ async function postChatCompletion({
   return content;
 }
 
-function jsonResponse(res, status, body) {
+function jsonResponse(res, status, body, extraHeaders) {
   const payload = JSON.stringify(body);
-  res.writeHead(status, {
+  const headers = {
     "content-type": "application/json",
     "content-length": Buffer.byteLength(payload),
-  });
+  };
+  if (extraHeaders) {
+    for (const [name, value] of Object.entries(extraHeaders)) {
+      headers[name] = value;
+    }
+  }
+  res.writeHead(status, headers);
   res.end(payload);
 }
 
@@ -400,6 +698,9 @@ function main() {
 
   const card = { name: selfName, role, skills, endpoint };
 
+  // Lazy-init'd on first /mcp request. See handler body for why.
+  let peerCache = null;
+
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host}`);
@@ -422,17 +723,29 @@ function main() {
         });
       }
       if (req.method === "POST" && url.pathname === "/a2a/send") {
+        const incomingHop = readHopHeader(req);
+        const requestId = readOrMintRequestId(req);
+        const ridHeaders = { [REQUEST_ID_HEADER]: requestId };
+        if (incomingHop >= A2A_HOP_BUDGET) {
+          console.warn(
+            `[sidecar:${selfName}] a2a.send refused request_id=${requestId} hop=${incomingHop} budget=${A2A_HOP_BUDGET}`,
+          );
+          return jsonResponse(res, 508, {
+            error: `hop budget exceeded (hop=${incomingHop}, budget=${A2A_HOP_BUDGET})`,
+            request_id: requestId,
+          }, ridHeaders);
+        }
         let body;
         try {
           body = await readJsonBody(req);
         } catch (e) {
-          return jsonResponse(res, 400, { error: e.message });
+          return jsonResponse(res, 400, { error: e.message, request_id: requestId }, ridHeaders);
         }
         if (typeof body.message !== "string" || !body.message) {
-          return jsonResponse(res, 400, { error: "missing 'message' (string)" });
+          return jsonResponse(res, 400, { error: "missing 'message' (string)", request_id: requestId }, ridHeaders);
         }
         if (typeof body.from !== "string" || !body.from) {
-          return jsonResponse(res, 400, { error: "missing 'from' (string)" });
+          return jsonResponse(res, 400, { error: "missing 'from' (string)", request_id: requestId }, ridHeaders);
         }
         // Review-13 P1-C: thread_id is OPTIONAL. Peers that don't send it
         // behave exactly like before (stateless turns). When present, it
@@ -446,8 +759,12 @@ function main() {
         if (body.thread_id !== undefined && threadId === null) {
           return jsonResponse(res, 400, {
             error: "'thread_id' must be a non-empty string when provided",
-          });
+            request_id: requestId,
+          }, ridHeaders);
         }
+        console.log(
+          `[sidecar:${selfName}] a2a.send accepted request_id=${requestId} from=${body.from} hop=${incomingHop}`,
+        );
         // Review-9 P2-A: check rate limit BEFORE auth/ready so a flood
         // doesn't even hit gateway-auth codepaths. 429 is retriable; we
         // advertise the reset window in the body so the peer can back off.
@@ -457,13 +774,14 @@ function main() {
           return jsonResponse(res, 429, {
             error: `rate limit exceeded for peer '${body.from}'`,
             resetMs: rl.resetMs,
-          });
+            request_id: requestId,
+          }, ridHeaders);
         }
         let auth;
         try {
           auth = readGatewayAuth(adapter);
         } catch (e) {
-          return jsonResponse(res, 503, { error: `instance not ready: ${e.message}` });
+          return jsonResponse(res, 503, { error: `instance not ready: ${e.message}`, request_id: requestId }, ridHeaders);
         }
         const ready = await waitForGatewayReady({
           host: gatewayHost,
@@ -474,7 +792,8 @@ function main() {
         if (!ready) {
           return jsonResponse(res, 503, {
             error: `gateway not ready after ${gatewayReadyDeadlineMs}ms`,
-          });
+            request_id: requestId,
+          }, ridHeaders);
         }
         const history =
           threadId && threadStore.enabled
@@ -493,24 +812,195 @@ function main() {
             timeoutMs: requestTimeoutMs,
           });
         } catch (e) {
-          console.error(`[sidecar:${selfName}] gateway call failed:`, e.message);
+          console.error(`[sidecar:${selfName}] gateway call failed request_id=${requestId}:`, e.message);
           // 4xx are client-side (auth / model name); 5xx + socket errors
           // suggest the gateway died mid-flight. Cache is dropped only on
           // the latter, so next request re-probes. Regex list lives in
           // readiness.js::GATEWAY_DOWN_PATTERNS for testability.
           if (looksLikeGatewayDown(e)) invalidateGatewayReady();
-          return jsonResponse(res, 502, { error: `upstream agent failed: ${e.message}` });
+          return jsonResponse(res, 502, { error: `upstream agent failed: ${e.message}`, request_id: requestId }, ridHeaders);
         }
         if (threadId && threadStore.enabled) {
           threadStore.appendTurn(body.from, threadId, body.message, reply);
         }
+        console.log(
+          `[sidecar:${selfName}] a2a.send replied request_id=${requestId} from=${body.from}`,
+        );
         return jsonResponse(res, 200, {
           from: selfName,
           reply,
           // Echo so the peer can confirm the thread it landed in (and so a
           // CLI tail can correlate). Null when the peer didn't send one.
           thread_id: threadId,
+          request_id: requestId,
+        }, ridHeaders);
+      }
+      if (req.method === "POST" && url.pathname === "/a2a/outbound") {
+        // Container-local outbound primitive (see a2a-design-1.md §Protocol).
+        // Caller is inside the same netns; no auth is enforced because the
+        // socket binds 127.0.0.1. Body: {to, message, thread_id?, registry_url?,
+        // timeout_ms?}. Returns {from, to, reply, thread_id, request_id}.
+        const incomingHop = readHopHeader(req);
+        const requestId = readOrMintRequestId(req);
+        const ridHeaders = { [REQUEST_ID_HEADER]: requestId };
+        if (incomingHop >= A2A_HOP_BUDGET) {
+          console.warn(
+            `[sidecar:${selfName}] a2a.outbound refused request_id=${requestId} hop=${incomingHop} budget=${A2A_HOP_BUDGET}`,
+          );
+          return jsonResponse(res, 508, {
+            error: `hop budget exceeded (hop=${incomingHop}, budget=${A2A_HOP_BUDGET})`,
+            request_id: requestId,
+          }, ridHeaders);
+        }
+        let body;
+        try {
+          body = await readJsonBody(req);
+        } catch (e) {
+          return jsonResponse(res, 400, { error: e.message, request_id: requestId }, ridHeaders);
+        }
+        if (typeof body.to !== "string" || !body.to) {
+          return jsonResponse(res, 400, { error: "missing 'to' (string)", request_id: requestId }, ridHeaders);
+        }
+        if (typeof body.message !== "string" || !body.message) {
+          return jsonResponse(res, 400, { error: "missing 'message' (string)", request_id: requestId }, ridHeaders);
+        }
+        const outThreadId =
+          typeof body.thread_id === "string" && body.thread_id
+            ? body.thread_id
+            : null;
+        if (body.thread_id !== undefined && outThreadId === null) {
+          return jsonResponse(res, 400, {
+            error: "'thread_id' must be a non-empty string when provided",
+            request_id: requestId,
+          }, ridHeaders);
+        }
+        // Self-origin rate limit (a2a-design-4.md §P1-B). One LLM turn
+        // firing 200 a2a_call_peer calls doesn't nuke provider quota.
+        const limitKey = outboundLimitKey({ threadId: outThreadId, selfName });
+        const limit = OUTBOUND_LIMITER.check(limitKey);
+        if (!limit.allowed) {
+          console.warn(
+            `[sidecar:${selfName}] a2a.outbound self-rate-limited request_id=${requestId} key=${limitKey} limit=${limit.limit}`,
+          );
+          return jsonResponse(
+            res,
+            429,
+            {
+              error: `self-origin rate limit exceeded (${limit.limit}/min)`,
+              request_id: requestId,
+              retry_after_ms: limit.retryAfterMs,
+            },
+            ridHeaders,
+          );
+        }
+        const registryUrl =
+          (typeof body.registry_url === "string" && body.registry_url) ||
+          process.env.A2A_REGISTRY_URL ||
+          "http://host.docker.internal:9100";
+        const timeoutMs = Number.isFinite(Number(body.timeout_ms))
+          ? Number(body.timeout_ms)
+          : 60000;
+        console.log(
+          `[sidecar:${selfName}] a2a.outbound begin request_id=${requestId} to=${body.to} hop=${incomingHop}`,
+        );
+        let card;
+        try {
+          card = await lookupPeer({
+            registryUrl,
+            peerName: body.to,
+            timeoutMs,
+          });
+        } catch (e) {
+          const status = e.httpStatus || 503;
+          console.warn(
+            `[sidecar:${selfName}] a2a.outbound lookup-failed request_id=${requestId} to=${body.to} status=${status}`,
+          );
+          return jsonResponse(res, status, { error: e.message, request_id: requestId }, ridHeaders);
+        }
+        let peerResp;
+        try {
+          peerResp = await forwardToPeer({
+            endpoint: card.endpoint,
+            selfName,
+            peerName: body.to,
+            message: body.message,
+            threadId: outThreadId,
+            hop: incomingHop + 1,
+            timeoutMs,
+            requestId,
+          });
+        } catch (e) {
+          const status = e.httpStatus || 502;
+          console.warn(
+            `[sidecar:${selfName}] a2a.outbound forward-failed request_id=${requestId} to=${body.to} status=${status} peer_status=${e.peerStatus ?? "-"}`,
+          );
+          const payload = { error: e.message, request_id: requestId };
+          if (e.peerStatus !== undefined) payload.peer_status = e.peerStatus;
+          return jsonResponse(res, status, payload, ridHeaders);
+        }
+        console.log(
+          `[sidecar:${selfName}] a2a.outbound done request_id=${requestId} to=${body.to}`,
+        );
+        return jsonResponse(res, 200, {
+          from: selfName,
+          to: body.to,
+          reply: typeof peerResp.reply === "string" ? peerResp.reply : "",
+          thread_id:
+            typeof peerResp.thread_id === "string"
+              ? peerResp.thread_id
+              : outThreadId,
+          request_id: requestId,
+        }, ridHeaders);
+      }
+      if (req.method === "POST" && url.pathname === "/mcp") {
+        // MCP streamable-http. Shares request-id with /a2a/outbound so an
+        // LLM→MCP→peer chain is one grep-able transaction.
+        const requestId = readOrMintRequestId(req);
+        const ridHeaders = { [REQUEST_ID_HEADER]: requestId };
+        let rpc;
+        try {
+          rpc = await readJsonBody(req);
+        } catch (e) {
+          return jsonResponse(
+            res,
+            400,
+            { jsonrpc: "2.0", id: null, error: { code: -32700, message: e.message } },
+            ridHeaders,
+          );
+        }
+        const registryUrl =
+          process.env.A2A_REGISTRY_URL || "http://host.docker.internal:9100";
+        console.log(
+          `[sidecar:${selfName}] mcp.request request_id=${requestId} method=${rpc && rpc.method}`,
+        );
+        // Lazy-init the peer cache on first /mcp request. The registry URL
+        // doesn't change within a process lifetime in practice (adapter
+        // pins it at container start), so caching by URL is safe.
+        if (!peerCache) {
+          peerCache = createPeerCache({ registryUrl, timeoutMs: 5000 });
+        }
+        const response = await handleMcpRequest({
+          body: rpc,
+          deps: {
+            selfName,
+            registryUrl,
+            timeoutMs: 60000,
+            requestId,
+            pluginVersion: process.env.CLAWCU_PLUGIN_VERSION || "unknown",
+            lookupPeer,
+            forwardToPeer,
+            outboundLimiter: OUTBOUND_LIMITER,
+            outboundLimitKey,
+            listPeers:
+              process.env.A2A_TOOL_DESC_MODE === "static"
+                ? null
+                : () => peerCache.get(),
+            // a2a-design-6.md §P1-M: opt-in role in peer summary.
+            includeRole:
+              String(process.env.A2A_TOOL_DESC_INCLUDE_ROLE || "").toLowerCase() === "true",
+          },
         });
+        return jsonResponse(res, 200, response, ridHeaders);
       }
       jsonResponse(res, 404, { error: "not found" });
     } catch (err) {
@@ -519,13 +1009,42 @@ function main() {
     }
   });
 
+  try {
+    runMcpBootstrap({
+      env: {
+        ...process.env,
+        A2A_SIDECAR_PORT: String(port),
+        A2A_SERVICE_MCP_CONFIG_PATH:
+          process.env.A2A_SERVICE_MCP_CONFIG_PATH || OPENCLAW_CONFIG_PATH,
+        A2A_SERVICE_MCP_CONFIG_FORMAT: process.env.A2A_SERVICE_MCP_CONFIG_FORMAT || "json",
+      },
+    });
+  } catch (err) {
+    console.warn(
+      `[sidecar:${selfName}] mcp-bootstrap threw: ${err && err.message}; continuing`,
+    );
+  }
+
+  // a2a-design-6.md §P2-L / a2a-design-7.md §P1-N: periodic empty-bucket
+  // sweep so a long-lived sidecar with high thread_id churn doesn't
+  // accumulate empty buckets. Wired here (not module scope) so require()
+  // from a test file doesn't start a real interval. Opt out with
+  // A2A_OUTBOUND_SWEEP_INTERVAL_MS=0; handle is .unref()'d so it never
+  // keeps the event loop alive past a graceful shutdown.
+  createOutboundSweepTimer({
+    limiter: OUTBOUND_LIMITER,
+    intervalMs: readOutboundSweepIntervalMs(process.env),
+  });
+
   server.listen(port, bindHost, () => {
     console.log(
       `[sidecar:${selfName}] mode=${adapter.mode} listening on http://${bindHost}:${port} ` +
         `(endpoint=${endpoint}, gateway=${gatewayHost}:${gatewayPort})`
     );
     console.log(`  GET  /.well-known/agent-card.json`);
-    console.log(`  POST /a2a/send  → gateway /v1/chat/completions (native agent)`);
+    console.log(`  POST /a2a/send      → gateway /v1/chat/completions (native agent)`);
+    console.log(`  POST /a2a/outbound  → registry lookup → peer /a2a/send`);
+    console.log(`  POST /mcp           → MCP streamable-http (tool: a2a_call_peer)`);
   });
 
   for (const sig of ["SIGINT", "SIGTERM"]) {
@@ -538,3 +1057,18 @@ function main() {
 }
 
 if (require.main === module) main();
+
+// Exposed for node:test unit tests. Not part of the sidecar's public
+// protocol surface.
+module.exports = {
+  lookupPeer,
+  forwardToPeer,
+  fetchPeerList,
+  createPeerCache,
+  readHopHeader,
+  parseHttpUrl,
+  readOrMintRequestId,
+  looksLikeRequestId,
+  A2A_HOP_BUDGET,
+  REQUEST_ID_HEADER,
+};
