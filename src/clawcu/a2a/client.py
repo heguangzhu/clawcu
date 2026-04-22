@@ -10,7 +10,7 @@ from typing import Any
 from clawcu.a2a.card import AgentCard
 
 DEFAULT_TIMEOUT = 5.0
-DEFAULT_SEND_TIMEOUT = 60.0
+DEFAULT_SEND_TIMEOUT = 300.0
 
 # Review-11 P1-C1: the registry federates sidecar endpoints using the
 # container-advertise host (`host.docker.internal` on Darwin so
