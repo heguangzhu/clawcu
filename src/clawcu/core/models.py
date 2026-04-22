@@ -1,10 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any
 
 
 HistoryEntry = dict[str, Any]
+
+
+def _project_onto_fields(cls: type, payload: dict[str, Any]) -> dict[str, Any]:
+    # Drop keys the dataclass doesn't define so a record written by a newer
+    # clawcu still loads on an older one. Review-9 P2-A3.
+    allowed = {f.name for f in fields(cls)}
+    return {k: v for k, v in payload.items() if k in allowed}
 
 
 @dataclass(kw_only=True)
@@ -24,6 +31,12 @@ class InstanceSpec:
     # via clawcu.a2a.sidecar_plugin.<service>. The base image tag is stored in
     # image_tag_override; adapters add the extra port and env vars.
     a2a_enabled: bool = False
+    # Hostname a peer (running in another container on the same host) will
+    # use to reach this sidecar. None = let the adapter auto-detect based on
+    # the host runtime (Docker Desktop → host.docker.internal, plain Linux
+    # → 127.0.0.1). Persisted so `clawcu recreate` stays stable across
+    # host environment changes. Review-9 P1-A3.
+    a2a_advertise_host: str | None = None
 
 
 @dataclass(kw_only=True)
@@ -46,7 +59,8 @@ class InstanceRecord(InstanceSpec):
         payload.setdefault("auth_mode", "token")
         payload.setdefault("dashboard_port", None)
         payload.setdefault("a2a_enabled", False)
-        return cls(**payload)
+        payload.setdefault("a2a_advertise_host", None)
+        return cls(**_project_onto_fields(cls, payload))
 
 
 @dataclass
@@ -67,7 +81,7 @@ class ProviderRecord:
         payload = dict(data)
         payload.setdefault("endpoint", None)
         payload.setdefault("models", [])
-        return cls(**payload)
+        return cls(**_project_onto_fields(cls, payload))
 
 
 @dataclass(frozen=True)

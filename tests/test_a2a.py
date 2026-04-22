@@ -4,6 +4,7 @@ import json
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,7 @@ from clawcu.a2a.card import (
 from clawcu.a2a.client import (
     A2AClientError,
     list_agents,
+    localize_endpoint_for_host,
     lookup_agent,
     post_message,
     send_via_registry,
@@ -540,6 +542,122 @@ def test_try_fetch_plugin_card_unreachable_returns_none():
     record = FakeRecord(name="ghost", service="openclaw", port=0)
     service = _FakeService([record], port_map={"ghost": 1})
     assert try_fetch_plugin_card(record, service=service, timeout=0.2) is None
+
+
+def test_cards_from_service_skips_starting_record_when_probe_fails():
+    """Review-12 P2-D2: a ``starting`` instance whose sidecar probe fails
+    must be dropped from federation entirely, not published with a
+    placeholder endpoint. Running instances with failed probes still
+    get the placeholder (they've passed a healthcheck at least once)."""
+
+    @dataclass
+    class FakeRecordWithStatus:
+        name: str
+        service: str
+        port: int
+        status: str
+
+    fresh = FakeRecordWithStatus(
+        name="fresh", service="openclaw", port=0, status="starting"
+    )
+    healthy = FakeRecordWithStatus(
+        name="healthy", service="openclaw", port=0, status="running"
+    )
+    # Both point at port 1 (reserved / unreachable) so the probe fails
+    # deterministically. Only ``healthy`` should survive the filter.
+    service = _FakeService([fresh, healthy], port_map={"fresh": 1, "healthy": 1})
+    cards = cards_from_service(service, timeout=0.05)
+    names = {c.name for c in cards}
+    assert "fresh" not in names, "starting record with failed probe should be skipped"
+    assert "healthy" in names, "running record should still get placeholder fallback"
+
+
+def test_cards_from_service_keeps_starting_record_when_probe_succeeds():
+    """P2-D2 inverse: a starting record whose sidecar actually responds
+    gets federated — the fix must not regress the iter-10 P2-A4 win."""
+
+    @dataclass
+    class FakeRecordWithStatus:
+        name: str
+        service: str
+        port: int
+        status: str
+
+    plugin_card = {
+        "name": "fresh",
+        "role": "r",
+        "skills": ["s"],
+        "endpoint": "http://127.0.0.1:18819/a2a/send",
+    }
+    server, thread = _start_well_known_server(body=json.dumps(plugin_card).encode())
+    try:
+        _, plugin_port = server.server_address
+        fresh = FakeRecordWithStatus(
+            name="fresh", service="openclaw", port=0, status="starting"
+        )
+        service = _FakeService([fresh], port_map={"fresh": plugin_port})
+        cards = cards_from_service(service, timeout=1.0)
+        assert [c.name for c in cards] == ["fresh"]
+    finally:
+        _stop(server, thread)
+
+
+def test_cards_from_service_placeholder_uses_advertise_host(monkeypatch):
+    """Review-13 P2-E1: when the sidecar probe fails on a running record,
+    the placeholder card must use the record's advertise_host (so peer
+    containers can actually reach it via host.docker.internal), not the
+    registry's bind host which is just the host-side loopback."""
+
+    @dataclass
+    class FakeRecordWithAdvertise:
+        name: str
+        service: str
+        port: int
+        a2a_advertise_host: str | None = None
+
+    # Force Darwin default via explicit per-record advertise_host so the
+    # test doesn't depend on the host OS. This mirrors what iter-9 P1-A3
+    # would stamp into the record on macOS.
+    record = FakeRecordWithAdvertise(
+        name="ghost", service="openclaw", port=0, a2a_advertise_host="host.docker.internal"
+    )
+    service = _FakeService([record], port_map={"ghost": 1})  # unreachable
+    cards = cards_from_service(service, host="127.0.0.1", timeout=0.05)
+    assert len(cards) == 1
+    endpoint = cards[0].endpoint
+    assert "host.docker.internal" in endpoint, (
+        f"placeholder must use advertise host, got {endpoint!r}"
+    )
+    assert "127.0.0.1" not in endpoint, (
+        f"placeholder must not leak the registry bind host, got {endpoint!r}"
+    )
+
+
+def test_cards_from_service_placeholder_respects_linux_default(monkeypatch):
+    """P2-E1 Linux path: when default_advertise_host resolves to 127.0.0.1
+    (Linux without docker-desktop), the placeholder still carries that
+    loopback — this is the correct behavior because on Linux peers reach
+    the host via --add-host host-gateway mapping, not via
+    host.docker.internal. No regression from the Darwin fix."""
+    import clawcu.a2a.sidecar_plugin as sidecar_plugin
+
+    sidecar_plugin.default_advertise_host.cache_clear()
+    monkeypatch.setattr(sidecar_plugin.platform, "system", lambda: "Linux")
+    monkeypatch.delenv("CLAWCU_A2A_ADVERTISE_HOST", raising=False)
+    try:
+        @dataclass
+        class FakeRecordLinux:
+            name: str
+            service: str
+            port: int
+
+        record = FakeRecordLinux(name="ghost", service="openclaw", port=0)
+        service = _FakeService([record], port_map={"ghost": 1})
+        cards = cards_from_service(service, timeout=0.05)
+        assert len(cards) == 1
+        assert "127.0.0.1" in cards[0].endpoint
+    finally:
+        sidecar_plugin.default_advertise_host.cache_clear()
 
 
 def test_cards_from_service_mixes_plugin_and_fallback():
@@ -1884,7 +2002,9 @@ def test_hermes_sidecar_call_hermes_sends_system_prompt_and_parses_reply(monkeyp
         def __init__(self, payload: bytes):
             self._payload = payload
 
-        def read(self):
+        def read(self, n=-1):
+            if n is not None and n >= 0:
+                return self._payload[:n]
             return self._payload
 
         def __enter__(self):
@@ -2725,6 +2845,7 @@ def test_hermes_sidecar_outbound_handler_end_to_end(monkeypatch):
     monkeypatch.setattr(mod, "_GATEWAY_READY_UNTIL", 0.0, raising=False)
     monkeypatch.setenv("A2A_SELF_NAME", "writer-hermes")
     monkeypatch.setenv("API_SERVER_KEY", "k")
+    monkeypatch.setenv("A2A_ALLOW_CLIENT_REGISTRY_URL", "1")
 
     # --- stub peer ---
     class PeerH(BaseHTTPRequestHandler):
@@ -2990,6 +3111,7 @@ def test_hermes_sidecar_outbound_mints_request_id_when_absent(monkeypatch):
     mod = _load_hermes_sidecar_module()
     monkeypatch.setenv("API_SERVER_KEY", "k")
     monkeypatch.setenv("A2A_SELF_NAME", "writer")
+    monkeypatch.setenv("A2A_ALLOW_CLIENT_REGISTRY_URL", "1")
 
     class PeerH(BaseHTTPRequestHandler):
         def log_message(self, *a, **kw):
@@ -3065,6 +3187,7 @@ def test_hermes_sidecar_outbound_forwards_caller_request_id_to_peer(monkeypatch)
     mod = _load_hermes_sidecar_module()
     monkeypatch.setenv("API_SERVER_KEY", "k")
     monkeypatch.setenv("A2A_SELF_NAME", "writer")
+    monkeypatch.setenv("A2A_ALLOW_CLIENT_REGISTRY_URL", "1")
 
     seen = {"header": None}
 
@@ -4397,3 +4520,1355 @@ def test_hermes_mcp_tool_call_no_limiter_is_permissive():
         forward_to_peer_fn=_fake_forward,
     )
     assert "result" in r
+
+
+# ---------- Iter 11: inbound rate limit / host-endpoint localize / client error ----------
+
+
+def test_hermes_peer_rate_limiter_allows_below_cap_then_denies():
+    """Review-11 P1-B1: ``PeerRateLimiter.allow`` must admit requests up to
+    the configured per-minute cap and deny the next one with a positive
+    reset window so peers can back off deterministically."""
+    sidecar_mod = _load_hermes_sidecar_module()
+
+    now = [1_000_000]  # monotonic-ish ms, advanced explicitly
+    limiter = sidecar_mod.PeerRateLimiter(
+        per_minute=3, window_ms=60_000, now_ms=lambda: now[0]
+    )
+    peer = "alpha"
+    for _ in range(3):
+        d = limiter.allow(peer)
+        assert d["ok"] is True
+        now[0] += 1  # 1 ms apart
+    denied = limiter.allow(peer)
+    assert denied["ok"] is False
+    assert denied["remaining"] == 0
+    # First hit was at 1_000_000, now is 1_000_003 → reset = 60_000 - 3 = 59_997
+    assert denied["reset_ms"] == 59_997
+    # After the window rolls past the oldest, traffic flows again.
+    now[0] += 60_000
+    assert limiter.allow(peer)["ok"] is True
+
+
+def test_hermes_peer_rate_limiter_zero_disables():
+    sidecar_mod = _load_hermes_sidecar_module()
+    limiter = sidecar_mod.PeerRateLimiter(per_minute=0)
+    # 100 "hits" in a row must all succeed when quota is 0 (disabled).
+    for _ in range(100):
+        assert limiter.allow("spammy")["ok"] is True
+
+
+def test_hermes_peer_rate_limiter_is_keyed_by_peer():
+    """Review-11 P1-B1: quota is per-peer. One noisy peer must not starve
+    others. Proves the hits map isn't bucketed globally."""
+    sidecar_mod = _load_hermes_sidecar_module()
+    now = [2_000_000]
+    limiter = sidecar_mod.PeerRateLimiter(
+        per_minute=2, window_ms=60_000, now_ms=lambda: now[0]
+    )
+    assert limiter.allow("alpha")["ok"] is True
+    assert limiter.allow("alpha")["ok"] is True
+    assert limiter.allow("alpha")["ok"] is False  # alpha is full
+    # beta has its own bucket, fully available.
+    assert limiter.allow("beta")["ok"] is True
+    assert limiter.allow("beta")["ok"] is True
+
+
+def test_hermes_peer_rate_limiter_evicts_stalest_at_max_peers():
+    """``max_peers`` caps memory so a rotating-name peer can't grow the
+    hits map unboundedly. When full, the stalest bucket is evicted; the
+    previously-capped peer then re-enters fresh."""
+    sidecar_mod = _load_hermes_sidecar_module()
+    now = [3_000_000]
+    limiter = sidecar_mod.PeerRateLimiter(
+        per_minute=1, window_ms=60_000, max_peers=2, now_ms=lambda: now[0]
+    )
+    # Fill the map with alpha + beta, each at quota.
+    assert limiter.allow("alpha")["ok"] is True
+    now[0] += 10
+    assert limiter.allow("beta")["ok"] is True
+    # Bringing in gamma evicts alpha (the stalest).
+    now[0] += 10
+    assert limiter.allow("gamma")["ok"] is True
+    # alpha should now have a fresh bucket; admitted again despite same name.
+    assert limiter.allow("alpha")["ok"] is True
+
+
+def test_hermes_sidecar_post_a2a_send_returns_429_when_peer_over_cap():
+    """Review-11 P1-B1 end-to-end: drive ``build_handler`` through the real
+    HTTP server with a 1-per-minute quota and assert the second request
+    surfaces 429 + Retry-After + resetMs. Exercises the actual code path
+    that a container-resident sidecar runs."""
+    sidecar_mod = _load_hermes_sidecar_module()
+
+    # Monkeypatch the upstream LLM call so the test doesn't need a gateway.
+    def _stub_call_hermes(cfg, message, peer_from, history=None):  # noqa: ARG001
+        return "ok"
+
+    orig_call = sidecar_mod.call_hermes
+    sidecar_mod.call_hermes = _stub_call_hermes  # type: ignore[assignment]
+    orig_wait = sidecar_mod.wait_for_gateway_ready
+    sidecar_mod.wait_for_gateway_ready = lambda *a, **k: True  # type: ignore[assignment]
+    try:
+        cfg = sidecar_mod.Config()
+        cfg.rate_limit_per_minute = 1
+        handler_cls = sidecar_mod.build_handler(cfg)
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        try:
+            host, port = srv.server_address
+            url = f"http://{host}:{port}/a2a/send"
+            # First request from peer "flood" should succeed.
+            status1, body1 = _http_json(
+                url, method="POST", body={"from": "flood", "message": "hi"}
+            )
+            assert status1 == 200, body1
+            # Second request from the same peer within the window must be
+            # denied with 429 and a resetMs hint.
+            try:
+                status2, body2 = _http_json(
+                    url, method="POST", body={"from": "flood", "message": "hi2"}
+                )
+            except urllib.error.HTTPError as exc:
+                status2 = exc.code
+                body2 = json.loads(exc.read().decode("utf-8"))
+            assert status2 == 429
+            assert "rate limit exceeded" in body2["error"]
+            assert body2["resetMs"] >= 0
+            # Different peer should not share the bucket.
+            status3, _ = _http_json(
+                url, method="POST", body={"from": "calm", "message": "hi"}
+            )
+            assert status3 == 200
+        finally:
+            srv.shutdown()
+            srv.server_close()
+            t.join(timeout=2)
+    finally:
+        sidecar_mod.call_hermes = orig_call  # type: ignore[assignment]
+        sidecar_mod.wait_for_gateway_ready = orig_wait  # type: ignore[assignment]
+
+
+def test_client_localize_endpoint_rewrites_docker_host_to_loopback(monkeypatch):
+    """Review-11 P1-C1: the registry advertises container endpoints at
+    ``host.docker.internal``; the CLI runs on the host and cannot resolve
+    that name. ``localize_endpoint_for_host`` must rewrite to loopback
+    while preserving port + path."""
+    monkeypatch.delenv("CLAWCU_A2A_HOST_HOSTNAME", raising=False)
+    from clawcu.a2a.client import localize_endpoint_for_host
+
+    out = localize_endpoint_for_host("http://host.docker.internal:18850/a2a/send")
+    assert out == "http://127.0.0.1:18850/a2a/send"
+    # Mixed case still matches (docker hostnames aren't case-sensitive).
+    assert (
+        localize_endpoint_for_host("http://Host.Docker.Internal:9129/a2a/send")
+        == "http://127.0.0.1:9129/a2a/send"
+    )
+    # gateway.docker.internal is the other container-visible alias.
+    assert (
+        localize_endpoint_for_host("http://gateway.docker.internal:9100/agents")
+        == "http://127.0.0.1:9100/agents"
+    )
+
+
+def test_client_localize_endpoint_passthrough_for_ordinary_host(monkeypatch):
+    """Any host that isn't a known docker-only alias passes through
+    unchanged. Required so registries that advertise real LAN IPs /
+    127.0.0.1 aren't accidentally rewritten."""
+    monkeypatch.delenv("CLAWCU_A2A_HOST_HOSTNAME", raising=False)
+    from clawcu.a2a.client import localize_endpoint_for_host
+
+    for url in (
+        "http://127.0.0.1:18850/a2a/send",
+        "http://10.0.0.5:18850/a2a/send",
+        "https://agent.example.com/a2a/send",
+    ):
+        assert localize_endpoint_for_host(url) == url
+
+
+def test_client_localize_endpoint_honors_env_override(monkeypatch):
+    """``CLAWCU_A2A_HOST_HOSTNAME`` lets operators point the CLI at a
+    non-loopback replacement (a devcontainer socket, a tailnet hostname,
+    etc.). Env wins over the default, still only triggered by a matching
+    alias."""
+    monkeypatch.setenv("CLAWCU_A2A_HOST_HOSTNAME", "docker.for.mac.localhost")
+    from clawcu.a2a.client import localize_endpoint_for_host
+
+    assert (
+        localize_endpoint_for_host("http://host.docker.internal:18850/a2a/send")
+        == "http://docker.for.mac.localhost:18850/a2a/send"
+    )
+    # Non-matching host still unmodified despite env being set.
+    assert (
+        localize_endpoint_for_host("http://127.0.0.1:18850/a2a/send")
+        == "http://127.0.0.1:18850/a2a/send"
+    )
+
+
+def test_client_send_via_registry_localizes_before_posting(monkeypatch):
+    """End-to-end: stand up a fake registry that advertises
+    host.docker.internal + a fake target server bound to 127.0.0.1.
+    ``send_via_registry`` must rewrite the endpoint and successfully
+    reach the target despite the advertised host being container-only."""
+    monkeypatch.delenv("CLAWCU_A2A_HOST_HOSTNAME", raising=False)
+
+    # Target /a2a/send — bound to 127.0.0.1 so host traffic can hit it.
+    class _Target(BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw):
+            return
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(length)
+            body = b'{"from":"analyst","reply":"pong"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    tgt = ThreadingHTTPServer(("127.0.0.1", 0), _Target)
+    tgt_thread = threading.Thread(target=tgt.serve_forever, daemon=True)
+    tgt_thread.start()
+    try:
+        tgt_port = tgt.server_address[1]
+
+        # Registry card advertises host.docker.internal, not 127.0.0.1.
+        cards = [
+            AgentCard(
+                name="analyst",
+                role="r",
+                skills=["chat"],
+                endpoint=f"http://host.docker.internal:{tgt_port}/a2a/send",
+            )
+        ]
+        reg, reg_thread = run_registry_in_thread(_registry_provider(cards))
+        try:
+            reg_host, reg_port = reg.server_address
+            reply = send_via_registry(
+                registry_url=f"http://{reg_host}:{reg_port}",
+                sender="cli",
+                target="analyst",
+                message="ping",
+            )
+            assert reply["reply"] == "pong"
+        finally:
+            reg.shutdown()
+            reg.server_close()
+            reg_thread.join(timeout=2)
+    finally:
+        tgt.shutdown()
+        tgt.server_close()
+        tgt_thread.join(timeout=2)
+
+
+def test_client_post_message_error_includes_endpoint_and_hint(monkeypatch):
+    """Review-11 P2-C2: a failing post_message must surface the endpoint
+    URL plus a parsed error hint so CLI operators can triage. Previously
+    rendered as 'send failed (502): None' when the upstream returned no
+    body."""
+    # Case 1: endpoint returns 502 + JSON error body — hint should be the
+    # ``error`` field, not a repr.
+    class _Upstream502(BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw):
+            return
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(length)
+            body = b'{"error":"upstream Hermes HTTP 500: No credentials"}'
+            self.send_response(502)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _Upstream502)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        host, port = srv.server_address
+        endpoint = f"http://{host}:{port}/a2a/send"
+        with pytest.raises(A2AClientError) as exc_info:
+            post_message(endpoint, sender="cli", target="x", message="hi")
+        msg = str(exc_info.value)
+        assert "502" in msg
+        assert endpoint in msg
+        assert "No credentials" in msg
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=2)
+
+
+def test_client_post_message_error_includes_endpoint_when_body_empty():
+    """Pathological upstream: non-2xx + empty body. Error must still name
+    the endpoint and give *some* hint rather than 'None'."""
+
+    class _Upstream500Empty(BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw):
+            return
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(length)
+            self.send_response(500)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _Upstream500Empty)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    try:
+        host, port = srv.server_address
+        endpoint = f"http://{host}:{port}/a2a/send"
+        with pytest.raises(A2AClientError) as exc_info:
+            post_message(endpoint, sender="cli", target="x", message="hi")
+        msg = str(exc_info.value)
+        assert "500" in msg
+        assert endpoint in msg
+        assert "empty body" in msg
+        # Must never render the useless legacy repr.
+        assert "None" not in msg.split("empty body")[0]
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=2)
+
+
+# Review-14 P2-F1: IPv6 replacement hosts must be bracket-wrapped in the
+# URL netloc, otherwise urlsplit can't parse the resulting URL back out.
+def test_localize_endpoint_ipv6_replacement_is_bracket_wrapped(monkeypatch):
+    monkeypatch.setenv("CLAWCU_A2A_HOST_HOSTNAME", "::1")
+    out = localize_endpoint_for_host("http://host.docker.internal:9149/a2a/send")
+    assert out == "http://[::1]:9149/a2a/send"
+    # Round-trip through urlsplit: this would raise or misparse before the fix.
+    parsed = urllib.parse.urlsplit(out)
+    assert parsed.hostname == "::1"
+    assert parsed.port == 9149
+
+
+def test_localize_endpoint_ipv6_link_local_bracket_wrapped(monkeypatch):
+    monkeypatch.setenv("CLAWCU_A2A_HOST_HOSTNAME", "fe80::1")
+    out = localize_endpoint_for_host("http://host.docker.internal:1234/a2a/send")
+    assert out == "http://[fe80::1]:1234/a2a/send"
+    parsed = urllib.parse.urlsplit(out)
+    assert parsed.hostname == "fe80::1"
+    assert parsed.port == 1234
+
+
+def test_localize_endpoint_ipv4_replacement_unchanged(monkeypatch):
+    # No colon in replacement → no brackets; regression guard on the common path.
+    monkeypatch.delenv("CLAWCU_A2A_HOST_HOSTNAME", raising=False)
+    out = localize_endpoint_for_host("http://host.docker.internal:9100/a2a/send")
+    assert out == "http://127.0.0.1:9100/a2a/send"
+
+
+# Review-14 P1-F1: hermes sidecar must cap the body size it will read. Before
+# this fix, /a2a/send, /a2a/outbound, and /mcp did self.rfile.read(length) with
+# no upper bound — an attacker on the LAN (Linux default) could trigger OOM by
+# POSTing Content-Length: 10_000_000_000 with a matching body stream.
+def test_hermes_sidecar_max_body_bytes_default():
+    mod = _load_hermes_sidecar_module()
+    assert mod.DEFAULT_MAX_BODY_BYTES == 64 * 1024
+    assert mod._max_body_bytes() == 64 * 1024
+
+
+def test_hermes_sidecar_max_body_bytes_env_override(monkeypatch):
+    mod = _load_hermes_sidecar_module()
+    monkeypatch.setenv("A2A_MAX_BODY_BYTES", "2048")
+    assert mod._max_body_bytes() == 2048
+    # Invalid values fall back to default.
+    monkeypatch.setenv("A2A_MAX_BODY_BYTES", "not-a-number")
+    assert mod._max_body_bytes() == 64 * 1024
+    monkeypatch.setenv("A2A_MAX_BODY_BYTES", "0")
+    assert mod._max_body_bytes() == 64 * 1024
+
+
+def test_hermes_sidecar_send_rejects_oversized_content_length(monkeypatch):
+    mod = _load_hermes_sidecar_module()
+    monkeypatch.setenv("API_SERVER_KEY", "k")
+    # Tight cap so a small body trips the check without actually sending MB.
+    monkeypatch.setenv("A2A_MAX_BODY_BYTES", "128")
+
+    cfg = mod.Config()
+    sidecar_srv = ThreadingHTTPServer(("127.0.0.1", 0), mod.build_handler(cfg))
+    sidecar_t = threading.Thread(target=sidecar_srv.serve_forever, daemon=True)
+    sidecar_t.start()
+    side_host, side_port = sidecar_srv.server_address
+    try:
+        body = b"x" * 256  # over the 128-byte cap
+        req = urllib.request.Request(
+            f"http://{side_host}:{side_port}/a2a/send",
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=2)
+        assert exc.value.code == 413
+        payload = json.loads(exc.value.read().decode("utf-8"))
+        assert "exceeds" in payload["error"]
+        assert "128" in payload["error"]
+    finally:
+        sidecar_srv.shutdown()
+        sidecar_srv.server_close()
+        sidecar_t.join(timeout=2)
+
+
+def test_hermes_sidecar_outbound_rejects_oversized_content_length(monkeypatch):
+    mod = _load_hermes_sidecar_module()
+    monkeypatch.setenv("API_SERVER_KEY", "k")
+    monkeypatch.setenv("A2A_MAX_BODY_BYTES", "128")
+
+    cfg = mod.Config()
+    sidecar_srv = ThreadingHTTPServer(("127.0.0.1", 0), mod.build_handler(cfg))
+    sidecar_t = threading.Thread(target=sidecar_srv.serve_forever, daemon=True)
+    sidecar_t.start()
+    side_host, side_port = sidecar_srv.server_address
+    try:
+        body = b"x" * 256
+        req = urllib.request.Request(
+            f"http://{side_host}:{side_port}/a2a/outbound",
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=2)
+        assert exc.value.code == 413
+        payload = json.loads(exc.value.read().decode("utf-8"))
+        assert "exceeds" in payload["error"]
+    finally:
+        sidecar_srv.shutdown()
+        sidecar_srv.server_close()
+        sidecar_t.join(timeout=2)
+
+
+# Review-15 P1-G1: Content-Length that fails to parse or is negative used
+# to either drop the connection (non-numeric → uncaught ValueError) or
+# wedge the worker thread in `rfile.read(-1)` (negative). Both are DoS
+# vectors. Sidecar must now reject these with a proper 400 before reading.
+
+
+def _raw_socket_post(host: str, port: int, path: str, headers: list[bytes]) -> bytes:
+    """POST with explicit header bytes so we can send malformed Content-Length.
+
+    urllib's client validates Content-Length, so we need a raw socket to
+    reproduce the exploit shape. Returns the status line (bytes up to \\r\\n)
+    or b"" if the server dropped the connection.
+    """
+    import socket
+
+    sock = socket.socket()
+    sock.settimeout(3)
+    try:
+        sock.connect((host, port))
+        req = b"POST " + path.encode() + b" HTTP/1.1\r\nHost: " + host.encode() + b"\r\n"
+        req += b"\r\n".join(headers) + b"\r\n\r\n"
+        sock.sendall(req)
+        data = b""
+        while b"\r\n\r\n" not in data and len(data) < 8192:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        return data
+    finally:
+        sock.close()
+
+
+def test_hermes_sidecar_rejects_negative_content_length(monkeypatch):
+    mod = _load_hermes_sidecar_module()
+    monkeypatch.setenv("API_SERVER_KEY", "k")
+    cfg = mod.Config()
+    sidecar_srv = ThreadingHTTPServer(("127.0.0.1", 0), mod.build_handler(cfg))
+    sidecar_t = threading.Thread(target=sidecar_srv.serve_forever, daemon=True)
+    sidecar_t.start()
+    host, port = sidecar_srv.server_address
+    try:
+        resp = _raw_socket_post(
+            host,
+            port,
+            "/a2a/send",
+            [b"Content-Type: application/json", b"Content-Length: -1"],
+        )
+        # Must respond with 400 — NOT hang (would TimeoutError before 3s).
+        # Must NOT be a 5xx or empty response.
+        assert b" 400 " in resp[:32], resp[:200]
+        assert b"negative" in resp.lower() or b"content-length" in resp.lower()
+    finally:
+        sidecar_srv.shutdown()
+        sidecar_srv.server_close()
+        sidecar_t.join(timeout=2)
+
+
+def test_hermes_sidecar_rejects_non_numeric_content_length(monkeypatch):
+    mod = _load_hermes_sidecar_module()
+    monkeypatch.setenv("API_SERVER_KEY", "k")
+    cfg = mod.Config()
+    sidecar_srv = ThreadingHTTPServer(("127.0.0.1", 0), mod.build_handler(cfg))
+    sidecar_t = threading.Thread(target=sidecar_srv.serve_forever, daemon=True)
+    sidecar_t.start()
+    host, port = sidecar_srv.server_address
+    try:
+        resp = _raw_socket_post(
+            host,
+            port,
+            "/a2a/send",
+            [b"Content-Type: application/json", b"Content-Length: garbage"],
+        )
+        assert b" 400 " in resp[:32], resp[:200]
+        assert b"invalid" in resp.lower() or b"content-length" in resp.lower()
+    finally:
+        sidecar_srv.shutdown()
+        sidecar_srv.server_close()
+        sidecar_t.join(timeout=2)
+
+
+def test_hermes_sidecar_rejects_negative_content_length_on_outbound(monkeypatch):
+    mod = _load_hermes_sidecar_module()
+    monkeypatch.setenv("API_SERVER_KEY", "k")
+    cfg = mod.Config()
+    sidecar_srv = ThreadingHTTPServer(("127.0.0.1", 0), mod.build_handler(cfg))
+    sidecar_t = threading.Thread(target=sidecar_srv.serve_forever, daemon=True)
+    sidecar_t.start()
+    host, port = sidecar_srv.server_address
+    try:
+        resp = _raw_socket_post(
+            host,
+            port,
+            "/a2a/outbound",
+            [b"Content-Type: application/json", b"Content-Length: -1"],
+        )
+        assert b" 400 " in resp[:32], resp[:200]
+    finally:
+        sidecar_srv.shutdown()
+        sidecar_srv.server_close()
+        sidecar_t.join(timeout=2)
+
+
+def test_hermes_sidecar_rejects_negative_content_length_on_mcp(monkeypatch):
+    mod = _load_hermes_sidecar_module()
+    monkeypatch.setenv("API_SERVER_KEY", "k")
+    cfg = mod.Config()
+    sidecar_srv = ThreadingHTTPServer(("127.0.0.1", 0), mod.build_handler(cfg))
+    sidecar_t = threading.Thread(target=sidecar_srv.serve_forever, daemon=True)
+    sidecar_t.start()
+    host, port = sidecar_srv.server_address
+    try:
+        resp = _raw_socket_post(
+            host,
+            port,
+            "/mcp",
+            [b"Content-Type: application/json", b"Content-Length: -1"],
+        )
+        assert b" 400 " in resp[:32], resp[:200]
+        # /mcp returns JSON-RPC body, so error must be the MCP_ERR_PARSE code.
+        assert b'"jsonrpc"' in resp
+        assert b"-32700" in resp
+    finally:
+        sidecar_srv.shutdown()
+        sidecar_srv.server_close()
+        sidecar_t.join(timeout=2)
+
+
+# Review-16 P1-H1: a slow / incomplete request must not pin the worker
+# thread indefinitely. We set a short timeout and confirm the handler
+# releases the socket within the bound rather than blocking forever.
+
+
+def test_hermes_sidecar_slowloris_body_times_out(monkeypatch):
+    mod = _load_hermes_sidecar_module()
+    monkeypatch.setenv("API_SERVER_KEY", "k")
+    # 1 second so the test finishes quickly.
+    monkeypatch.setenv("A2A_INBOUND_REQUEST_TIMEOUT_S", "1")
+
+    cfg = mod.Config()
+    sidecar_srv = ThreadingHTTPServer(("127.0.0.1", 0), mod.build_handler(cfg))
+    sidecar_t = threading.Thread(target=sidecar_srv.serve_forever, daemon=True)
+    sidecar_t.start()
+    host, port = sidecar_srv.server_address
+    try:
+        import socket
+        import time as _t
+
+        s = socket.socket()
+        s.settimeout(5)
+        s.connect((host, port))
+        # Valid Content-Length but we never send the body.
+        s.sendall(
+            b"POST /a2a/send HTTP/1.1\r\n"
+            b"Host: " + host.encode() + b"\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Content-Length: 100\r\n"
+            b"\r\n"
+        )
+        start = _t.monotonic()
+        # Server should close or error within ~1 second (timeout + a
+        # small scheduling slack). Without the fix the recv hangs until
+        # the 5 s client-side timeout trips.
+        try:
+            data = s.recv(4096)
+        except socket.timeout:
+            data = b""
+        elapsed = _t.monotonic() - start
+        assert elapsed < 4.0, f"handler still blocking after {elapsed:.1f}s"
+        s.close()
+    finally:
+        sidecar_srv.shutdown()
+        sidecar_srv.server_close()
+        sidecar_t.join(timeout=2)
+
+
+def test_hermes_sidecar_slowloris_headers_times_out(monkeypatch):
+    mod = _load_hermes_sidecar_module()
+    monkeypatch.setenv("API_SERVER_KEY", "k")
+    monkeypatch.setenv("A2A_INBOUND_REQUEST_TIMEOUT_S", "1")
+
+    cfg = mod.Config()
+    sidecar_srv = ThreadingHTTPServer(("127.0.0.1", 0), mod.build_handler(cfg))
+    sidecar_t = threading.Thread(target=sidecar_srv.serve_forever, daemon=True)
+    sidecar_t.start()
+    host, port = sidecar_srv.server_address
+    try:
+        import socket
+        import time as _t
+
+        s = socket.socket()
+        s.settimeout(5)
+        s.connect((host, port))
+        # Partial request line, never terminated — BaseHTTPRequestHandler
+        # blocks in readline() until the socket closes or times out.
+        s.sendall(b"POST /a2a/send HTTP/1.1\r\n")
+        start = _t.monotonic()
+        try:
+            data = s.recv(4096)
+        except socket.timeout:
+            data = b""
+        elapsed = _t.monotonic() - start
+        assert elapsed < 4.0, f"handler still blocking after {elapsed:.1f}s"
+        s.close()
+    finally:
+        sidecar_srv.shutdown()
+        sidecar_srv.server_close()
+        sidecar_t.join(timeout=2)
+
+
+def test_hermes_sidecar_inbound_timeout_zero_disables(monkeypatch):
+    # 0 → no timeout applied (for bench / local debug). Helper sanity.
+    mod = _load_hermes_sidecar_module()
+    monkeypatch.setenv("A2A_INBOUND_REQUEST_TIMEOUT_S", "0")
+    cfg = mod.Config()
+    assert cfg.inbound_request_timeout_s == 0.0
+    monkeypatch.setenv("A2A_INBOUND_REQUEST_TIMEOUT_S", "-5")
+    cfg = mod.Config()
+    assert cfg.inbound_request_timeout_s == 0.0
+    monkeypatch.setenv("A2A_INBOUND_REQUEST_TIMEOUT_S", "7.5")
+    cfg = mod.Config()
+    assert cfg.inbound_request_timeout_s == 7.5
+
+
+def test_hermes_sidecar_parse_content_length_helper():
+    mod = _load_hermes_sidecar_module()
+
+    class _H:
+        def __init__(self, v):
+            self._v = v
+        def get(self, name):
+            return self._v
+
+    assert mod._parse_content_length(_H(None), cap=1024) == 0
+    assert mod._parse_content_length(_H(""), cap=1024) == 0
+    assert mod._parse_content_length(_H("  500  "), cap=1024) == 500
+    with pytest.raises(mod._BadContentLength, match="negative"):
+        mod._parse_content_length(_H("-1"), cap=1024)
+    with pytest.raises(mod._BadContentLength, match="invalid"):
+        mod._parse_content_length(_H("0x10"), cap=1024)
+    with pytest.raises(mod._BadContentLength, match="exceeds"):
+        mod._parse_content_length(_H("2048"), cap=1024)
+
+
+def test_hermes_sidecar_mcp_rejects_oversized_content_length(monkeypatch):
+    mod = _load_hermes_sidecar_module()
+    monkeypatch.setenv("API_SERVER_KEY", "k")
+    monkeypatch.setenv("A2A_MAX_BODY_BYTES", "128")
+
+    cfg = mod.Config()
+    sidecar_srv = ThreadingHTTPServer(("127.0.0.1", 0), mod.build_handler(cfg))
+    sidecar_t = threading.Thread(target=sidecar_srv.serve_forever, daemon=True)
+    sidecar_t.start()
+    side_host, side_port = sidecar_srv.server_address
+    try:
+        body = b"x" * 256
+        req = urllib.request.Request(
+            f"http://{side_host}:{side_port}/mcp",
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=2)
+        assert exc.value.code == 413
+        # /mcp returns JSON-RPC error shape, not a plain {"error": ...}.
+        payload = json.loads(exc.value.read().decode("utf-8"))
+        assert payload["jsonrpc"] == "2.0"
+        assert payload["error"]["code"] == mod.MCP_ERR_PARSE
+        assert "exceeds" in payload["error"]["message"]
+    finally:
+        sidecar_srv.shutdown()
+        sidecar_srv.server_close()
+        sidecar_t.join(timeout=2)
+
+
+# --- iter-17 P1-I1: SSRF via client-supplied registry_url ---------------
+
+
+def test_validate_outbound_url_allows_http_and_https():
+    mod = _load_hermes_sidecar_module()
+    # Happy cases.
+    assert mod._validate_outbound_url("http://example/") == "http://example/"
+    assert mod._validate_outbound_url("https://example/") == "https://example/"
+    assert mod._validate_outbound_url("HTTP://Example:9100/agents/x") == (
+        "HTTP://Example:9100/agents/x"
+    )
+    # Reject non-http schemes.
+    for url in [
+        "file:///etc/passwd",
+        "ftp://host/",
+        "gopher://host/",
+        "dict://host/",
+        "javascript:alert(1)",
+    ]:
+        with pytest.raises(mod._BadOutboundUrl, match="not allowed"):
+            mod._validate_outbound_url(url)
+    # Reject empty / malformed.
+    with pytest.raises(mod._BadOutboundUrl, match="empty"):
+        mod._validate_outbound_url("")
+    with pytest.raises(mod._BadOutboundUrl, match="missing host"):
+        mod._validate_outbound_url("http://")
+
+
+def test_forward_to_peer_rejects_non_http_endpoint():
+    mod = _load_hermes_sidecar_module()
+    # Bad scheme → OutboundError(502) before any network call.
+    with pytest.raises(mod.OutboundError) as exc:
+        mod.forward_to_peer(
+            endpoint="ftp://host/",
+            self_name="me",
+            peer_name="x",
+            message="hi",
+            thread_id=None,
+            hop=1,
+            timeout=1.0,
+        )
+    assert exc.value.http_status == 502
+    assert "peer card endpoint rejected" in str(exc.value)
+
+
+def test_lookup_peer_rejects_non_http_registry():
+    mod = _load_hermes_sidecar_module()
+    with pytest.raises(mod.OutboundError) as exc:
+        mod.lookup_peer("file:///etc/passwd", "x", timeout=1.0)
+    assert exc.value.http_status == 400
+    assert "invalid registry url" in str(exc.value)
+
+
+def test_hermes_sidecar_client_registry_url_rejected_by_default(monkeypatch):
+    """POST /a2a/outbound with a body registry_url → 400 when flag is off."""
+    mod = _load_hermes_sidecar_module()
+    monkeypatch.setenv("API_SERVER_KEY", "k")
+    monkeypatch.setenv("A2A_SELF_NAME", "writer")
+    monkeypatch.delenv("A2A_ALLOW_CLIENT_REGISTRY_URL", raising=False)
+
+    cfg = mod.Config()
+    assert cfg.allow_client_registry_url is False
+    sidecar_srv = ThreadingHTTPServer(("127.0.0.1", 0), mod.build_handler(cfg))
+    sidecar_t = threading.Thread(target=sidecar_srv.serve_forever, daemon=True)
+    sidecar_t.start()
+    side_host, side_port = sidecar_srv.server_address
+    try:
+        body = json.dumps(
+            {
+                "to": "analyst",
+                "message": "hello",
+                "registry_url": "http://attacker.example/",
+            }
+        ).encode()
+        req = urllib.request.Request(
+            f"http://{side_host}:{side_port}/a2a/outbound",
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=2)
+        assert exc.value.code == 400
+        payload = json.loads(exc.value.read().decode("utf-8"))
+        assert "disabled by server policy" in payload["error"]
+    finally:
+        sidecar_srv.shutdown()
+        sidecar_srv.server_close()
+        sidecar_t.join(timeout=2)
+
+
+def test_hermes_sidecar_outbound_rejects_non_http_registry_scheme(monkeypatch):
+    """With the flag on, a non-http registry URL still trips the scheme check."""
+    mod = _load_hermes_sidecar_module()
+    monkeypatch.setenv("API_SERVER_KEY", "k")
+    monkeypatch.setenv("A2A_SELF_NAME", "writer")
+    monkeypatch.setenv("A2A_ALLOW_CLIENT_REGISTRY_URL", "1")
+
+    cfg = mod.Config()
+    assert cfg.allow_client_registry_url is True
+    sidecar_srv = ThreadingHTTPServer(("127.0.0.1", 0), mod.build_handler(cfg))
+    sidecar_t = threading.Thread(target=sidecar_srv.serve_forever, daemon=True)
+    sidecar_t.start()
+    side_host, side_port = sidecar_srv.server_address
+    try:
+        body = json.dumps(
+            {
+                "to": "analyst",
+                "message": "hello",
+                "registry_url": "file:///etc/passwd",
+            }
+        ).encode()
+        req = urllib.request.Request(
+            f"http://{side_host}:{side_port}/a2a/outbound",
+            data=body,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(req, timeout=2)
+        assert exc.value.code == 400
+        payload = json.loads(exc.value.read().decode("utf-8"))
+        assert "invalid 'registry_url'" in payload["error"]
+        assert "not allowed" in payload["error"]
+    finally:
+        sidecar_srv.shutdown()
+        sidecar_srv.server_close()
+        sidecar_t.join(timeout=2)
+
+
+def test_client_validate_outbound_url_allow_list():
+    """Review-19 P2-K1: CLI-side scheme allow-list parallels the hermes
+    sidecar's `_validate_outbound_url`. Accept http/https (case-
+    insensitive); reject any other scheme, empty input, missing host,
+    and malformed URLs."""
+    from clawcu.a2a.client import _BadClientUrl, _validate_outbound_url
+
+    # Happy path: http + https, upper / mixed case allowed.
+    assert _validate_outbound_url("http://example/") == "http://example/"
+    assert _validate_outbound_url("https://example/") == "https://example/"
+    assert _validate_outbound_url("HTTP://example/") == "HTTP://example/"
+    assert _validate_outbound_url("HttpS://example/path?q=1") == "HttpS://example/path?q=1"
+
+    # Reject smuggle / stdlib-supported non-http schemes.
+    for bad in (
+        "file:///etc/passwd",
+        "ftp://attacker/",
+        "gopher://attacker/",
+        "dict://attacker/",
+        "javascript:alert(1)",
+        "data:text/plain,pwn",
+    ):
+        with pytest.raises(_BadClientUrl):
+            _validate_outbound_url(bad)
+
+    # Empty / non-string / missing-host / malformed.
+    with pytest.raises(_BadClientUrl):
+        _validate_outbound_url("")
+    with pytest.raises(_BadClientUrl):
+        _validate_outbound_url(None)  # type: ignore[arg-type]
+    with pytest.raises(_BadClientUrl):
+        _validate_outbound_url("http:///nohost")
+    with pytest.raises(_BadClientUrl):
+        _validate_outbound_url("nothing-here")
+
+    # _BadClientUrl inherits A2AClientError so call sites keep working.
+    assert issubclass(_BadClientUrl, A2AClientError)
+
+
+def test_client_post_message_rejects_non_http_endpoint():
+    """Review-19 P2-K1: post_message must refuse a non-http/https
+    endpoint before any urlopen attempt — covers the registry-poisoning
+    variant where a malicious card.endpoint would otherwise be POSTed
+    to by the CLI."""
+    with pytest.raises(A2AClientError) as exc:
+        post_message(
+            "ftp://attacker.example/drop",
+            sender="cli",
+            target="analyst",
+            message="probe",
+        )
+    assert "not allowed" in str(exc.value)
+    assert "ftp" in str(exc.value)
+
+    with pytest.raises(A2AClientError):
+        post_message(
+            "file:///etc/passwd",
+            sender="cli",
+            target="analyst",
+            message="probe",
+        )
+
+
+def test_client_send_via_registry_rejects_non_http_card_endpoint():
+    """Review-19 P2-K1: if a registry card advertises a non-http scheme
+    (the concrete poisoning attack), `send_via_registry` must reject
+    the endpoint at the client edge — no file/ftp/etc. POSTs leave the
+    CLI."""
+    cards = [
+        AgentCard(
+            name="analyst",
+            role="r",
+            skills=["chat"],
+            endpoint="file:///etc/passwd",
+        )
+    ]
+    reg, reg_thread = run_registry_in_thread(_registry_provider(cards))
+    try:
+        reg_host, reg_port = reg.server_address
+        with pytest.raises(A2AClientError) as exc:
+            send_via_registry(
+                registry_url=f"http://{reg_host}:{reg_port}",
+                sender="cli",
+                target="analyst",
+                message="ping",
+            )
+        msg = str(exc.value)
+        assert "not allowed" in msg
+        assert "file" in msg
+    finally:
+        reg.shutdown()
+        reg.server_close()
+        reg_thread.join(timeout=2)
+
+
+def _redirect_server_to(location: str):
+    """Return (server, thread) for a ThreadingHTTPServer that 302s every
+    request to `location`. Used to verify no-redirect behavior."""
+
+    class _H(BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw):
+            return
+
+        def _redirect(self):
+            self.send_response(302)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self):  # noqa: N802
+            self._redirect()
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(length)
+            self._redirect()
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _H)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    return srv, t
+
+
+def test_client_rejects_redirect_to_non_http_scheme():
+    """Review-20 P1-L1: urllib's default redirect handler would follow
+    302 → ftp:// and bypass the iter-19 scheme allow-list. The
+    `_NoRedirectHandler` opener must surface the 302 as an error
+    without issuing a second request against the ftp:// URL."""
+    srv, t = _redirect_server_to("ftp://ftp.gnu.org/README")
+    try:
+        host, port = srv.server_address
+        reg_url = f"http://{host}:{port}"
+        # lookup_agent (GET) must not follow to ftp://
+        with pytest.raises(A2AClientError) as exc:
+            lookup_agent(reg_url, "analyst", timeout=2.0)
+        # Either "302" in the status, or "ftp" appears only as the
+        # rejected Location — never a content leak from ftp.gnu.org.
+        assert "GNU" not in str(exc.value)
+        # list_agents (GET) must also not follow.
+        with pytest.raises(A2AClientError) as exc2:
+            list_agents(reg_url, timeout=2.0)
+        assert "GNU" not in str(exc2.value)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=2)
+
+
+def test_client_post_message_does_not_follow_redirect():
+    """Review-20 P1-L1: post_message with a target that 302s to ftp://
+    must surface the redirect as an error; the CLI must not touch the
+    ftp:// URL."""
+    srv, t = _redirect_server_to("ftp://ftp.gnu.org/README")
+    try:
+        host, port = srv.server_address
+        endpoint = f"http://{host}:{port}/a2a/send"
+        with pytest.raises(A2AClientError) as exc:
+            post_message(
+                endpoint,
+                sender="cli",
+                target="analyst",
+                message="probe",
+                timeout=2.0,
+            )
+        assert "GNU" not in str(exc.value)
+        assert "(302)" in str(exc.value) or "invalid JSON" in str(exc.value)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=2)
+
+
+def test_hermes_sidecar_lookup_peer_does_not_follow_redirect():
+    """Review-20 P1-L1: sidecar's registry lookup must not follow a
+    302 → ftp:// redirect. The 3xx response surfaces as OutboundError
+    (503) via the existing HTTPError arm."""
+    mod = _load_hermes_sidecar_module()
+    srv, t = _redirect_server_to("ftp://ftp.gnu.org/README")
+    try:
+        host, port = srv.server_address
+        with pytest.raises(mod.OutboundError) as exc:
+            mod.lookup_peer(f"http://{host}:{port}", "analyst", timeout=2.0)
+        assert "GNU" not in str(exc.value)
+    finally:
+        _stop_http(srv, t)
+
+
+def test_hermes_sidecar_forward_to_peer_does_not_follow_redirect():
+    """Review-20 P1-L1: sidecar's peer POST must not follow a 302 →
+    ftp:// redirect. Surfaces as OutboundError (502) via the existing
+    HTTPError arm."""
+    mod = _load_hermes_sidecar_module()
+    srv, t = _redirect_server_to("ftp://ftp.gnu.org/README")
+    try:
+        host, port = srv.server_address
+        endpoint = f"http://{host}:{port}/a2a/send"
+        with pytest.raises(mod.OutboundError) as exc:
+            mod.forward_to_peer(
+                endpoint=endpoint,
+                self_name="writer",
+                peer_name="analyst",
+                message="hi",
+                thread_id=None,
+                hop=1,
+                timeout=2.0,
+            )
+        assert "GNU" not in str(exc.value)
+    finally:
+        _stop_http(srv, t)
+
+
+def test_registry_fetch_card_at_does_not_follow_redirect():
+    """Review-20 P1-L1: registry's plugin-card probe must not follow
+    a 302 → ftp:// redirect. Returns None consistent with every other
+    failure path in _fetch_card_at."""
+    from clawcu.a2a.registry import _fetch_card_at
+
+    srv, t = _redirect_server_to("ftp://ftp.gnu.org/README")
+    try:
+        host, port = srv.server_address
+        url = f"http://{host}:{port}/.well-known/agent-card.json"
+        assert _fetch_card_at(url, timeout=2.0) is None
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=2)
+
+
+# ---------------------------------------------------------------------------
+# Review-21 P2-M1: outbound response size cap. Every outbound call must
+# refuse to buffer more than 4 MiB so a compromised registry / peer can't
+# OOM the sidecar (or CLI) process.
+# ---------------------------------------------------------------------------
+
+
+def _oversized_body_server(path_prefix: str = "", status: int = 200):
+    """Streams ~5 MiB of `a` as the response body (over the 4 MiB cap).
+
+    Accepts any request method. `path_prefix` lets callers route different
+    endpoints (e.g. /agents/<name>, /.well-known/agent-card.json) to the
+    same oversized-body handler.
+    """
+    _OVERSIZE = 5 * 1024 * 1024
+
+    class _H(BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw):
+            return
+
+        def _write_oversized(self):
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(_OVERSIZE))
+            self.end_headers()
+            chunk = b"a" * 65536
+            sent = 0
+            try:
+                while sent < _OVERSIZE:
+                    n = min(len(chunk), _OVERSIZE - sent)
+                    self.wfile.write(chunk[:n])
+                    sent += n
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def do_GET(self):  # noqa: N802
+            self._write_oversized()
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(length)
+            self._write_oversized()
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _H)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    return srv, t
+
+
+def test_client_rejects_oversized_response():
+    """Review-21 P2-M1: `lookup_agent` must refuse to buffer a 5 MiB
+    response from a compromised registry."""
+    srv, t = _oversized_body_server()
+    try:
+        host, port = srv.server_address
+        with pytest.raises(A2AClientError) as exc:
+            lookup_agent(f"http://{host}:{port}", "analyst", timeout=5.0)
+        assert "too large" in str(exc.value) or "exceeds" in str(exc.value)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=2)
+
+
+def test_client_post_message_rejects_oversized_response():
+    """Review-21 P2-M1: `post_message` must refuse to buffer a 5 MiB
+    reply from a compromised peer."""
+    srv, t = _oversized_body_server()
+    try:
+        host, port = srv.server_address
+        endpoint = f"http://{host}:{port}/a2a/send"
+        with pytest.raises(A2AClientError) as exc:
+            post_message(
+                endpoint,
+                sender="cli",
+                target="analyst",
+                message="ping",
+                timeout=5.0,
+            )
+        assert "too large" in str(exc.value) or "exceeds" in str(exc.value)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=2)
+
+
+def test_hermes_sidecar_lookup_peer_rejects_oversized_response():
+    """Review-21 P2-M1: `lookup_peer` must fail fast on 5 MiB registry
+    payload, surfacing as OutboundError(503, 'too large')."""
+    mod = _load_hermes_sidecar_module()
+    srv, t = _oversized_body_server()
+    try:
+        host, port = srv.server_address
+        with pytest.raises(mod.OutboundError) as exc:
+            mod.lookup_peer(f"http://{host}:{port}", "analyst", timeout=5.0)
+        assert "too large" in str(exc.value) or "exceeds" in str(exc.value)
+    finally:
+        _stop_http(srv, t)
+
+
+def test_hermes_sidecar_forward_to_peer_rejects_oversized_response():
+    """Review-21 P2-M1: `forward_to_peer` must fail fast on 5 MiB peer
+    reply, surfacing as OutboundError(502, 'too large')."""
+    mod = _load_hermes_sidecar_module()
+    srv, t = _oversized_body_server()
+    try:
+        host, port = srv.server_address
+        endpoint = f"http://{host}:{port}/a2a/send"
+        with pytest.raises(mod.OutboundError) as exc:
+            mod.forward_to_peer(
+                endpoint=endpoint,
+                self_name="writer",
+                peer_name="analyst",
+                message="hi",
+                thread_id=None,
+                hop=1,
+                timeout=5.0,
+            )
+        assert "too large" in str(exc.value) or "exceeds" in str(exc.value)
+    finally:
+        _stop_http(srv, t)
+
+
+def test_hermes_sidecar_fetch_peer_list_rejects_oversized_response():
+    """Review-21 P2-M1: `fetch_peer_list` returns None (consistent with
+    other failure paths) on oversized registry response."""
+    mod = _load_hermes_sidecar_module()
+    srv, t = _oversized_body_server()
+    try:
+        host, port = srv.server_address
+        assert mod.fetch_peer_list(f"http://{host}:{port}", timeout=5.0) is None
+    finally:
+        _stop_http(srv, t)
+
+
+def test_registry_fetch_card_at_rejects_oversized_response():
+    """Review-21 P2-M1: registry plugin-card probe must return None on
+    oversized response rather than buffering into registry memory."""
+    from clawcu.a2a.registry import _fetch_card_at
+
+    srv, t = _oversized_body_server()
+    try:
+        host, port = srv.server_address
+        url = f"http://{host}:{port}/.well-known/agent-card.json"
+        assert _fetch_card_at(url, timeout=5.0) is None
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=2)
+
+
+# ---------------------------------------------------------------------------
+# Review-22 P2-N1: call_hermes local-upstream response cap
+# ---------------------------------------------------------------------------
+
+
+def _oversized_chat_server():
+    """Streams >64 MiB as a fake chat completion (over the local upstream cap).
+
+    Accepts POST, drains the body, then streams the oversized payload.
+    """
+    _OVERSIZE = 65 * 1024 * 1024
+
+    class _H(BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw):
+            return
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(length)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(_OVERSIZE))
+            self.end_headers()
+            chunk = b"a" * 65536
+            sent = 0
+            try:
+                while sent < _OVERSIZE:
+                    n = min(len(chunk), _OVERSIZE - sent)
+                    self.wfile.write(chunk[:n])
+                    sent += n
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def do_GET(self):  # noqa: N802
+            return self.do_POST()
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _H)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    return srv, t
+
+
+def _oversized_error_server():
+    """Returns a 500 with >4 KiB error body (over the HTTPError cap)."""
+
+    _OVERSIZE = 8192
+
+    class _H(BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw):
+            return
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length") or 0)
+            self.rfile.read(length)
+            self.send_response(500)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(_OVERSIZE))
+            self.end_headers()
+            try:
+                self.wfile.write(b"e" * _OVERSIZE)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _H)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    return srv, t
+
+
+def test_call_hermes_rejects_oversized_2xx_response(monkeypatch):
+    """Review-22 P2-N1: `call_hermes` must refuse to buffer a local
+    upstream response larger than ``A2A_LOCAL_UPSTREAM_CAP``."""
+    mod = _load_hermes_sidecar_module()
+
+    monkeypatch.setenv("HERMES_API_HOST", "127.0.0.1")
+    monkeypatch.setenv("HERMES_API_PORT", "0")
+    monkeypatch.setenv("API_SERVER_KEY", "")
+
+    srv, t = _oversized_chat_server()
+    try:
+        host, port = srv.server_address
+        monkeypatch.setenv("HERMES_API_PORT", str(port))
+        cfg = mod.Config()
+        with pytest.raises(mod._ResponseTooLarge, match="exceeds"):
+            mod.call_hermes(cfg, "ping", "test-peer")
+    finally:
+        _stop_http(srv, t)
+
+
+def test_call_hermes_rejects_oversized_http_error_body(monkeypatch):
+    """Review-22 P2-N1: the HTTPError branch in /a2a/send must cap the
+    upstream error body at 4 KiB rather than unbounded ``e.read()``."""
+    mod = _load_hermes_sidecar_module()
+
+    monkeypatch.setenv("HERMES_API_HOST", "127.0.0.1")
+    monkeypatch.setenv("HERMES_API_PORT", "0")
+    monkeypatch.setenv("API_SERVER_KEY", "")
+
+    srv, t = _oversized_error_server()
+    try:
+        host, port = srv.server_address
+        monkeypatch.setenv("HERMES_API_PORT", str(port))
+        cfg = mod.Config()
+
+        # Pre-warm the gateway readiness cache so the sidecar doesn't
+        # block for 30 s probing a /health that doesn't exist.
+        mod._GATEWAY_READY_UNTIL = time.time() + 300
+
+        from http.server import ThreadingHTTPServer as _ThSrv
+
+        handler = mod.build_handler(cfg)
+        sidecar_srv = _ThSrv(("127.0.0.1", 0), handler)
+        sidecar_t = threading.Thread(target=sidecar_srv.serve_forever, daemon=True)
+        sidecar_t.start()
+        try:
+            shost, sport = sidecar_srv.server_address
+            import urllib.request
+            import urllib.error
+
+            body = json.dumps(
+                {"from": "tester", "message": "hi", "thread_id": None}
+            ).encode()
+            req = urllib.request.Request(
+                f"http://{shost}:{sport}/a2a/send",
+                data=body,
+                headers={"Content-Type": "application/json"},
+            )
+            try:
+                urllib.request.urlopen(req, timeout=10)
+            except urllib.error.HTTPError as resp:
+                # Should get 502 with a capped error body, not hang/OOM.
+                assert resp.code == 502
+                raw = resp.read()
+                assert b"upstream" in raw.lower()
+        finally:
+            sidecar_srv.shutdown()
+            sidecar_srv.server_close()
+            sidecar_t.join(timeout=2)
+    finally:
+        _stop_http(srv, t)
+

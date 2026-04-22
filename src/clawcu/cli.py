@@ -1083,6 +1083,7 @@ def _do_create(
     memory: str,
     a2a: bool = False,
     a2a_hop_budget: int | None = None,
+    a2a_advertise_host: str | None = None,
     apply_provider: str | None = None,
     apply_agent: str = "main",
     apply_persist: bool = False,
@@ -1094,6 +1095,10 @@ def _do_create(
     if a2a_hop_budget is not None and not a2a:
         _exit_with_error(
             "--a2a-hop-budget requires --a2a. Add --a2a or drop --a2a-hop-budget."
+        )
+    if a2a_advertise_host is not None and not a2a:
+        _exit_with_error(
+            "--a2a-advertise-host requires --a2a. Add --a2a or drop --a2a-advertise-host."
         )
     # a2a-design-5.md §P2-I: warn (not error) past the soft ceiling — above
     # 16 hops the budget stops being a useful loop-protection knob.
@@ -1109,11 +1114,11 @@ def _do_create(
     try:
         if service_name == "openclaw":
             record = service.create_openclaw(
-                name=name, version=version, image=image, datadir=datadir, port=port, cpu=cpu, memory=memory, a2a=a2a, a2a_hop_budget=a2a_hop_budget,
+                name=name, version=version, image=image, datadir=datadir, port=port, cpu=cpu, memory=memory, a2a=a2a, a2a_hop_budget=a2a_hop_budget, a2a_advertise_host=a2a_advertise_host,
             )
         else:
             record = service.create_hermes(
-                name=name, version=version, image=image, datadir=datadir, port=port, cpu=cpu, memory=memory, a2a=a2a, a2a_hop_budget=a2a_hop_budget,
+                name=name, version=version, image=image, datadir=datadir, port=port, cpu=cpu, memory=memory, a2a=a2a, a2a_hop_budget=a2a_hop_budget, a2a_advertise_host=a2a_advertise_host,
             )
     except Exception as exc:
         _exit_with_error(str(exc))
@@ -1200,6 +1205,15 @@ _A2A_HOP_BUDGET_OPTION = typer.Option(
         "--a2a."
     ),
 )
+_A2A_ADVERTISE_HOST_OPTION = typer.Option(
+    "--a2a-advertise-host",
+    help=(
+        "Hostname peers will use to reach this sidecar. Default: "
+        "host.docker.internal on macOS/Windows (Docker Desktop), 127.0.0.1 on "
+        "Linux. Override when peers live on a different host or a named "
+        "docker network. Requires --a2a."
+    ),
+)
 _A2A_TRISTATE_OPTION = typer.Option(
     "--a2a/--no-a2a",
     help=(
@@ -1233,6 +1247,7 @@ def create_callback(
     memory: Annotated[str, typer.Option("--memory", help="Docker memory limit.")] = "2g",
     a2a: Annotated[bool, _A2A_OPTION] = False,
     a2a_hop_budget: Annotated[int | None, _A2A_HOP_BUDGET_OPTION] = None,
+    a2a_advertise_host: Annotated[str | None, _A2A_ADVERTISE_HOST_OPTION] = None,
     apply_provider: Annotated[str | None, _APPLY_PROVIDER_OPTION] = None,
     apply_agent: Annotated[str, _APPLY_AGENT_OPTION] = "main",
     apply_persist: Annotated[bool, _APPLY_PERSIST_OPTION] = False,
@@ -1253,6 +1268,7 @@ def create_callback(
             memory=memory,
             a2a=a2a,
             a2a_hop_budget=a2a_hop_budget,
+            a2a_advertise_host=a2a_advertise_host,
             apply_provider=apply_provider,
             apply_agent=apply_agent,
             apply_persist=apply_persist,
@@ -1304,6 +1320,7 @@ def create_openclaw(
     memory: Annotated[str, typer.Option("--memory", help="Docker memory limit.")] = "2g",
     a2a: Annotated[bool, _A2A_OPTION] = False,
     a2a_hop_budget: Annotated[int | None, _A2A_HOP_BUDGET_OPTION] = None,
+    a2a_advertise_host: Annotated[str | None, _A2A_ADVERTISE_HOST_OPTION] = None,
     apply_provider: Annotated[str | None, _APPLY_PROVIDER_OPTION] = None,
     apply_agent: Annotated[str, _APPLY_AGENT_OPTION] = "main",
     apply_persist: Annotated[bool, _APPLY_PERSIST_OPTION] = False,
@@ -1319,6 +1336,7 @@ def create_openclaw(
         memory=memory,
         a2a=a2a,
         a2a_hop_budget=a2a_hop_budget,
+        a2a_advertise_host=a2a_advertise_host,
         apply_provider=apply_provider,
         apply_agent=apply_agent,
         apply_persist=apply_persist,
@@ -1348,6 +1366,7 @@ def create_hermes(
     memory: Annotated[str, typer.Option("--memory", help="Docker memory limit.")] = "2g",
     a2a: Annotated[bool, _A2A_OPTION] = False,
     a2a_hop_budget: Annotated[int | None, _A2A_HOP_BUDGET_OPTION] = None,
+    a2a_advertise_host: Annotated[str | None, _A2A_ADVERTISE_HOST_OPTION] = None,
     apply_provider: Annotated[str | None, _APPLY_PROVIDER_OPTION] = None,
     apply_agent: Annotated[str, _APPLY_AGENT_OPTION] = "main",
     apply_persist: Annotated[bool, _APPLY_PERSIST_OPTION] = False,
@@ -1363,6 +1382,7 @@ def create_hermes(
         memory=memory,
         a2a=a2a,
         a2a_hop_budget=a2a_hop_budget,
+        a2a_advertise_host=a2a_advertise_host,
         apply_provider=apply_provider,
         apply_agent=apply_agent,
         apply_persist=apply_persist,

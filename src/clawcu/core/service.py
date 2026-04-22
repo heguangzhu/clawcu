@@ -658,6 +658,7 @@ class ClawCUService:
         memory: str,
         a2a: bool = False,
         a2a_hop_budget: int | None = None,
+        a2a_advertise_host: str | None = None,
     ) -> InstanceRecord:
         adapter = self.adapter_for_service(service_name)
         auto_port = port is None
@@ -666,6 +667,10 @@ class ClawCUService:
                 raise ValueError("a2a_hop_budget requires a2a=True.")
             if not isinstance(a2a_hop_budget, int) or isinstance(a2a_hop_budget, bool) or a2a_hop_budget < 1:
                 raise ValueError("a2a_hop_budget must be a positive integer (>= 1).")
+        if a2a_advertise_host is not None:
+            if not a2a:
+                raise ValueError("a2a_advertise_host requires a2a=True.")
+            a2a_advertise_host = str(a2a_advertise_host).strip() or None
         self.reporter("Step 1/5: Validating options and resolving defaults. This should take a second or two.")
         spec = adapter.build_spec(
             self,
@@ -676,7 +681,7 @@ class ClawCUService:
             cpu=cpu,
             memory=memory,
         )
-        spec = replace(spec, a2a_enabled=bool(a2a))
+        spec = replace(spec, a2a_enabled=bool(a2a), a2a_advertise_host=a2a_advertise_host)
         if self.store.instance_path(spec.name).exists():
             raise ValueError(f"Instance '{spec.name}' already exists.")
         container_name = container_name_for_service(spec.service, spec.name)
@@ -744,6 +749,7 @@ class ClawCUService:
         memory: str,
         a2a: bool = False,
         a2a_hop_budget: int | None = None,
+        a2a_advertise_host: str | None = None,
     ) -> InstanceRecord:
         return self.create_service(
             "openclaw",
@@ -756,6 +762,7 @@ class ClawCUService:
             memory=memory,
             a2a=a2a,
             a2a_hop_budget=a2a_hop_budget,
+            a2a_advertise_host=a2a_advertise_host,
         )
 
     def create_hermes(
@@ -770,6 +777,7 @@ class ClawCUService:
         memory: str,
         a2a: bool = False,
         a2a_hop_budget: int | None = None,
+        a2a_advertise_host: str | None = None,
     ) -> InstanceRecord:
         return self.create_service(
             "hermes",
@@ -782,6 +790,7 @@ class ClawCUService:
             memory=memory,
             a2a=a2a,
             a2a_hop_budget=a2a_hop_budget,
+            a2a_advertise_host=a2a_advertise_host,
         )
 
     def _bake_a2a_image(self, service: str, base_version: str, base_image: str) -> str:

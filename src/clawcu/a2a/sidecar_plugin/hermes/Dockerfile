@@ -19,8 +19,25 @@ FROM ${HERMES_IMAGE_REPO}:${HERMES_VERSION}
 
 ARG CLAWCU_PLUGIN_VERSION=unknown
 
+# bootstrap.py rewrites /opt/data/config.yaml via PyYAML to auto-wire the
+# A2A MCP server entry. The hermes base image ships python3 but no PyYAML
+# and no pip, so without this step the sidecar logs
+#   WARNING a2a-sidecar: PyYAML unavailable — cannot handle YAML MCP config
+# and MCP auto-wire is silently skipped (review-10 P0-A4). We install the
+# Debian system package rather than pip to avoid bringing in pip just for
+# one dependency. Keep apt lists clean to minimise layer size.
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3-yaml \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN mkdir -p /opt/a2a
-COPY sidecar.py /opt/a2a/sidecar.py
+COPY sidecar.py         /opt/a2a/sidecar.py
+# bootstrap.py and outbound_limit.py are loaded at runtime by
+# sidecar.py via spec_from_file_location. They must land in the
+# image alongside sidecar.py — else the sidecar silently skips
+# MCP auto-wire and outbound rate limiting (review-9 P0-A3).
+COPY bootstrap.py       /opt/a2a/bootstrap.py
+COPY outbound_limit.py  /opt/a2a/outbound_limit.py
 COPY entrypoint.sh /usr/local/bin/entrypoint-a2a.sh
 RUN chmod +x /usr/local/bin/entrypoint-a2a.sh
 

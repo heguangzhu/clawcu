@@ -206,6 +206,37 @@ function readGatewayAuth(adapter) {
   return { authMode, token };
 }
 
+// Review-21 P2-M1: cap outbound response body at 4 MiB so a
+// compromised peer / registry can't stream GBs into the sidecar
+// process and OOM it before the socket timeout fires. Applies to
+// every outbound call (postJson and httpRequestRaw).
+const A2A_MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+
+function readCappedBody(res, limit = A2A_MAX_RESPONSE_BYTES) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    let overflowed = false;
+    res.on("data", (chunk) => {
+      if (overflowed) return;
+      total += chunk.length;
+      if (total > limit) {
+        overflowed = true;
+        res.destroy();
+        reject(new Error(`response exceeds ${limit} bytes`));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    res.on("end", () => {
+      if (!overflowed) resolve(Buffer.concat(chunks).toString("utf8"));
+    });
+    res.on("error", (e) => {
+      if (!overflowed) reject(e);
+    });
+  });
+}
+
 function postJson({ host, port, path, headers, bodyObj, timeoutMs = 120000 }) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(bodyObj);
@@ -223,13 +254,10 @@ function postJson({ host, port, path, headers, bodyObj, timeoutMs = 120000 }) {
         },
       },
       (res) => {
-        let raw = "";
-        res.on("data", (chunk) => {
-          raw += chunk;
-        });
-        res.on("end", () => {
-          resolve({ status: res.statusCode ?? 0, body: raw });
-        });
+        readCappedBody(res).then(
+          (raw) => resolve({ status: res.statusCode ?? 0, body: raw }),
+          (err) => reject(err),
+        );
       }
     );
     req.on("error", reject);
@@ -272,13 +300,10 @@ function httpRequestRaw({ method, host, port, path, headers, timeoutMs }) {
     const req = http.request(
       { method, host, port, path, headers },
       (res) => {
-        let raw = "";
-        res.on("data", (chunk) => {
-          raw += chunk;
-        });
-        res.on("end", () => {
-          resolve({ status: res.statusCode ?? 0, body: raw });
-        });
+        readCappedBody(res).then(
+          (raw) => resolve({ status: res.statusCode ?? 0, body: raw }),
+          (err) => reject(err),
+        );
       },
     );
     req.on("error", reject);
@@ -477,6 +502,17 @@ function readHopHeader(req) {
   return Math.floor(n);
 }
 
+// Review-18 P1-J1: SSRF parity. Mirrors the Python sidecar's iter-17
+// A2A_ALLOW_CLIENT_REGISTRY_URL gate. Default off — a client cannot
+// point /a2a/outbound's registry lookup at an arbitrary URL unless
+// the operator opts in.
+function readAllowClientRegistryUrl(env) {
+  const raw = String(env.A2A_ALLOW_CLIENT_REGISTRY_URL || "")
+    .trim()
+    .toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
 // Review-2 P1-D: request correlation.
 //
 // A single outbound-initiated hop chain (A→B→C) should share one stable ID
@@ -579,7 +615,9 @@ function readJsonBody(req, limit = 64 * 1024) {
       raw += chunk;
       if (raw.length > limit) {
         tooBig = true;
+        req.destroy();
         reject(new Error("request body too large"));
+        return;
       }
     });
     req.on("end", () => {
@@ -893,10 +931,40 @@ function main() {
             ridHeaders,
           );
         }
-        const registryUrl =
-          (typeof body.registry_url === "string" && body.registry_url) ||
-          process.env.A2A_REGISTRY_URL ||
-          "http://host.docker.internal:9100";
+        // Review-18 P1-J1: gate the client-supplied registry_url override.
+        // Without this, an attacker can point the sidecar at any http(s) URL
+        // and either (a) exfil response body via the "registry lookup …"
+        // error message, or (b) coerce forwardToPeer into POSTing the
+        // outbound body to an attacker-chosen URL via a malicious card.
+        let registryUrl;
+        if (Object.prototype.hasOwnProperty.call(body, "registry_url")) {
+          if (!readAllowClientRegistryUrl(process.env)) {
+            return jsonResponse(
+              res,
+              400,
+              {
+                error: "client-supplied 'registry_url' is disabled by server policy",
+                request_id: requestId,
+              },
+              ridHeaders,
+            );
+          }
+          if (typeof body.registry_url !== "string" || !body.registry_url) {
+            return jsonResponse(
+              res,
+              400,
+              {
+                error: "'registry_url' must be a non-empty string when provided",
+                request_id: requestId,
+              },
+              ridHeaders,
+            );
+          }
+          registryUrl = body.registry_url;
+        } else {
+          registryUrl =
+            process.env.A2A_REGISTRY_URL || "http://host.docker.internal:9100";
+        }
         const timeoutMs = Number.isFinite(Number(body.timeout_ms))
           ? Number(body.timeout_ms)
           : 60000;
@@ -1065,10 +1133,14 @@ module.exports = {
   forwardToPeer,
   fetchPeerList,
   createPeerCache,
+  readJsonBody,
   readHopHeader,
   parseHttpUrl,
   readOrMintRequestId,
   looksLikeRequestId,
+  readAllowClientRegistryUrl,
+  readCappedBody,
   A2A_HOP_BUDGET,
+  A2A_MAX_RESPONSE_BYTES,
   REQUEST_ID_HEADER,
 };

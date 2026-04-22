@@ -2307,6 +2307,7 @@ def test_create_command_uses_defaults(monkeypatch) -> None:
             "memory": "2g",
             "a2a": False,
             "a2a_hop_budget": None,
+            "a2a_advertise_host": None,
         },
     )
     assert service.calls[-1] == (
@@ -2348,6 +2349,7 @@ def test_create_hermes_command_uses_defaults(monkeypatch) -> None:
             "memory": "2g",
             "a2a": False,
             "a2a_hop_budget": None,
+            "a2a_advertise_host": None,
         },
     )
 
@@ -2384,6 +2386,7 @@ def test_create_command_accepts_image_override(monkeypatch) -> None:
             "memory": "2g",
             "a2a": False,
             "a2a_hop_budget": None,
+            "a2a_advertise_host": None,
         },
     )
 

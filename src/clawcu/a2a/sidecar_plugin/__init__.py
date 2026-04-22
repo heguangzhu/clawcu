@@ -16,10 +16,55 @@ editable dev install). This is the mechanism that closes review-5 P0-c.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
+import os
+import platform
 from pathlib import Path
 
 _PLUGIN_ROOT = Path(__file__).resolve().parent
+
+
+@functools.cache
+def default_advertise_host() -> str:
+    """Return the hostname other containers should use to reach *this* host.
+
+    Order:
+      1. ``$CLAWCU_A2A_ADVERTISE_HOST`` — site-wide override.
+      2. ``host.docker.internal`` on Docker Desktop (macOS / Windows).
+      3. ``127.0.0.1`` on plain Linux — caller passes ``--add-host`` so the
+         magic DNS name resolves inside the container; the registered
+         endpoint still has to be something peers can reach, and the
+         existing integration tests all bind loopback.
+
+    Review-9 P1-A3. Cached because detection does filesystem I/O.
+    """
+    override = (os.environ.get("CLAWCU_A2A_ADVERTISE_HOST") or "").strip()
+    if override:
+        return override
+    if platform.system() == "Darwin":
+        # Docker Desktop on macOS always routes host.docker.internal → host.
+        return "host.docker.internal"
+    # Windows users via Docker Desktop get the same treatment. On Linux we
+    # fall back to loopback — the typical single-container test flow still
+    # works, and multi-container deployments should pass --a2a-advertise-host
+    # or set $CLAWCU_A2A_ADVERTISE_HOST to whatever the cluster uses.
+    if platform.system() == "Windows":
+        return "host.docker.internal"
+    return "127.0.0.1"
+
+
+def resolve_advertise_host(record) -> str:
+    """Resolve the advertise-host for an instance record.
+
+    The explicit per-record override wins over the process-wide default so
+    users can pin a specific hostname (e.g. a LAN IP) regardless of where
+    clawcu runs.
+    """
+    explicit = getattr(record, "a2a_advertise_host", None)
+    if explicit:
+        return str(explicit)
+    return default_advertise_host()
 
 
 def plugin_source_dir(service: str) -> Path:

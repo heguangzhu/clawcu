@@ -105,6 +105,8 @@ import logging
 import os
 import re
 import sys
+import threading
+import time
 import traceback
 import urllib.parse
 import urllib.request
@@ -196,6 +198,39 @@ class Config:
         except ValueError:
             raw_max = 10
         self.thread_max_history_pairs = raw_max if raw_max >= 0 else 10
+        # Review-11 P1-B1: per-peer sliding-window inbound rate limit on
+        # /a2a/send. Mirrors the openclaw sidecar (ratelimit.js) for parity
+        # so either service flavor gives peers the same quota guarantee.
+        # Units: requests per 60 s. 0 disables. Default 30/min is conservative
+        # enough that agent-to-agent chat won't hit it but a runaway loop
+        # throttles fast.
+        try:
+            raw_rl = int(os.environ.get("A2A_RATE_LIMIT_PER_MINUTE") or "30")
+        except ValueError:
+            raw_rl = 30
+        self.rate_limit_per_minute = raw_rl if raw_rl >= 0 else 30
+        # Review-15 P1-H1: bound the time any inbound request can pin a
+        # worker thread. Covers both slow-headers (BaseHTTPRequestHandler
+        # readline) and slow-body (rfile.read(length)) variants of
+        # slowloris. 30 s is well above legitimate client latency (the
+        # CLI default send timeout is 60 s end-to-end, but that's the
+        # total including gateway+LLM, not the HTTP-layer read). 0 or
+        # negative disables (for bench / local debug only).
+        try:
+            raw_to = float(os.environ.get("A2A_INBOUND_REQUEST_TIMEOUT_S") or "30")
+        except ValueError:
+            raw_to = 30.0
+        self.inbound_request_timeout_s = raw_to if raw_to > 0 else 0.0
+        # Review-17 P1-I1: gate the /a2a/outbound body `registry_url`
+        # override. Default off — a client cannot pick the registry
+        # (SSRF) unless the operator explicitly opts in. Tests that
+        # want per-request registry overrides set this flag.
+        self.allow_client_registry_url = (
+            (os.environ.get("A2A_ALLOW_CLIENT_REGISTRY_URL") or "")
+            .strip()
+            .lower()
+            in ("1", "true", "yes", "on")
+        )
 
     def agent_card(self) -> dict[str, Any]:
         return {
@@ -210,6 +245,63 @@ class Config:
 
     def health_url(self) -> str:
         return f"http://{self.hermes_host}:{self.hermes_port}{self.ready_path}"
+
+
+# --- Inbound per-peer rate limiter (review-11 P1-B1) ---
+#
+# Sliding-window counter mirroring openclaw/sidecar/ratelimit.js. Kept inline
+# to match the hermes single-file convention; the module-loading cost via
+# ``spec_from_file_location`` is not worth it for a ~40-line helper.
+#
+# Keyed on the ``from`` field of /a2a/send. Not auth — peers can spoof the
+# header; this is quota to keep one misbehaving peer from draining the
+# upstream LLM. ``max_peers`` caps memory so a rotating-name attacker can't
+# blow up the map.
+
+class PeerRateLimiter:
+    def __init__(
+        self,
+        per_minute: int = 30,
+        window_ms: int = 60_000,
+        max_peers: int = 1024,
+        now_ms: Callable[[], int] | None = None,
+    ) -> None:
+        self._per_minute = per_minute
+        self._window_ms = window_ms
+        self._max_peers = max_peers
+        self._hits: dict[str, list[int]] = {}
+        self._lock = threading.Lock()
+        self._now_ms = now_ms or (lambda: int(time.time() * 1000))
+
+    def allow(self, peer: str) -> dict[str, Any]:
+        if self._per_minute <= 0:
+            return {"ok": True, "remaining": float("inf"), "reset_ms": 0}
+        now = self._now_ms()
+        window_start = now - self._window_ms
+        with self._lock:
+            timestamps = self._hits.get(peer)
+            if timestamps is None:
+                if len(self._hits) >= self._max_peers:
+                    # Evict the stalest peer. O(n) scan is fine at max_peers=1024.
+                    stalest_key = min(
+                        self._hits,
+                        key=lambda k: self._hits[k][-1] if self._hits[k] else 0,
+                    )
+                    self._hits.pop(stalest_key, None)
+                timestamps = []
+                self._hits[peer] = timestamps
+            while timestamps and timestamps[0] < window_start:
+                timestamps.pop(0)
+            if len(timestamps) >= self._per_minute:
+                oldest = timestamps[0]
+                reset_ms = max(0, oldest + self._window_ms - now)
+                return {"ok": False, "remaining": 0, "reset_ms": reset_ms}
+            timestamps.append(now)
+            return {
+                "ok": True,
+                "remaining": self._per_minute - len(timestamps),
+                "reset_ms": 0,
+            }
 
 
 # --- Thread-history store (review-14 P1-C, mirror of openclaw thread.js) ---
@@ -407,7 +499,7 @@ def call_hermes(
         cfg.chat_url(), data=body, method="POST", headers=headers
     )
     with urllib.request.urlopen(req, timeout=cfg.timeout) as resp:
-        raw = resp.read().decode("utf-8")
+        raw = _read_capped(resp, cap=A2A_LOCAL_UPSTREAM_CAP).decode("utf-8")
     payload = json.loads(raw)
 
     try:
@@ -502,6 +594,132 @@ def _hop_budget() -> int:
     return v if v >= 1 else 8
 
 
+# Review-14 P1-F1: cap inbound POST body size. Without this, an attacker
+# declares Content-Length: 10GB and self.rfile.read(length) allocates that
+# much memory on the sidecar process (OOM). OpenClaw's sidecar already
+# applies a 64KB cap in readJsonBody; mirror that here so both runtimes
+# behave the same under adversarial load. Tunable via A2A_MAX_BODY_BYTES
+# for operators who need to route larger payloads (e.g. embedded images).
+DEFAULT_MAX_BODY_BYTES = 64 * 1024
+
+
+def _max_body_bytes() -> int:
+    raw = os.environ.get("A2A_MAX_BODY_BYTES")
+    if raw is None or str(raw).strip() == "":
+        return DEFAULT_MAX_BODY_BYTES
+    try:
+        v = int(raw)
+    except ValueError:
+        return DEFAULT_MAX_BODY_BYTES
+    return v if v > 0 else DEFAULT_MAX_BODY_BYTES
+
+
+class _BadContentLength(Exception):
+    """Raised when the client sends a Content-Length we refuse to honor."""
+
+
+class _BadOutboundUrl(Exception):
+    """Raised when an outbound URL fails the scheme allow-list.
+
+    Review-17 P1-I1: guards against SSRF via non-http schemes (file://,
+    ftp://, gopher://, dict://) smuggled into the client-supplied
+    registry_url body override or a compromised registry card's
+    endpoint field. Positive-allow-list of http/https only.
+    """
+
+
+_OUTBOUND_URL_ALLOWED_SCHEMES = frozenset({"http", "https"})
+
+
+def _validate_outbound_url(url: str) -> str:
+    if not isinstance(url, str) or not url:
+        raise _BadOutboundUrl("empty url")
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError as e:
+        raise _BadOutboundUrl(f"malformed url: {e}") from e
+    if parsed.scheme.lower() not in _OUTBOUND_URL_ALLOWED_SCHEMES:
+        raise _BadOutboundUrl(
+            f"scheme {parsed.scheme!r} not allowed (only http/https)"
+        )
+    if not parsed.hostname:
+        raise _BadOutboundUrl("missing host")
+    return url
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Return None from redirect_request so urllib surfaces 3xx as an
+    HTTPError instead of following.
+
+    Review-20 P1-L1: CPython's default ``HTTPRedirectHandler`` admits
+    redirects into ``{"http", "https", "ftp", ""}``. ``_validate_outbound_url``
+    only gates the URL passed into ``urlopen``, so a peer returning
+    ``302 Location: ftp://attacker/`` would bypass the scheme allow-list
+    by redirecting into ftp:// from inside urlopen. Short-circuiting the
+    redirect chain here keeps peer traffic pinned to the allow-listed
+    URL. The 3xx response surfaces via the existing ``except HTTPError``
+    arms in lookup_peer / fetch_peer_list / forward_to_peer, producing
+    ``peer HTTP 302: …`` style errors.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+
+
+A2A_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+A2A_LOCAL_UPSTREAM_CAP = 64 * 1024 * 1024
+
+
+class _ResponseTooLarge(Exception):
+    """Raised when a response body exceeds the configured byte cap.
+
+    Review-21 P2-M1: outbound peer/registry responses capped at
+    ``A2A_MAX_RESPONSE_BYTES`` (4 MiB). Review-22 P2-N1: local
+    upstream (Hermes gateway) responses capped at
+    ``A2A_LOCAL_UPSTREAM_CAP`` (64 MiB) — the trust boundary is
+    different (co-resident process) but a buggy streaming response
+    can still OOM the sidecar.
+    """
+
+
+def _read_capped(response, cap: int = A2A_MAX_RESPONSE_BYTES) -> bytes:
+    raw = response.read(cap + 1)
+    if len(raw) > cap:
+        raise _ResponseTooLarge(f"response exceeds {cap} bytes")
+    return raw
+
+
+def _parse_content_length(headers: Any, *, cap: int) -> int:
+    """Parse the request's Content-Length header, rejecting hostile values.
+
+    Review-15 P1-G1: a raw ``int(self.headers.get('Content-Length') or 0)``
+    accepts ``-1`` (causing ``rfile.read(-1)`` to block indefinitely waiting
+    for EOF — a DoS on the ThreadingHTTPServer worker thread) and raises
+    ``ValueError`` on non-numeric values (dropping the connection without
+    a proper 400 response). This helper returns a non-negative bounded
+    length or raises ``_BadContentLength`` for the handler to convert to
+    an HTTP 400 / 413.
+    """
+    raw = headers.get("Content-Length") if hasattr(headers, "get") else None
+    if raw is None:
+        return 0
+    stripped = str(raw).strip()
+    if stripped == "":
+        return 0
+    try:
+        length = int(stripped)
+    except ValueError as exc:
+        raise _BadContentLength(f"invalid Content-Length: {stripped!r}") from exc
+    if length < 0:
+        raise _BadContentLength(f"negative Content-Length: {length}")
+    if length > cap:
+        raise _BadContentLength(f"request body exceeds {cap} bytes")
+    return length
+
+
 def read_hop_header(headers: Any) -> int:
     raw = headers.get("X-A2A-Hop") if hasattr(headers, "get") else None
     if raw is None:
@@ -516,15 +734,25 @@ def read_hop_header(headers: Any) -> int:
 def lookup_peer(
     registry_url: str, peer_name: str, timeout: float
 ) -> dict[str, Any]:
+    try:
+        _validate_outbound_url(registry_url)
+    except _BadOutboundUrl as e:
+        raise OutboundError(400, f"invalid registry url: {e}") from e
     base = registry_url.rstrip("/")
     url = f"{base}/agents/{urllib.parse.quote(peer_name, safe='')}"
     req = urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8")
+        with _OPENER.open(req, timeout=timeout) as resp:
+            raw = _read_capped(resp).decode("utf-8")
             status = resp.status
+    except _ResponseTooLarge as e:
+        raise OutboundError(503, f"registry response too large: {e}") from e
     except HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
+        try:
+            body_raw = _read_capped(e) if hasattr(e, "read") else b""
+        except _ResponseTooLarge:
+            body_raw = b""
+        body = body_raw.decode("utf-8", errors="replace")
         if e.code == 404:
             raise OutboundError(404, f"peer '{peer_name}' not found in registry") from e
         raise OutboundError(503, f"registry lookup {e.code}: {body[:200]}") from e
@@ -555,10 +783,10 @@ def fetch_peer_list(registry_url: str, timeout: float) -> list[dict[str, Any]] |
     url = f"{base}/agents"
     req = urllib.request.Request(url, method="GET", headers={"Accept": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8")
+        with _OPENER.open(req, timeout=timeout) as resp:
+            raw = _read_capped(resp).decode("utf-8")
             status = resp.status
-    except (HTTPError, URLError, OSError, TimeoutError):
+    except (HTTPError, URLError, OSError, TimeoutError, _ResponseTooLarge):
         return None
     if status < 200 or status >= 300:
         return None
@@ -619,6 +847,10 @@ def forward_to_peer(
     timeout: float,
     request_id: str | None = None,
 ) -> dict[str, Any]:
+    try:
+        _validate_outbound_url(endpoint)
+    except _BadOutboundUrl as e:
+        raise OutboundError(502, f"peer card endpoint rejected: {e}") from e
     body: dict[str, Any] = {"from": self_name, "to": peer_name, "message": message}
     if thread_id:
         body["thread_id"] = thread_id
@@ -633,11 +865,17 @@ def forward_to_peer(
         headers[_REQUEST_ID_HEADER] = request_id
     req = urllib.request.Request(endpoint, data=data, method="POST", headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8")
+        with _OPENER.open(req, timeout=timeout) as resp:
+            raw = _read_capped(resp).decode("utf-8")
             status = resp.status
+    except _ResponseTooLarge as e:
+        raise OutboundError(502, f"peer response too large: {e}") from e
     except HTTPError as e:
-        body_raw = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
+        try:
+            body_bytes = _read_capped(e) if hasattr(e, "read") else b""
+        except _ResponseTooLarge:
+            body_bytes = b""
+        body_raw = body_bytes.decode("utf-8", errors="replace")
         if e.code == 508:
             raise OutboundError(508, f"peer rejected hop limit: {body_raw[:200]}", e.code) from e
         if e.code == 429:
@@ -976,14 +1214,33 @@ def build_handler(
     cfg: Config,
     outbound_limiter: Any = None,
     peer_cache: Any = None,
+    peer_limiter: PeerRateLimiter | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     thread_store = ThreadStore(
         storage_dir=cfg.thread_dir,
         max_history_pairs=cfg.thread_max_history_pairs,
     )
+    # Review-11 P1-B1: default the inbound per-peer limiter from Config so
+    # callers (tests) that inject their own limiter aren't surprised.
+    if peer_limiter is None:
+        peer_limiter = PeerRateLimiter(per_minute=cfg.rate_limit_per_minute)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "a2a-bridge-sidecar/1.0"
+
+        def setup(self) -> None:
+            # Review-16 P1-H1: cap how long a single inbound request can
+            # pin this thread. Applied at the socket layer so both
+            # BaseHTTPRequestHandler's header readline and our own
+            # rfile.read(length) honor it. ``settimeout(0)`` would mean
+            # non-blocking; we want "no limit" semantics via None.
+            super().setup()
+            to = cfg.inbound_request_timeout_s
+            if to > 0:
+                try:
+                    self.request.settimeout(to)
+                except (OSError, AttributeError):
+                    pass
 
         def log_message(self, fmt: str, *args: Any) -> None:
             log.info("%s - %s", self.address_string(), fmt % args)
@@ -1052,7 +1309,18 @@ def build_handler(
                 )
                 return
 
-            length = int(self.headers.get("Content-Length") or 0)
+            cap = _max_body_bytes()
+            try:
+                length = _parse_content_length(self.headers, cap=cap)
+            except _BadContentLength as exc:
+                status = 413 if "exceeds" in str(exc) else 400
+                _write_json(
+                    self,
+                    status,
+                    {"error": str(exc), "request_id": request_id},
+                    extra_headers=rid_headers,
+                )
+                return
             raw = self.rfile.read(length) if length else b""
             try:
                 payload = json.loads(raw.decode("utf-8"))
@@ -1091,6 +1359,35 @@ def build_handler(
                 peer_from or "?",
                 incoming_hop,
             )
+
+            # Review-11 P1-B1: per-peer inbound rate limit. Checked after the
+            # accepted-log so operators can see the spike in context, but
+            # before any gateway call so a flood can't drain the upstream
+            # LLM. Mirrors openclaw's ratelimit.js semantics exactly: 429 +
+            # Retry-After + resetMs in the body so the peer can back off.
+            rl_peer = peer_from or "?"
+            rl = peer_limiter.allow(rl_peer)
+            if not rl["ok"]:
+                log.warning(
+                    "a2a.send rate-limited request_id=%s from=%s reset_ms=%s",
+                    request_id,
+                    rl_peer,
+                    rl["reset_ms"],
+                )
+                _write_json(
+                    self,
+                    429,
+                    {
+                        "error": f"rate limit exceeded for peer '{rl_peer}'",
+                        "resetMs": rl["reset_ms"],
+                        "request_id": request_id,
+                    },
+                    extra_headers={
+                        **rid_headers,
+                        "Retry-After": str((rl["reset_ms"] + 999) // 1000),
+                    },
+                )
+                return
 
             # Review-14 P1-C: thread_id is OPTIONAL. Absent → stateless turn
             # (identical to pre-iter-14 behavior). Present but wrong type
@@ -1134,8 +1431,20 @@ def build_handler(
 
             try:
                 reply = call_hermes(cfg, message, peer_from, history=history)
+            except _ResponseTooLarge as e:
+                log.error("Hermes response too large request_id=%s: %s", request_id, e)
+                _write_json(
+                    self,
+                    502,
+                    {"error": f"upstream response too large: {e}", "request_id": request_id},
+                    extra_headers=rid_headers,
+                )
+                return
             except HTTPError as e:
-                body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else ""
+                try:
+                    body = _read_capped(e, cap=4096).decode("utf-8", errors="replace") if hasattr(e, "read") else ""
+                except _ResponseTooLarge:
+                    body = f"<upstream error body exceeds 4096 bytes, code={e.code}>"
                 log.error("Hermes HTTPError %s request_id=%s: %s", e.code, request_id, body[:500])
                 if e.code >= 500:
                     # 5xx suggests gateway is sick; drop the ready-cache so the
@@ -1198,7 +1507,25 @@ def build_handler(
             """
             request_id = read_or_mint_request_id(self.headers)
             rid_headers = {_REQUEST_ID_HEADER: request_id}
-            length = int(self.headers.get("Content-Length") or 0)
+            cap = _max_body_bytes()
+            try:
+                length = _parse_content_length(self.headers, cap=cap)
+            except _BadContentLength as exc:
+                status = 413 if "exceeds" in str(exc) else 400
+                _write_json(
+                    self,
+                    status,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {
+                            "code": MCP_ERR_PARSE,
+                            "message": str(exc),
+                        },
+                    },
+                    extra_headers=rid_headers,
+                )
+                return
             raw = self.rfile.read(length) if length else b""
             try:
                 payload = json.loads(raw.decode("utf-8")) if raw else None
@@ -1275,7 +1602,18 @@ def build_handler(
                 )
                 return
 
-            length = int(self.headers.get("Content-Length") or 0)
+            cap = _max_body_bytes()
+            try:
+                length = _parse_content_length(self.headers, cap=cap)
+            except _BadContentLength as exc:
+                status = 413 if "exceeds" in str(exc) else 400
+                _write_json(
+                    self,
+                    status,
+                    {"error": str(exc), "request_id": request_id},
+                    extra_headers=rid_headers,
+                )
+                return
             raw = self.rfile.read(length) if length else b""
             try:
                 payload = json.loads(raw.decode("utf-8"))
@@ -1326,8 +1664,50 @@ def build_handler(
                     extra_headers=rid_headers,
                 )
                 return
-            registry_url = payload.get("registry_url")
-            if not isinstance(registry_url, str) or not registry_url:
+            # Review-17 P1-I1: SSRF guard. The body-level registry_url
+            # override lets the caller point the sidecar at any URL for
+            # a GET (probe+leak) and, if the attacker controls the
+            # response, at any URL for a POST (via card.endpoint). Gate
+            # the override behind an operator opt-in; validate scheme
+            # even when allowed.
+            raw_registry = payload.get("registry_url")
+            if raw_registry is not None:
+                if not cfg.allow_client_registry_url:
+                    _write_json(
+                        self,
+                        400,
+                        {
+                            "error": "client-supplied 'registry_url' is disabled by server policy",
+                            "request_id": request_id,
+                        },
+                        extra_headers=rid_headers,
+                    )
+                    return
+                if not isinstance(raw_registry, str) or not raw_registry:
+                    _write_json(
+                        self,
+                        400,
+                        {
+                            "error": "'registry_url' must be a non-empty string when provided",
+                            "request_id": request_id,
+                        },
+                        extra_headers=rid_headers,
+                    )
+                    return
+                try:
+                    registry_url = _validate_outbound_url(raw_registry)
+                except _BadOutboundUrl as exc:
+                    _write_json(
+                        self,
+                        400,
+                        {
+                            "error": f"invalid 'registry_url': {exc}",
+                            "request_id": request_id,
+                        },
+                        extra_headers=rid_headers,
+                    )
+                    return
+            else:
                 registry_url = _default_registry_url()
             raw_timeout = payload.get("timeout_ms")
             if isinstance(raw_timeout, (int, float)) and raw_timeout > 0:

@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 
 from clawcu import __version__ as clawcu_version
+from clawcu.a2a.sidecar_plugin import resolve_advertise_host
 from clawcu.core.adapters import ServiceAdapter
 from clawcu.core.models import AccessInfo, ContainerRunSpec, InstanceRecord, InstanceSpec
 from clawcu.core.validation import (
@@ -102,7 +103,12 @@ class OpenClawAdapter(ServiceAdapter):
                 {
                     "A2A_SIDECAR_NAME": record.name,
                     "A2A_SIDECAR_PORT": str(self.a2a_internal_port),
-                    "A2A_SIDECAR_ADVERTISE_HOST": "127.0.0.1",
+                    # Review-9 P1-A3: peers in other containers can't reach
+                    # 127.0.0.1 — the baked default used to break cross-
+                    # container A2A calls on Docker Desktop. Resolver returns
+                    # host.docker.internal on Darwin/Windows and honors the
+                    # per-record override when set via --a2a-advertise-host.
+                    "A2A_SIDECAR_ADVERTISE_HOST": resolve_advertise_host(record),
                     "A2A_SIDECAR_ADVERTISE_PORT": str(a2a_host_port),
                     # Sidecar forwards /a2a/send to the gateway's own
                     # OpenAI-compat endpoint so the agent's native

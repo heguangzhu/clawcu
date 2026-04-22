@@ -11,6 +11,7 @@ from pathlib import Path
 import yaml
 
 from clawcu import __version__ as clawcu_version
+from clawcu.a2a.sidecar_plugin import resolve_advertise_host
 from clawcu.core.adapters import ServiceAdapter
 from clawcu.core.models import AccessInfo, ContainerRunSpec, InstanceRecord, InstanceSpec
 from clawcu.core.validation import (
@@ -185,7 +186,10 @@ class HermesAdapter(ServiceAdapter):
                 {
                     "A2A_SELF_NAME": record.name,
                     "A2A_BIND_PORT": str(self.dashboard_internal_port),
-                    "A2A_ADVERTISE_HOST": "127.0.0.1",
+                    # Review-9 P1-A3: see openclaw adapter. Resolver picks
+                    # host.docker.internal on Darwin/Windows so cross-
+                    # container peer calls land on the right host.
+                    "A2A_ADVERTISE_HOST": resolve_advertise_host(record),
                     "A2A_ADVERTISE_PORT": str(advertised_port),
                     # Hermes' API server exposes readiness at /health. The
                     # sidecar is gateway-agnostic (review-7 P2-E): the

@@ -14,6 +14,7 @@ from clawcu.a2a.card import (
     card_from_record,
     plugin_port_candidates,
 )
+from clawcu.a2a.sidecar_plugin import resolve_advertise_host
 
 CardProvider = Callable[[], Iterable[AgentCard]]
 
@@ -23,17 +24,58 @@ DEFAULT_CARDS_TTL_SECONDS = 5.0
 _log = logging.getLogger("clawcu.a2a.registry")
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Return None from redirect_request so urllib surfaces 3xx as an
+    HTTPError instead of following.
+
+    Review-20 P1-L1: registry federation probes loopback plugin ports
+    for their ``/.well-known/agent-card.json``. A compromised plugin
+    could return ``302 Location: ftp://attacker/`` — CPython's default
+    redirect handler would follow it, giving the attacker an egress
+    from the registry process. Disabling redirects keeps card fetches
+    pinned to the trusted http/https URL that we constructed.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+
+
+A2A_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+
+
+class _ResponseTooLarge(Exception):
+    """Raised when a plugin card response exceeds ``A2A_MAX_RESPONSE_BYTES``.
+
+    Review-21 P2-M1: a compromised plugin (or anything squatting on a
+    probed port) could stream GBs as its card and OOM the registry
+    process. Cap is a compile-time constant.
+    """
+
+
+def _read_capped(response, cap: int = A2A_MAX_RESPONSE_BYTES) -> bytes:
+    raw = response.read(cap + 1)
+    if len(raw) > cap:
+        raise _ResponseTooLarge(f"response exceeds {cap} bytes")
+    return raw
+
+
 def _fetch_card_at(url: str, timeout: float) -> AgentCard | None:
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
+        with _OPENER.open(url, timeout=timeout) as response:
             if response.status != 200:
                 _log.info(
                     "plugin card fetch non-200: url=%s status=%s", url, response.status
                 )
                 return None
-            raw = response.read()
+            raw = _read_capped(response)
     except urllib.error.HTTPError as exc:
         _log.info("plugin card fetch http error: url=%s status=%s", url, exc.code)
+        return None
+    except _ResponseTooLarge as exc:
+        _log.info("plugin card fetch too large: url=%s reason=%s", url, exc)
         return None
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         _log.info("plugin card fetch failed: url=%s reason=%s", url, exc)
@@ -73,16 +115,63 @@ def try_fetch_plugin_card(
     return None
 
 
+_FEDERATABLE_STATUSES = {"running", "starting"}
+
+
 def _build_cards(service: Any, host: str, timeout: float) -> list[AgentCard]:
-    records = service.list_instances(running_only=True)
+    # We deliberately don't use `running_only=True` — container_status maps
+    # docker healthcheck phase "starting" to status="starting", and a fresh
+    # instance can sit in that state for a full healthcheck interval (up to
+    # 180s with the stock openclaw image). The A2A sidecar binds as soon as
+    # the process starts, independent of gateway readiness, so we should
+    # probe it immediately rather than wait for the first healthcheck tick
+    # (review-10 P2-A4).
+    records = [
+        r
+        for r in service.list_instances()
+        # Records in tests (and any custom service adapter) may not expose
+        # `.status` — default to "running" so legacy callers that already
+        # pre-filtered their list_instances() output stay opt-in.
+        if getattr(r, "status", "running") in _FEDERATABLE_STATUSES
+    ]
     out: list[AgentCard] = []
     for record in records:
         card = try_fetch_plugin_card(
             record, service=service, host=host, timeout=timeout
         )
-        if card is None:
-            card = card_from_record(record, service=service, host=host)
-        out.append(card)
+        if card is not None:
+            out.append(card)
+            continue
+        # Review-12 P2-D2: when the probe fails, distinguish by status.
+        # A ``running`` record has passed at least one healthcheck, so a
+        # probe miss is most likely a transient network hiccup — keep the
+        # placeholder card so peers can still discover it and retry
+        # through forward_to_peer's own error handling. A ``starting``
+        # record has NOT yet passed a healthcheck; publishing a
+        # placeholder endpoint that actually 504s gives peers a worse
+        # experience than admitting the sidecar isn't ready yet. Skip it
+        # and let the 5 s cache TTL pick it up on the next pass.
+        status = getattr(record, "status", "running")
+        if status == "starting":
+            _log.info(
+                "skipping card for starting instance %s: sidecar probe failed",
+                getattr(record, "name", "<unknown>"),
+            )
+            continue
+        # Review-13 P2-E1: the placeholder endpoint must be reachable by
+        # peers on the mesh, not just by the CLI on the host loopback.
+        # `host` here is the interface the registry binds to (typically
+        # 127.0.0.1 in local clawcu setups) — that host is NOT valid
+        # inside a peer container (its own loopback). Use the record's
+        # advertise host (Darwin/Windows → host.docker.internal, Linux →
+        # 127.0.0.1 unless overridden) so `forward_to_peer` from another
+        # container actually reaches this instance. The CLI path still
+        # works because iter-11 P1-C1's localize_endpoint_for_host
+        # rewrites host.docker.internal → 127.0.0.1 before posting.
+        placeholder_host = resolve_advertise_host(record)
+        out.append(
+            card_from_record(record, service=service, host=placeholder_host)
+        )
     return out
 
 
