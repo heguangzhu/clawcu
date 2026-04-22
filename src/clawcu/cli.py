@@ -7,6 +7,8 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+import webbrowser
 from pathlib import Path
 from typing import Annotated
 
@@ -19,6 +21,7 @@ from rich.table import Table
 from typer.main import get_command
 
 from clawcu import __version__
+from clawcu.dashboard.server import _dashboard_is_healthy, serve_dashboard
 from clawcu.core.registry import is_semver_release_tag
 from clawcu.service import ClawCUService
 
@@ -1669,6 +1672,84 @@ def _apply_list_filters(
     if status:
         filtered = [r for r in filtered if str(r.get("status", "")).lower() == status.lower()]
     return filtered
+
+
+@app.command(
+    "dashboard",
+    help="Serve the local dashboard for managed, local, and removed instances.",
+    rich_help_panel=_PANEL_INFO,
+)
+def dashboard(
+    host: Annotated[
+        str,
+        typer.Option("--host", help="Host interface to bind the dashboard server to."),
+    ] = "127.0.0.1",
+    port: Annotated[
+        int,
+        typer.Option("--port", min=1, max=65535, help="Port to bind the dashboard server to."),
+    ] = 8765,
+    open_browser: Annotated[
+        bool,
+        typer.Option("--open/--no-open", help="Open the dashboard URL in the default browser after starting."),
+    ] = True,
+    foreground: Annotated[
+        bool,
+        typer.Option(
+            "--foreground/--background",
+            help="Run the dashboard server in the current terminal instead of detaching it.",
+        ),
+    ] = False,
+) -> None:
+    try:
+        if foreground:
+            serve_dashboard(host=host, port=port, open_browser=open_browser)
+            return
+
+        primary_url = f"http://{host}:{port}"
+        if _dashboard_is_healthy(primary_url):
+            typer.echo(f"ClawCU dashboard is already running at {primary_url}")
+            if open_browser:
+                webbrowser.open(primary_url)
+            return
+
+        clawcu_bin = shutil.which("clawcu") or sys.argv[0]
+        cmd = [clawcu_bin, "dashboard", "--host", host, "--port", str(port), "--foreground", "--no-open"]
+        subprocess.Popen(  # noqa: S603
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+        candidate_ports = [port]
+        if port == 8765:
+            candidate_ports.extend(range(port + 1, port + 21))
+
+        healthy_url = None
+        deadline = time.time() + 12.0
+        while time.time() < deadline:
+            for candidate_port in candidate_ports:
+                candidate_url = f"http://{host}:{candidate_port}"
+                if _dashboard_is_healthy(candidate_url):
+                    healthy_url = candidate_url
+                    break
+            if healthy_url:
+                break
+            time.sleep(0.2)
+
+        if healthy_url:
+            typer.echo(f"ClawCU dashboard is running at {healthy_url}")
+            if open_browser:
+                webbrowser.open(healthy_url)
+        else:
+            typer.echo(
+                "ClawCU dashboard is starting in the background. "
+                f"Check http://{host}:{port} in a moment if the browser does not open automatically."
+            )
+    except Exception as exc:
+        typer.secho(str(exc), err=True, fg=typer.colors.RED)
+        raise typer.Exit(code=1) from exc
 
 
 @app.command(
