@@ -12,6 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provider bundle provenance via `.clawcu-instance.json` metadata.
 - Active provider as a first-class field.
 
+## [0.2.12] - 2026-04-22
+
+### Added
+- `clawcu list --no-cache` now forces a fresh Available Versions registry refresh for the footer while still updating the on-disk daily cache after a successful fetch.
+
+### Fixed
+- `clawcu list` now tolerates legacy instance-record fields such as `a2a_enabled` instead of failing to deserialize older managed-instance JSON files.
+
 ## [0.2.11] - 2026-04-22
 
 ### Added
@@ -65,7 +73,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 - OpenClaw lifecycle management: pull, create, list, inspect, start/stop, upgrade, rollback, clone, snapshots.
 
-[Unreleased]: https://github.com/heguangzhu/clawcu/compare/v0.2.11...HEAD
+[Unreleased]: https://github.com/heguangzhu/clawcu/compare/v0.2.12...HEAD
+[0.2.12]: https://github.com/heguangzhu/clawcu/compare/v0.2.11...v0.2.12
 [0.2.11]: https://github.com/heguangzhu/clawcu/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/heguangzhu/clawcu/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/heguangzhu/clawcu/compare/v0.2.8...v0.2.9

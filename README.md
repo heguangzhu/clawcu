@@ -31,6 +31,7 @@
 - **One CLI, two runtimes** — OpenClaw and Hermes through the same lifecycle commands
 - **Snapshots before every upgrade** — datadir and env both captured; `rollback` restores from real backups
 - **Clone-first experiments** — copy an instance, upgrade the copy, leave the original running
+- **Available versions with cache-aware refresh** — `clawcu list` is fast by default, and `clawcu list --no-cache` forces a fresh registry read when you want to see the latest tags now
 
 ```text
 $ clawcu list
@@ -96,10 +97,16 @@ clawcu create hermes --name analyst --version 2026.4.13
 clawcu tui analyst
 ```
 
-Configure providers / models inside an instance via its service-native flow (OpenClaw's `setup`, Hermes's `config`):
+Configure providers / models inside an instance via its service-native flow (OpenClaw's `configure`, Hermes's `setup`):
 
 ```bash
 clawcu config writer
+```
+
+Need the versions footer to ignore today's cache and fetch fresh tags immediately?
+
+```bash
+clawcu list --no-cache
 ```
 
 For the full command reference (`list` / `inspect` / `exec` / `upgrade` / `provider` …), see [USAGE_latest.md](release/USAGE_latest.md).

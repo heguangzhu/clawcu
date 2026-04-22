@@ -31,6 +31,7 @@
 - **一套 CLI，两个运行时** — OpenClaw 和 Hermes 共用同一套生命周期命令
 - **每次升级前自动快照** — datadir 与环境变量同步捕获；`rollback` 从真实备份恢复
 - **先克隆再实验** — 复制一份实例，在副本上升级，主实例原地不动
+- **Available versions 支持缓存刷新** — 默认 `clawcu list` 走按天缓存，需要立即看最新 tag 时用 `clawcu list --no-cache`
 
 ```text
 $ clawcu list
@@ -96,10 +97,16 @@ clawcu create hermes --name analyst --version 2026.4.13
 clawcu tui analyst
 ```
 
-进入实例原生的配置流程（OpenClaw 的 `setup`、Hermes 的 `config`），在容器内完成模型 / API key 等设置：
+进入实例原生的配置流程（OpenClaw 的 `configure`、Hermes 的 `setup`），在容器内完成模型 / API key 等设置：
 
 ```bash
 clawcu config writer
+```
+
+如果你想忽略当天的 Available versions 缓存，立刻重新拉一遍 registry：
+
+```bash
+clawcu list --no-cache
 ```
 
 完整命令参考（`list` / `inspect` / `exec` / `upgrade` / `provider` …）见 [USAGE_latest.zh-CN.md](release/USAGE_latest.zh-CN.md)。
