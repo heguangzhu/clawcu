@@ -4,6 +4,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from clawcu import __version__ as clawcu_version
 from clawcu.core.service import ClawCUService
 
 
@@ -118,7 +119,7 @@ class DashboardData:
 
 def collect_dashboard(service: ClawCUService) -> dict[str, Any]:
     env = {
-        "clawcu_version": "clawcu",
+        "clawcu_version": clawcu_version,
         "clawcu_home": service.get_clawcu_home(),
         "openclaw_image_repo": service.get_openclaw_image_repo(),
         "hermes_image_repo": service.get_hermes_image_repo(),

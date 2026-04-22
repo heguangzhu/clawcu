@@ -103,6 +103,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json_response(instance_token(self.service, name))
                 return
             self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+        except ValueError as exc:
+            # `ValueError` in this module is exclusively for client-side
+            # input problems (missing query param, unparseable `tail`,
+            # …). Return 400 so browsers / scripts can tell "you asked
+            # wrong" apart from a real 500.
+            self._json_response({"ok": False, "error": str(exc)}, status=400)
         except Exception as exc:
             self._json_response({"ok": False, "error": str(exc)}, status=500)
 
@@ -135,6 +141,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             else:
                 raise ValueError(f"Unsupported action `{action}`")
             self._json_response(result)
+        except ValueError as exc:
+            self._json_response({"ok": False, "error": str(exc)}, status=400)
         except Exception as exc:
             self._json_response({"ok": False, "error": str(exc)}, status=500)
 

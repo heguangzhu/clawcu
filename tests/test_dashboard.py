@@ -1,18 +1,48 @@
 from __future__ import annotations
 
+import json
 import re
+import threading
+from functools import partial
+from http.server import ThreadingHTTPServer
+from unittest.mock import MagicMock
+from urllib.error import HTTPError
+from urllib.request import urlopen
 
 import click
 from typer.testing import CliRunner
 
 import clawcu.cli as cli_module
+from clawcu import __version__ as clawcu_version
 from clawcu.cli import app
+from clawcu.dashboard.data import collect_dashboard
+from clawcu.dashboard.server import DashboardHandler
 
 runner = CliRunner()
 
 
 def _plain(text: str) -> str:
     return click.unstyle(re.sub(r"\s+", " ", text))
+
+
+def _make_empty_dashboard_service() -> MagicMock:
+    """Minimal stub service that satisfies `collect_dashboard` when no
+    instances exist. Kept inline so the dashboard tests stay a single
+    file and don't drag in the CLI FakeService fixture."""
+    service = MagicMock()
+    service.get_clawcu_home.return_value = "/tmp/clawcu"
+    service.get_openclaw_image_repo.return_value = "ghcr.io/openclaw/openclaw"
+    service.get_hermes_image_repo.return_value = "clawcu/hermes-agent"
+    service.list_instance_summaries.return_value = []
+    service.list_local_instance_summaries.return_value = []
+    service.list_agent_summaries.return_value = []
+    service.list_removed_instance_summaries.return_value = []
+    service.list_providers.return_value = []
+    service.list_service_available_versions.return_value = {
+        "openclaw": {"versions": [], "error": None, "registry": None},
+        "hermes": {"versions": [], "error": None, "registry": None},
+    }
+    return service
 
 
 def test_dashboard_help_mentions_port_and_browser_options() -> None:
@@ -93,3 +123,74 @@ def test_dashboard_foreground_uses_current_terminal(monkeypatch) -> None:
             },
         )
     ]
+
+
+def test_collect_dashboard_env_reports_real_clawcu_version() -> None:
+    """`env.clawcu_version` is the package version, not the literal
+    string "clawcu". The dashboard UI surfaces this in its header; the
+    previous hard-coded value made every install look the same.
+    """
+    payload = collect_dashboard(_make_empty_dashboard_service())
+
+    assert payload["env"]["clawcu_version"] == clawcu_version
+    assert payload["env"]["clawcu_version"] != "clawcu"
+
+
+def test_api_versions_without_name_returns_400_not_500() -> None:
+    """Client errors (missing query params, unparseable ints) come back
+    as HTTP 400 so browsers/scripts can tell "bad input" apart from a
+    real server fault. The error body still carries a hint.
+    """
+    service = _make_empty_dashboard_service()
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), partial(DashboardHandler, service=service)
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        try:
+            urlopen(f"http://127.0.0.1:{port}/api/versions", timeout=5)
+        except HTTPError as exc:
+            assert exc.code == 400, f"expected 400, got {exc.code}"
+            body = json.loads(exc.read().decode("utf-8"))
+            assert body["ok"] is False
+            assert "Missing `name`" in body["error"]
+        else:
+            raise AssertionError("expected HTTP 400 response")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_api_post_unsupported_action_returns_400_not_500() -> None:
+    """Same contract for POST: an unknown action is a client error."""
+    import urllib.request
+
+    service = _make_empty_dashboard_service()
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), partial(DashboardHandler, service=service)
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/action",
+            data=json.dumps({"action": "bogus", "instance": "x"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urlopen(req, timeout=5)
+        except HTTPError as exc:
+            assert exc.code == 400, f"expected 400, got {exc.code}"
+            body = json.loads(exc.read().decode("utf-8"))
+            assert "Unsupported action" in body["error"]
+        else:
+            raise AssertionError("expected HTTP 400 response")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
