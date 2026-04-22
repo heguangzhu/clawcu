@@ -48,12 +48,13 @@ clawcu = "clawcu.cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-"clawcu.dashboard" = ["static/*.html"]
+"clawcu.dashboard" = ["static/*"]
 "clawcu.a2a.sidecar_plugin.openclaw" = ["Dockerfile", "entrypoint.sh"]
 "clawcu.a2a.sidecar_plugin.openclaw.sidecar" = ["*.js"]
 "clawcu.a2a.sidecar_plugin.hermes" = ["Dockerfile", "entrypoint.sh"]
