@@ -5,11 +5,13 @@ import re
 import threading
 from functools import partial
 from http.server import ThreadingHTTPServer
+from importlib.resources import files
 from unittest.mock import MagicMock
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
 import click
+import pytest
 from typer.testing import CliRunner
 
 import clawcu.cli as cli_module
@@ -297,3 +299,34 @@ def test_api_inspect_nonexistent_instance_returns_404_not_500() -> None:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        "clawcu-dashboard-design.html",
+        "clawcu-dashboard-design.en.html",
+        "clawcu-instance-workspace.html",
+        "clawcu-instance-workspace.en.html",
+    ],
+)
+def test_static_pages_escape_log_lines_to_prevent_xss(page: str) -> None:
+    """Container stdout goes straight into the logs view. If we render it
+    raw, a container that writes `<img src=x onerror=fetch('/api/action',...)>`
+    gets same-origin code execution — bypassing review-14's CSRF gate and
+    reaching the destructive `/api/action` handlers. Every page that shows
+    container logs must go through an `escapeHtml` helper on the way in.
+    """
+    content = files("clawcu.dashboard").joinpath("static", page).read_text(encoding="utf-8")
+
+    assert "function escapeHtml(" in content, (
+        f"{page} must define an escapeHtml() helper"
+    )
+    assert 'log-line">${escapeHtml(' in content, (
+        f"{page} must route log lines through escapeHtml() before innerHTML insertion"
+    )
+    assert 'log-line">${line}' not in content, (
+        f"{page} still renders raw log lines into innerHTML — XSS regression"
+    )
+    assert 'log-line">${logLine}' not in content
+    assert 'log-line">${logLines.join' not in content

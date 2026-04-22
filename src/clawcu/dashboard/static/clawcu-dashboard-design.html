@@ -1480,6 +1480,16 @@
         return String(url || "").endsWith("/") ? String(url || "") : `${String(url || "")}/`;
       }
 
+      function escapeHtml(value) {
+        return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        }[char]));
+      }
+
       function resolvedAccessUrl(record, inspect = null) {
         const inspectUrl = inspect?.access?.base_url;
         const recordUrl = record?.access_url;
@@ -1869,7 +1879,7 @@
               <h4>Recent Logs</h4>
               <div class="log-box">
                 ${logLines.length
-                  ? logLines.map((line) => `<div class="log-line">${line}</div>`).join("")
+                  ? logLines.map((line) => `<div class="log-line">${escapeHtml(line)}</div>`).join("")
                   : `<div class="log-line">${loadingDetail ? "Loading recent logs…" : "No logs returned."}</div>`}
               </div>
             </div>

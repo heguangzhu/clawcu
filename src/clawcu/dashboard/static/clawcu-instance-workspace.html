@@ -785,6 +785,16 @@
         return String(url || "").endsWith("/") ? String(url || "") : `${String(url || "")}/`;
       }
 
+      function escapeHtml(value) {
+        return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        }[char]));
+      }
+
       function resolvedAccessUrl(record, inspect = null) {
         const inspectUrl = inspect?.access?.base_url;
         const recordUrl = record?.access_url;
@@ -1017,7 +1027,7 @@
           <div>${state.lastLogsRefreshed ? `最近更新于 ${state.lastLogsRefreshed}` : "等待首次刷新"}</div>
         `;
         els.logsFrame.innerHTML = lines.length
-          ? lines.map((line) => `<div class="log-line">${line}</div>`).join("")
+          ? lines.map((line) => `<div class="log-line">${escapeHtml(line)}</div>`).join("")
           : `<div class="empty-state">${state.loadingLogs || state.loadingAll ? "正在加载日志…" : "这个实例没有返回日志。"}</div>`;
       }
 
