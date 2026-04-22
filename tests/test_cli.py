@@ -2346,6 +2346,8 @@ def test_create_hermes_command_uses_defaults(monkeypatch) -> None:
             "port": None,
             "cpu": "1",
             "memory": "2g",
+            "a2a": False,
+            "a2a_hop_budget": None,
         },
     )
 

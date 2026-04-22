@@ -1458,14 +1458,16 @@ class ClawCUService:
         self.store.append_log(
             f"recreate instance name={record.name} version={record.version} fresh={fresh} timeout={timeout} a2a={effective_a2a}"
         )
-        if prepare_artifact:
+        if effective_a2a != record.a2a_enabled:
+            adapter = self.adapter_for_record(record)
             prepared_image = adapter.prepare_artifact(record.version)
             if effective_a2a:
                 prepared_image = self._bake_a2a_image(record.service, record.version, prepared_image)
         else:
             prepared_image = record.image_tag
             self.reporter(
-                f"Reusing the existing image tag {record.image_tag} without re-running artifact preparation."
+                f"Reusing the saved runtime image {prepared_image} for recreate. "
+                "Docker will pull it on container start if it is missing locally."
             )
         if timeout is not None:
             try:
