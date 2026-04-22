@@ -194,3 +194,106 @@ def test_api_post_unsupported_action_returns_400_not_500() -> None:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_api_action_rejects_non_json_content_type_and_skips_handler() -> None:
+    """Cross-origin pages can only send POST with Content-Types that qualify
+    as "simple requests" (text/plain, form-urlencoded, multipart). We reject
+    anything that isn't application/json so a malicious page can't fire
+    rollback/clone_for_upgrade without a CORS preflight. Critical: the
+    action handler must not have been invoked.
+    """
+    import urllib.request
+
+    service = _make_empty_dashboard_service()
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), partial(DashboardHandler, service=service)
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/action",
+            data=json.dumps({"action": "setup_check", "instance": ""}).encode("utf-8"),
+            headers={"Content-Type": "text/plain", "Origin": "http://evil.example.com"},
+            method="POST",
+        )
+        try:
+            urlopen(req, timeout=5)
+        except HTTPError as exc:
+            assert exc.code == 415, f"expected 415, got {exc.code}"
+            body = json.loads(exc.read().decode("utf-8"))
+            assert "application/json" in body["error"]
+        else:
+            raise AssertionError("expected HTTP 415 response")
+        service.check_setup.assert_not_called()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_api_action_accepts_application_json_with_charset() -> None:
+    """The gate uses only the media type; `application/json; charset=utf-8`
+    is the exact string fetch() sends from a same-origin page.
+    """
+    import urllib.request
+
+    service = _make_empty_dashboard_service()
+    service.check_setup.return_value = [{"name": "probe", "summary": "ok", "ok": True}]
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), partial(DashboardHandler, service=service)
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/action",
+            data=json.dumps({"action": "setup_check"}).encode("utf-8"),
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
+        with urlopen(req, timeout=5) as response:
+            assert response.status == 200
+            body = json.loads(response.read().decode("utf-8"))
+            assert body["ok"] is True
+        service.check_setup.assert_called_once()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_api_inspect_nonexistent_instance_returns_404_not_500() -> None:
+    """`store.load_record(name)` raises `FileNotFoundError` for a missing
+    instance. That's a client-side "gone away" case (user clicked a stale
+    row, or the instance was removed in another terminal) — return 404
+    so the UI can tell it apart from a real server fault.
+    """
+    service = _make_empty_dashboard_service()
+    service.store = MagicMock()
+    service.store.load_record.side_effect = FileNotFoundError(
+        "Instance 'ghost' was not found."
+    )
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0), partial(DashboardHandler, service=service)
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        try:
+            urlopen(f"http://127.0.0.1:{port}/api/inspect?name=ghost", timeout=5)
+        except HTTPError as exc:
+            assert exc.code == 404, f"expected 404, got {exc.code}"
+            body = json.loads(exc.read().decode("utf-8"))
+            assert body["ok"] is False
+            assert "was not found" in body["error"]
+        else:
+            raise AssertionError("expected HTTP 404 response")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)

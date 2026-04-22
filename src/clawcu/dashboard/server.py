@@ -109,6 +109,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # …). Return 400 so browsers / scripts can tell "you asked
             # wrong" apart from a real 500.
             self._json_response({"ok": False, "error": str(exc)}, status=400)
+        except FileNotFoundError as exc:
+            # `store.load_record` raises `FileNotFoundError` when the
+            # instance is gone. That's a 404, not a 500 — pages / scripts
+            # shouldn't page oncall for a stale link.
+            self._json_response({"ok": False, "error": str(exc)}, status=404)
         except Exception as exc:
             self._json_response({"ok": False, "error": str(exc)}, status=500)
 
@@ -117,6 +122,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
             parsed = urlparse(self.path)
             if parsed.path != "/api/action":
                 self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+                return
+            # Content-Type gate: only accept `application/json`. Same-origin
+            # fetch() sets this; cross-origin pages cannot, because any
+            # request with `application/json` triggers a CORS preflight
+            # OPTIONS, which we do not answer, so the browser never fires
+            # the real POST. This blocks CSRF against destructive actions
+            # (`rollback`, `clone_for_upgrade`) via "simple" text/plain POSTs.
+            content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+            if content_type != "application/json":
+                self._json_response(
+                    {
+                        "ok": False,
+                        "error": "Content-Type must be application/json",
+                    },
+                    status=415,
+                )
                 return
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
@@ -143,6 +164,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response(result)
         except ValueError as exc:
             self._json_response({"ok": False, "error": str(exc)}, status=400)
+        except FileNotFoundError as exc:
+            self._json_response({"ok": False, "error": str(exc)}, status=404)
         except Exception as exc:
             self._json_response({"ok": False, "error": str(exc)}, status=500)
 
