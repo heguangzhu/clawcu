@@ -41,3 +41,19 @@ def parse_optional_non_empty_string(
     raise BadPayload(
         f"'{field_name}' must be a non-empty string when provided"
     )
+
+
+def require_non_empty_string(payload: dict[str, Any], field_name: str) -> str:
+    """Pull a required protocol-level string field out of the parsed body.
+
+    Sibling of :func:`parse_optional_non_empty_string` for fields like
+    ``/a2a/send`` ``message`` or ``/a2a/outbound`` ``to`` where absence
+    itself is a 400. Missing (including ``None``), wrong-type, and empty
+    string all raise :class:`BadPayload`; the caller translates that to
+    a single ``{error, request_id}`` response shape so four handler
+    sites don't each maintain their own parallel inline check.
+    """
+    raw = payload.get(field_name, None)
+    if isinstance(raw, str) and raw:
+        return raw
+    raise BadPayload(f"'{field_name}' must be a non-empty string")

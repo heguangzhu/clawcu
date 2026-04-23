@@ -29,7 +29,11 @@ import os
 from typing import Any
 
 from _common.http_response import write_json_response
-from _common.payload import BadPayload as _BadPayload, parse_optional_non_empty_string  # noqa: F401
+from _common.payload import (  # noqa: F401
+    BadPayload as _BadPayload,
+    parse_optional_non_empty_string,
+    require_non_empty_string,
+)
 
 
 # Hop budget — see a2a-design-1.md §Loop protection. X-A2A-Hop increments

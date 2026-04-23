@@ -289,7 +289,32 @@ from inbound_limits import (  # noqa: E402
     parse_optional_non_empty_string,
     read_inbound_json_body,
     read_inbound_mcp_body,
+    require_non_empty_string,
 )
+
+
+def _reject_bad_payload(
+    handler: BaseHTTPRequestHandler,
+    exc: _BadPayload,
+    *,
+    request_id: str,
+    rid_headers: dict[str, str],
+) -> None:
+    """Write the uniform 400 ``{error, request_id}`` response for a
+    :class:`_BadPayload` raised by the shared field validators.
+
+    Both ``/a2a/send`` and ``/a2a/outbound`` batch multiple field checks
+    (``message`` / ``to`` / ``thread_id`` …) under one ``try``; on
+    ``_BadPayload`` they all want the same envelope. Centralizing here
+    keeps the handler bodies free of duplicated five-line
+    ``write_json_response`` walls.
+    """
+    write_json_response(
+        handler,
+        400,
+        {"error": str(exc), "request_id": request_id},
+        extra_headers=rid_headers,
+    )
 
 
 def _hop_prelude(
@@ -534,13 +559,12 @@ def build_handler(
 
             peer_from = str(payload.get("from") or "")
             peer_to = str(payload.get("to") or "")
-            message = payload.get("message")
-            if not isinstance(message, str) or not message:
-                write_json_response(
-                    self,
-                    400,
-                    {"error": "`message` must be a non-empty string", "request_id": request_id},
-                    extra_headers=rid_headers,
+            try:
+                message = require_non_empty_string(payload, "message")
+                thread_id = parse_optional_non_empty_string(payload, "thread_id")
+            except _BadPayload as exc:
+                _reject_bad_payload(
+                    self, exc, request_id=request_id, rid_headers=rid_headers
                 )
                 return
             log.info(
@@ -576,17 +600,6 @@ def build_handler(
                         **rid_headers,
                         "Retry-After": str((rl.reset_ms + 999) // 1000),
                     },
-                )
-                return
-
-            try:
-                thread_id = parse_optional_non_empty_string(payload, "thread_id")
-            except _BadPayload as exc:
-                write_json_response(
-                    self,
-                    400,
-                    {"error": str(exc), "request_id": request_id},
-                    extra_headers=rid_headers,
                 )
                 return
 
@@ -746,32 +759,13 @@ def build_handler(
             )
             if payload is None:
                 return
-            to = payload.get("to")
-            if not isinstance(to, str) or not to:
-                write_json_response(
-                    self,
-                    400,
-                    {"error": "missing 'to' (string)", "request_id": request_id},
-                    extra_headers=rid_headers,
-                )
-                return
-            message = payload.get("message")
-            if not isinstance(message, str) or not message:
-                write_json_response(
-                    self,
-                    400,
-                    {"error": "'message' must be a non-empty string", "request_id": request_id},
-                    extra_headers=rid_headers,
-                )
-                return
             try:
+                to = require_non_empty_string(payload, "to")
+                message = require_non_empty_string(payload, "message")
                 out_thread = parse_optional_non_empty_string(payload, "thread_id")
             except _BadPayload as exc:
-                write_json_response(
-                    self,
-                    400,
-                    {"error": str(exc), "request_id": request_id},
-                    extra_headers=rid_headers,
+                _reject_bad_payload(
+                    self, exc, request_id=request_id, rid_headers=rid_headers
                 )
                 return
             registry_url = _resolve_outbound_registry_url(
