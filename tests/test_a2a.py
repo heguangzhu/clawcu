@@ -1661,17 +1661,22 @@ def test_hermes_adapter_extra_env_drives_bootstrap_merge_into_yaml(tmp_path):
     assert merged["api_server"] == {"host": "0.0.0.0"}
 
 
-def test_openclaw_adapter_extra_env_drives_node_bootstrap_merge_into_json(tmp_path):
-    """Operator flow: OpenClaw adapter (Python) → Node bootstrap.js → merged
-    openclaw.json. One subprocess to Node to honour the cross-runtime contract."""
-    import shutil
-    import subprocess
-
-    node = shutil.which("node")
-    if node is None:
-        pytest.skip("node not available")
+def test_openclaw_adapter_extra_env_drives_bootstrap_merge_into_json(tmp_path):
+    """Operator flow: OpenClaw adapter (Python) → bootstrap.py → merged
+    openclaw.json. Both sides are Python now, so the contract is exercised
+    in-process — no subprocess fork needed."""
+    import importlib.util
 
     from clawcu.openclaw.adapter import OpenClawAdapter
+
+    bootstrap_py = (
+        Path(__file__).resolve().parent.parent
+        / "src" / "clawcu" / "a2a" / "sidecar_plugin"
+        / "openclaw" / "sidecar" / "bootstrap.py"
+    )
+    spec = importlib.util.spec_from_file_location("openclaw_sidecar_bootstrap", bootstrap_py)
+    bootstrap_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bootstrap_mod)
 
     config_path = tmp_path / "openclaw.json"
     config_path.write_text(
@@ -1681,29 +1686,17 @@ def test_openclaw_adapter_extra_env_drives_node_bootstrap_merge_into_json(tmp_pa
 
     adapter = OpenClawAdapter(manager=None)
     record = _make_openclaw_record(tmp_path, a2a_enabled=True)
-    spec = adapter.run_spec(_StubService(), record)
-    env = dict(spec.extra_env)
-    env["A2A_SERVICE_MCP_CONFIG_PATH"] = str(config_path)  # map container path → host path
+    run_spec = adapter.run_spec(_StubService(), record)
+    env = dict(run_spec.extra_env)
+    env["A2A_SERVICE_MCP_CONFIG_PATH"] = str(config_path)  # container → host path
 
-    bootstrap_js = (
-        Path(__file__).resolve().parent.parent
-        / "src" / "clawcu" / "a2a" / "sidecar_plugin"
-        / "openclaw" / "sidecar" / "bootstrap.js"
-    )
-    script = (
-        f'const {{ runBootstrap }} = require({json.dumps(str(bootstrap_js))});'
-        'const r = runBootstrap({ env: process.env, logger: { log(){}, warn(){} } });'
-        'process.stdout.write(JSON.stringify(r));'
-    )
-    proc = subprocess.run(
-        [node, "-e", script],
-        env={**env, "PATH": "/usr/bin:/bin:/usr/local/bin"},
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    assert proc.returncode == 0, proc.stderr
-    result = json.loads(proc.stdout)
+    class _NullLogger:
+        def info(self, *_a): pass
+        def warn(self, *_a): pass
+        def error(self, *_a): pass
+        log = info
+
+    result = bootstrap_mod.run_bootstrap(env=env, logger=_NullLogger())
     assert result["ok"] is True
     assert result["action"] in {"create", "merge"}
 
@@ -2206,22 +2199,22 @@ def test_plugin_source_sha_still_reacts_to_real_source_edits(tmp_path, monkeypat
 
 
 def test_openclaw_dockerfile_copies_whole_sidecar_dir():
-    """Review-11 guard: the sidecar is split into multiple .js modules
-    (server / readiness / ratelimit / logsink) and server.js ``require``s
-    its siblings at ``__dirname``. If the Dockerfile copied only
-    server.js, the runtime would crash on module resolution even though
-    unit tests would pass. The cheapest enforcement is: every *.js file
-    in ``sidecar/`` must appear in a ``COPY`` directive — and the
-    simplest way to guarantee that is to copy the directory, not
-    individual files.
+    """Review-11 guard: the sidecar is split into multiple modules
+    (server / readiness / ratelimit / logsink / ...) and server.py
+    imports its siblings at ``__file__``'s directory. If the Dockerfile
+    copied only server.py, the runtime would crash on import resolution
+    even though unit tests would pass. The cheapest enforcement is:
+    every source file in ``sidecar/`` must appear in a ``COPY``
+    directive — and the simplest way to guarantee that is to copy the
+    directory, not individual files.
     """
     from clawcu.a2a import sidecar_plugin as plugin_mod
 
     source_dir = plugin_mod.plugin_source_dir("openclaw")
     dockerfile = (source_dir / "Dockerfile").read_text(encoding="utf-8")
     sidecar_dir = source_dir / "sidecar"
-    js_files = sorted(p.name for p in sidecar_dir.glob("*.js"))
-    assert js_files, "test preconditions broken: no sidecar .js files found"
+    py_files = sorted(p.name for p in sidecar_dir.glob("*.py") if p.name != "__init__.py")
+    assert py_files, "test preconditions broken: no sidecar .py files found"
 
     copy_lines = [
         line.strip()
@@ -2231,11 +2224,11 @@ def test_openclaw_dockerfile_copies_whole_sidecar_dir():
     joined = "\n".join(copy_lines)
     # Either the whole directory is copied (preferred), or every file is.
     directory_copy = "sidecar/ /opt/a2a" in joined or "sidecar /opt/a2a" in joined
-    per_file = all(f"sidecar/{name}" in joined for name in js_files)
+    per_file = all(f"sidecar/{name}" in joined for name in py_files)
     assert directory_copy or per_file, (
-        f"Dockerfile must COPY all sidecar .js files; "
+        f"Dockerfile must COPY all sidecar .py files; "
         f"found COPY lines:\n{joined}\n"
-        f"expected files: {js_files}"
+        f"expected files: {py_files}"
     )
 
 

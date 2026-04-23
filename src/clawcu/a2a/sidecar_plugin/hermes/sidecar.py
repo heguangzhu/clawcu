@@ -53,7 +53,7 @@ Config (env vars, all optional)
 - ``HERMES_MODEL``        (default ``hermes-agent`` — the model id exposed
                           on /v1/models)
 - ``A2A_SYSTEM_PROMPT``   (optional; prepended as a system message)
-- ``A2A_TIMEOUT_SECONDS`` (default ``120``)
+- ``A2A_TIMEOUT_SECONDS`` (default ``300``)
 
 Gateway readiness probe (iter 4, review-5 P1-F)
 -----------------------------------------------
@@ -184,7 +184,7 @@ class Config:
         self.api_key = os.environ.get("API_SERVER_KEY") or ""
         self.model = _envs("HERMES_MODEL", "hermes-agent")
         self.system_prompt = os.environ.get("A2A_SYSTEM_PROMPT") or ""
-        self.timeout = float(_envs("A2A_TIMEOUT_SECONDS", "120"))
+        self.timeout = float(_envs("A2A_TIMEOUT_SECONDS", "300"))
         self.ready_deadline = float(_envs("A2A_GATEWAY_READY_DEADLINE_S", "30"))
         self.ready_probe_timeout = float(_envs("A2A_GATEWAY_READY_PROBE_S", "2"))
         self.ready_poll_interval = float(_envs("A2A_GATEWAY_READY_POLL_S", "0.5"))

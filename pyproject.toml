@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "clawcu"
-version = "0.3.22"
+version = "0.3.23"
 description = "ClawCU: a local multi-agent lifecycle manager for OpenClaw and Hermes"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -56,7 +56,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 "clawcu.dashboard" = ["static/*"]
 "clawcu.a2a.sidecar_plugin.openclaw" = ["Dockerfile", "entrypoint.sh"]
-"clawcu.a2a.sidecar_plugin.openclaw.sidecar" = ["*.js"]
+"clawcu.a2a.sidecar_plugin.openclaw.sidecar" = ["*.py"]
 "clawcu.a2a.sidecar_plugin.hermes" = ["Dockerfile", "entrypoint.sh"]
 
 [tool.pytest.ini_options]

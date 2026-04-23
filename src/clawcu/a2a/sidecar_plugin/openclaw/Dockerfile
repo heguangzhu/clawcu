@@ -1,7 +1,7 @@
 # a2a-enabled OpenClaw image (baked by clawcu).
 #
 # Extends the stock OpenClaw image with:
-#   - /opt/a2a/server.js           node sidecar (stdlib node:http)
+#   - /opt/a2a/server.py           python sidecar (stdlib only)
 #   - /usr/local/bin/entrypoint-a2a.sh   supervisor that runs both the
 #                                        stock OpenClaw gateway and the
 #                                        A2A sidecar in a single container.
@@ -21,13 +21,18 @@ ARG CLAWCU_PLUGIN_VERSION=unknown
 
 USER root
 
+# The stock OpenClaw image is node-based; the a2a sidecar now runs on
+# Python 3 (stdlib only) so we share a single language with the hermes
+# sidecar. Install python3 via apt (~15-20 MB); no pip wheels required.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN mkdir -p /opt/a2a && chown node:node /opt/a2a
-# Copy the entire sidecar/ directory, not just server.js. The sidecar has
-# been split across multiple files (readiness.js, ratelimit.js, logsink.js)
-# as of review-8..10 and server.js `require`s them at __dirname. Copying
-# only server.js would leave the module-resolution chain broken at runtime.
-# Review-11 P2-D fix: this is a single COPY layer, so rebuild cost is the
-# same as a single-file copy — we don't lose any cache granularity.
+# Copy the entire sidecar/ directory, not just server.py. The sidecar is
+# split across multiple files (server.py, readiness.py, ratelimit.py, ...)
+# and server.py imports them as siblings at __file__'s directory. Copying
+# only server.py would leave the module-resolution chain broken at runtime.
 COPY --chown=node:node sidecar/ /opt/a2a/
 
 COPY entrypoint.sh /usr/local/bin/entrypoint-a2a.sh

@@ -19,7 +19,7 @@ A2A_ADVERTISE_HOST="${A2A_SIDECAR_ADVERTISE_HOST:-127.0.0.1}"
 # host maps our container port to (e.g. `docker run -p 18820:18790`).
 A2A_ADVERTISE_PORT="${A2A_SIDECAR_ADVERTISE_PORT:-$A2A_PORT}"
 
-node /opt/a2a/server.js --local \
+python3 /opt/a2a/server.py --local \
     --port "$A2A_PORT" \
     --name "$A2A_NAME" \
     --role "$A2A_ROLE" \
