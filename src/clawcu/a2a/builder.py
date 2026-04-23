@@ -38,6 +38,12 @@ _A2A_BUILD_ARGS: dict[str, tuple[str, str]] = {
 
 _TAG_SAFE = re.compile(r"[^A-Za-z0-9_.-]+")
 
+# Docker official tag spec: first char is [A-Za-z0-9_], rest may include
+# dots and hyphens, up to 128 chars total. Any resulting tag we emit must
+# satisfy this allow-list — see Review-1 §14.
+# https://docs.docker.com/engine/reference/commandline/tag/#description
+_DOCKER_TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
+
 
 def _tag_component(value: str) -> str:
     cleaned = _TAG_SAFE.sub("-", value.strip()).strip("-.")
@@ -57,6 +63,20 @@ def a2a_image_tag(service: str, base_version: str, clawcu_version: str) -> str:
     normalized_base = normalize_service_version(service, base_version)
     fingerprint = plugin_fingerprint(service, clawcu_version)
     tag = f"{_tag_component(normalized_base)}-plugin{_tag_component(fingerprint)}"
+    # Review-1 §14: belt-and-braces — after sanitising each component we
+    # still validate the composed tag against docker's official allow-list
+    # before handing it to `docker build -t`. Our sanitiser has historically
+    # been blacklist-style; if a future change to either component
+    # (plugin_fingerprint, normalize_service_version) ever produces a string
+    # that sanitises to an invalid tag (leading '.', too long, etc.) we
+    # prefer to fail loudly here than to have the docker CLI reject it
+    # with an opaque error.
+    if not _DOCKER_TAG_RE.match(tag):
+        raise ValueError(
+            f"Refusing to emit invalid docker tag {tag!r} for service={service}, "
+            f"base_version={base_version!r}, clawcu_version={clawcu_version!r}. "
+            f"Tag must match {_DOCKER_TAG_RE.pattern}."
+        )
     return f"{_A2A_REPO[service]}:{tag}"
 
 
