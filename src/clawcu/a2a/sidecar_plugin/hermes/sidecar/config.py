@@ -28,6 +28,25 @@ def _env_list(name: str, default: list[str]) -> list[str]:
     return [s.strip() for s in v.split(",") if s.strip()]
 
 
+def _env_nonneg_int(name: str, default: int) -> int:
+    """Read an ``int`` env var; fall back to ``default`` on empty/malformed/negative.
+
+    Three knobs on this ``Config`` — ``A2A_THREAD_MAX_HISTORY_PAIRS``,
+    ``A2A_RATE_LIMIT_PER_MINUTE``, and ``A2A_OUTBOUND_RPM`` (via
+    ``_common/outbound_limit``) — share the same "int ≥ 0 or reset to a
+    sane default" shape. Collecting it here keeps ``__init__`` linear
+    instead of dotted with three-line ``try`` blocks.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value >= 0 else default
+
+
 class Config:
     def __init__(self) -> None:
         self.bind_host = _envs("A2A_BIND_HOST", "0.0.0.0")
@@ -52,22 +71,18 @@ class Config:
         # Review-14 P1-C: optional thread-history store. Disabled unless the
         # adapter sets A2A_THREAD_DIR (pointed at a datadir-mounted path).
         self.thread_dir = (os.environ.get("A2A_THREAD_DIR") or "").strip()
-        try:
-            raw_max = int(os.environ.get("A2A_THREAD_MAX_HISTORY_PAIRS") or "10")
-        except ValueError:
-            raw_max = 10
-        self.thread_max_history_pairs = raw_max if raw_max >= 0 else 10
+        self.thread_max_history_pairs = _env_nonneg_int(
+            "A2A_THREAD_MAX_HISTORY_PAIRS", 10
+        )
         # Review-11 P1-B1: per-peer sliding-window inbound rate limit on
         # /a2a/send. Mirrors the openclaw sidecar (ratelimit.js) for parity
         # so either service flavor gives peers the same quota guarantee.
         # Units: requests per 60 s. 0 disables. Default 30/min is conservative
         # enough that agent-to-agent chat won't hit it but a runaway loop
         # throttles fast.
-        try:
-            raw_rl = int(os.environ.get("A2A_RATE_LIMIT_PER_MINUTE") or "30")
-        except ValueError:
-            raw_rl = 30
-        self.rate_limit_per_minute = raw_rl if raw_rl >= 0 else 30
+        self.rate_limit_per_minute = _env_nonneg_int(
+            "A2A_RATE_LIMIT_PER_MINUTE", 30
+        )
         # Review-15 P1-H1: bound the time any inbound request can pin a
         # worker thread. Covers both slow-headers (BaseHTTPRequestHandler
         # readline) and slow-body (rfile.read(length)) variants of
