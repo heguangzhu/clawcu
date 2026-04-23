@@ -282,9 +282,11 @@ import inbound_limits  # noqa: E402,F401
 from inbound_limits import (  # noqa: E402
     DEFAULT_MAX_BODY_BYTES,
     _BadContentLength,
+    _BadPayload,
     _hop_budget,
     _max_body_bytes,
     _parse_content_length,
+    parse_optional_non_empty_string,
     read_inbound_json_body,
 )
 
@@ -499,20 +501,13 @@ def build_handler(
                 )
                 return
 
-            # Review-14 P1-C: thread_id is OPTIONAL. Absent → stateless turn
-            # (identical to pre-iter-14 behavior). Present but wrong type
-            # (empty / non-string) → 400 so the peer knows context won't
-            # land, rather than silently dropping it.
-            raw_thread_id = payload.get("thread_id", None)
-            if raw_thread_id is None:
-                thread_id: str | None = None
-            elif isinstance(raw_thread_id, str) and raw_thread_id:
-                thread_id = raw_thread_id
-            else:
+            try:
+                thread_id = parse_optional_non_empty_string(payload, "thread_id")
+            except _BadPayload as exc:
                 write_json_response(
                     self,
                     400,
-                    {"error": "'thread_id' must be a non-empty string when provided", "request_id": request_id},
+                    {"error": str(exc), "request_id": request_id},
                     extra_headers=rid_headers,
                 )
                 return
@@ -738,16 +733,13 @@ def build_handler(
                     extra_headers=rid_headers,
                 )
                 return
-            raw_thread = payload.get("thread_id", None)
-            if raw_thread is None:
-                out_thread: str | None = None
-            elif isinstance(raw_thread, str) and raw_thread:
-                out_thread = raw_thread
-            else:
+            try:
+                out_thread = parse_optional_non_empty_string(payload, "thread_id")
+            except _BadPayload as exc:
                 write_json_response(
                     self,
                     400,
-                    {"error": "'thread_id' must be a non-empty string when provided", "request_id": request_id},
+                    {"error": str(exc), "request_id": request_id},
                     extra_headers=rid_headers,
                 )
                 return
