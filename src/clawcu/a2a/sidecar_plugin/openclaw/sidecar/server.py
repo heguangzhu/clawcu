@@ -19,7 +19,6 @@ Usage:
 """
 from __future__ import annotations
 
-import http.client
 import http.server
 import json
 import os
@@ -32,7 +31,6 @@ import time
 import traceback
 import uuid
 from typing import Any, Callable, Dict, Optional, Tuple
-from urllib.parse import urlparse, urlunparse
 
 # Make sibling modules importable when this file is run directly as
 # `python3 /opt/a2a/server.py` (no package). Done before relative imports.
@@ -79,7 +77,6 @@ from _common.protocol import (  # noqa: E402
     read_or_mint_request_id,
 )
 from _common.ratelimit import create_rate_limiter  # noqa: E402
-from _common import streams as _streams  # noqa: E402
 from _common.thread import create_thread_store  # noqa: E402
 from adapters import (  # noqa: E402
     HostAdapter,
@@ -90,20 +87,33 @@ from adapters import (  # noqa: E402
     make_local_adapter,
     read_gateway_auth,
 )
+from http_client import (  # noqa: E402
+    A2A_MAX_RESPONSE_BYTES,
+    ResponseTooLarge,
+    _http_call,
+    _read_capped,
+    http_request_raw,
+    parse_http_url,
+    post_json,
+)
 
 __all__ = [
     # Re-exported for tests and for any caller that used to import these
-    # directly from server.py before the adapters/* split.
+    # directly from server.py before the sidecar/* splits.
+    "A2A_MAX_RESPONSE_BYTES",
     "HostAdapter",
     "LocalAdapter",
     "OPENCLAW_AUTH_PATH",
     "OPENCLAW_CONFIG_PATH",
+    "ResponseTooLarge",
+    "http_request_raw",
     "make_host_adapter",
     "make_local_adapter",
+    "parse_http_url",
+    "post_json",
     "read_gateway_auth",
 ]
 
-A2A_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 READ_JSON_BODY_LIMIT = 64 * 1024
 
 # Hop budget read at module-scope so tests can import it without running main().
@@ -144,134 +154,7 @@ def parse_args(argv) -> Dict[str, Any]:
     return out
 
 
-# ---- HTTP helpers -----------------------------------------------------------
-
-def parse_http_url(url: str) -> Dict[str, Any]:
-    try:
-        parsed = urlparse(url)
-    except Exception as exc:
-        raise RuntimeError(f"invalid url '{url}': {exc}")
-    if parsed.scheme not in ("http", "https"):
-        raise RuntimeError(f"unsupported protocol in '{url}'")
-    if not parsed.hostname:
-        raise RuntimeError(f"invalid url '{url}': missing host")
-    port = parsed.port
-    if port is None:
-        port = 443 if parsed.scheme == "https" else 80
-    pathname = parsed.path or "/"
-    search = f"?{parsed.query}" if parsed.query else ""
-    return {
-        "host": parsed.hostname,
-        "port": int(port),
-        "pathname": pathname,
-        "search": search,
-        "scheme": parsed.scheme,
-    }
-
-
-def _connection_for(host: str, port: int, timeout_s: float, scheme: str = "http"):
-    if scheme == "https":
-        return http.client.HTTPSConnection(host=host, port=port, timeout=timeout_s)
-    return http.client.HTTPConnection(host=host, port=port, timeout=timeout_s)
-
-
-# Reader + exception live in _common/streams.py so both sidecars share one
-# implementation. ``_read_capped`` keeps its str-returning shape so existing
-# callers (``raw = _read_capped(resp); json.loads(raw)``) need no change.
-ResponseTooLarge = _streams.ResponseTooLarge
-
-
-def _read_capped(resp, limit: int = A2A_MAX_RESPONSE_BYTES) -> str:
-    return _streams.read_capped_text(resp, cap=limit)
-
-
-def _http_call(
-    *,
-    method: str,
-    host: str,
-    port: int,
-    path: str,
-    headers: Optional[Dict[str, str]] = None,
-    body: Optional[bytes] = None,
-    timeout_ms: int,
-    scheme: str = "http",
-) -> Dict[str, Any]:
-    """Shared connect/request/read/close skeleton for outbound HTTP.
-
-    Both ``post_json`` and ``http_request_raw`` were 30-line near-identical
-    copies of this shape (connect → request → capped-read → timeout/cap
-    translation → close). The single difference — whether the caller sends
-    a serialized body — is expressed here as an optional ``body`` argument.
-    Exception translation (``ResponseTooLarge`` → ``RuntimeError``,
-    ``socket.timeout`` → ``RuntimeError``) lives in one place so the two
-    public wrappers stay thin.
-    """
-    conn = _connection_for(host, port, timeout_ms / 1000.0, scheme=scheme)
-    try:
-        conn.request(method, path, body=body, headers=headers or {})
-        resp = conn.getresponse()
-        status = resp.status or 0
-        try:
-            raw = _read_capped(resp)
-        except ResponseTooLarge as exc:
-            raise RuntimeError(str(exc))
-        return {"status": status, "body": raw}
-    except socket.timeout:
-        raise RuntimeError(f"request timed out after {timeout_ms}ms")
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-
-
-def post_json(
-    host: str,
-    port: int,
-    path: str,
-    headers: Optional[Dict[str, str]] = None,
-    body_obj=None,
-    timeout_ms: int = 300000,
-    scheme: str = "http",
-) -> Dict[str, Any]:
-    body = json.dumps(body_obj, ensure_ascii=False).encode("utf-8")
-    merged = {
-        "content-type": "application/json",
-        "content-length": str(len(body)),
-        "user-agent": "a2a-bridge-sidecar/0.3",
-    }
-    if headers:
-        merged.update(headers)
-    return _http_call(
-        method="POST",
-        host=host,
-        port=port,
-        path=path,
-        headers=merged,
-        body=body,
-        timeout_ms=timeout_ms,
-        scheme=scheme,
-    )
-
-
-def http_request_raw(
-    method: str,
-    host: str,
-    port: int,
-    path: str,
-    headers: Optional[Dict[str, str]] = None,
-    timeout_ms: int = 30000,
-    scheme: str = "http",
-) -> Dict[str, Any]:
-    return _http_call(
-        method=method,
-        host=host,
-        port=port,
-        path=path,
-        headers=headers,
-        timeout_ms=timeout_ms,
-        scheme=scheme,
-    )
+# HTTP helpers live in http_client.py. Re-imported above.
 
 
 def fetch_peer_list(registry_url: str, timeout_ms: int) -> Optional[list]:
