@@ -80,6 +80,7 @@ from _common.protocol import (  # noqa: E402
     read_or_mint_request_id,
 )
 from _common.ratelimit import create_rate_limiter  # noqa: E402
+from _common import streams as _streams  # noqa: E402
 from _common.thread import create_thread_store  # noqa: E402
 
 OPENCLAW_CONFIG_PATH = "/home/node/.openclaw/openclaw.json"
@@ -243,22 +244,14 @@ def _connection_for(host: str, port: int, timeout_s: float, scheme: str = "http"
     return http.client.HTTPConnection(host=host, port=port, timeout=timeout_s)
 
 
-class ResponseTooLarge(Exception):
-    pass
+# Reader + exception live in _common/streams.py so both sidecars share one
+# implementation. ``_read_capped`` keeps its str-returning shape so existing
+# callers (``raw = _read_capped(resp); json.loads(raw)``) need no change.
+ResponseTooLarge = _streams.ResponseTooLarge
 
 
 def _read_capped(resp, limit: int = A2A_MAX_RESPONSE_BYTES) -> str:
-    chunks = []
-    total = 0
-    while True:
-        chunk = resp.read(min(65536, max(0, limit + 1 - total)))
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > limit:
-            raise ResponseTooLarge(f"response exceeds {limit} bytes")
-        chunks.append(chunk)
-    return b"".join(chunks).decode("utf-8", errors="replace")
+    return _streams.read_capped_text(resp, cap=limit)
 
 
 def post_json(

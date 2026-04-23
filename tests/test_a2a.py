@@ -2169,11 +2169,19 @@ def test_hermes_sidecar_call_hermes_sends_system_prompt_and_parses_reply(monkeyp
     class _FakeResponse:
         def __init__(self, payload: bytes):
             self._payload = payload
+            self._pos = 0
 
         def read(self, n=-1):
-            if n is not None and n >= 0:
-                return self._payload[:n]
-            return self._payload
+            # Proper cursor-advancing read so chunked readers (``_common.streams``)
+            # see an EOF after the payload is exhausted instead of re-returning
+            # the same prefix forever.
+            if n is None or n < 0:
+                chunk = self._payload[self._pos:]
+                self._pos = len(self._payload)
+                return chunk
+            chunk = self._payload[self._pos:self._pos + n]
+            self._pos += len(chunk)
+            return chunk
 
         def __enter__(self):
             return self

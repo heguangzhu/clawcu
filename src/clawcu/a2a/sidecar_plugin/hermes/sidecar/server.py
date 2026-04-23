@@ -164,6 +164,7 @@ from _common.mcp import (  # noqa: E402
     tool_descriptor as mcp_tool_descriptor,
 )
 from _common.ratelimit import RateLimiter as PeerRateLimiter  # noqa: E402
+from _common import streams as _streams  # noqa: E402
 from _common.thread import ThreadStore, safe_id  # noqa: E402
 
 
@@ -490,27 +491,20 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_NoRedirectHandler)
 
 
+# Two caps with different trust boundaries (Review-21 P2-M1 / Review-22 P2-N1):
+#   A2A_MAX_RESPONSE_BYTES (4 MiB)  — outbound peer/registry responses
+#   A2A_LOCAL_UPSTREAM_CAP (64 MiB) — the co-resident Hermes gateway, where
+#                                    a buggy streaming response can still
+#                                    OOM the sidecar even though the peer
+#                                    is trusted
 A2A_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 A2A_LOCAL_UPSTREAM_CAP = 64 * 1024 * 1024
 
-
-class _ResponseTooLarge(Exception):
-    """Raised when a response body exceeds the configured byte cap.
-
-    Review-21 P2-M1: outbound peer/registry responses capped at
-    ``A2A_MAX_RESPONSE_BYTES`` (4 MiB). Review-22 P2-N1: local
-    upstream (Hermes gateway) responses capped at
-    ``A2A_LOCAL_UPSTREAM_CAP`` (64 MiB) — the trust boundary is
-    different (co-resident process) but a buggy streaming response
-    can still OOM the sidecar.
-    """
-
-
-def _read_capped(response, cap: int = A2A_MAX_RESPONSE_BYTES) -> bytes:
-    raw = response.read(cap + 1)
-    if len(raw) > cap:
-        raise _ResponseTooLarge(f"response exceeds {cap} bytes")
-    return raw
+# The reader + exception live in _common/ so both sidecars share one
+# implementation. Aliased locally so pre-existing references to
+# ``_read_capped`` / ``_ResponseTooLarge`` keep working without churn.
+_ResponseTooLarge = _streams.ResponseTooLarge
+_read_capped = _streams.read_capped_bytes
 
 
 def _parse_content_length(headers: Any, *, cap: int) -> int:
