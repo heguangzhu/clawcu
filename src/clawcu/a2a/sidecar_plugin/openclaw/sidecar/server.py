@@ -72,6 +72,12 @@ from _common.outbound_limit import (  # noqa: E402
     read_rpm as read_outbound_rpm,
     read_sweep_interval_ms as read_outbound_sweep_interval_ms,
 )
+from _common.protocol import (  # noqa: E402
+    REQUEST_ID_HEADER,
+    looks_like_request_id,
+    read_hop_header,
+    read_or_mint_request_id,
+)
 from _common.ratelimit import create_rate_limiter  # noqa: E402
 from _common.thread import create_thread_store  # noqa: E402
 
@@ -80,7 +86,6 @@ OPENCLAW_AUTH_PATH = "/home/node/.openclaw/auth.json"
 
 A2A_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 READ_JSON_BODY_LIMIT = 64 * 1024
-REQUEST_ID_HEADER = "x-a2a-request-id"
 
 # Hop budget read at module-scope so tests can import it without running main().
 A2A_HOP_BUDGET = 8
@@ -453,46 +458,10 @@ def forward_to_peer(
     raise UpstreamError(f"peer HTTP {status}: {body[:200]}", http_status=502, peer_status=status)
 
 
-def read_hop_header(headers) -> int:
-    raw = headers.get("x-a2a-hop") if headers is not None else None
-    if raw is None:
-        return 0
-    try:
-        n = float(raw)
-    except (TypeError, ValueError):
-        return 0
-    if n != n or n < 0:  # NaN guard
-        return 0
-    return int(n)
-
-
 def read_allow_client_registry_url(env: Optional[Dict[str, str]] = None) -> bool:
     e = env if env is not None else os.environ
     raw = str(e.get("A2A_ALLOW_CLIENT_REGISTRY_URL") or "").strip().lower()
     return raw in ("1", "true", "yes", "on")
-
-
-def looks_like_request_id(value) -> bool:
-    if not isinstance(value, str):
-        return False
-    if not value or len(value) > 128:
-        return False
-    for ch in value:
-        code = ord(ch)
-        if code < 0x20:
-            return False
-        if code in (0x20, 0x09, 0x0A, 0x0D):
-            return False
-    return True
-
-
-def read_or_mint_request_id(headers) -> str:
-    raw = headers.get(REQUEST_ID_HEADER) if headers is not None else None
-    if isinstance(raw, str):
-        candidate = raw.strip()
-        if looks_like_request_id(candidate):
-            return candidate
-    return uuid.uuid4().hex
 
 
 def post_chat_completion(

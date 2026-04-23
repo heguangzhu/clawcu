@@ -140,6 +140,11 @@ from _common.outbound_limit import (  # noqa: E402
     read_sweep_interval_ms as read_outbound_sweep_interval_ms,
 )
 from _common.peer_cache import create_peer_cache as _shared_peer_cache  # noqa: E402
+from _common.protocol import (  # noqa: E402
+    REQUEST_ID_HEADER,
+    read_hop_header,
+    read_or_mint_request_id,
+)
 from _common.mcp import (  # noqa: E402
     ERR_A2A_UPSTREAM as MCP_ERR_A2A_UPSTREAM,
     ERR_INTERNAL as MCP_ERR_INTERNAL,
@@ -416,28 +421,7 @@ def _write_json(
 #   * echoed back in the JSON body AND the response header so both
 #     JSON-parsing clients and curl-pipe-grep users can recover it.
 
-_REQUEST_ID_HEADER = "X-A2A-Request-Id"
-
-
-def _looks_like_request_id(value: str) -> bool:
-    # Accept anything that a careful caller might generate (uuid4, uuid7,
-    # ulid, short opaque tags). Reject control chars / whitespace / empty
-    # to keep logs greppable.
-    if not value or len(value) > 128:
-        return False
-    for ch in value:
-        if ord(ch) < 0x20 or ch in (" ", "\t", "\n", "\r"):
-            return False
-    return True
-
-
-def read_or_mint_request_id(headers: Any) -> str:
-    raw = headers.get(_REQUEST_ID_HEADER) if hasattr(headers, "get") else None
-    if isinstance(raw, str):
-        candidate = raw.strip()
-        if _looks_like_request_id(candidate):
-            return candidate
-    return uuid.uuid4().hex
+_REQUEST_ID_HEADER = REQUEST_ID_HEADER
 
 
 # --- Outbound helpers (iter-1, a2a-design-1.md) ---
@@ -600,17 +584,6 @@ def _parse_content_length(headers: Any, *, cap: int) -> int:
     if length > cap:
         raise _BadContentLength(f"request body exceeds {cap} bytes")
     return length
-
-
-def read_hop_header(headers: Any) -> int:
-    raw = headers.get("X-A2A-Hop") if hasattr(headers, "get") else None
-    if raw is None:
-        return 0
-    try:
-        n = int(str(raw).strip())
-    except ValueError:
-        return 0
-    return n if n >= 0 else 0
 
 
 def lookup_peer(
