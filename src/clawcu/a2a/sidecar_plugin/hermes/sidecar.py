@@ -139,6 +139,19 @@ from _common.outbound_limit import (  # noqa: E402
     read_rpm as read_outbound_rpm,
     read_sweep_interval_ms as read_outbound_sweep_interval_ms,
 )
+from _common.mcp import (  # noqa: E402
+    ERR_A2A_UPSTREAM as MCP_ERR_A2A_UPSTREAM,
+    ERR_INTERNAL as MCP_ERR_INTERNAL,
+    ERR_INVALID_PARAMS as MCP_ERR_INVALID_PARAMS,
+    ERR_INVALID_REQUEST as MCP_ERR_INVALID_REQUEST,
+    ERR_METHOD_NOT_FOUND as MCP_ERR_METHOD_NOT_FOUND,
+    ERR_PARSE as MCP_ERR_PARSE,
+    MCP_PROTOCOL_VERSION,
+    TOOL_NAME as MCP_TOOL_NAME,
+    UpstreamError,
+    handle_mcp_request as _shared_handle_mcp_request,
+    tool_descriptor as mcp_tool_descriptor,
+)
 from _common.ratelimit import RateLimiter as PeerRateLimiter  # noqa: E402
 from _common.thread import ThreadStore, safe_id  # noqa: E402
 
@@ -436,11 +449,15 @@ def read_or_mint_request_id(headers: Any) -> str:
 DEFAULT_REGISTRY_URL = "http://host.docker.internal:9100"
 
 
-class OutboundError(Exception):
+class OutboundError(UpstreamError):
+    """Hermes-flavoured ``UpstreamError`` with legacy ``(http_status, message)``
+    positional constructor. Call sites raise ``OutboundError(status, msg)``
+    everywhere; keeping the positional signature avoids a big churn patch
+    while still letting ``_common.mcp.handle_mcp_request`` catch via
+    ``except UpstreamError``."""
+
     def __init__(self, http_status: int, message: str, peer_status: int | None = None) -> None:
-        super().__init__(message)
-        self.http_status = http_status
-        self.peer_status = peer_status
+        super().__init__(message, http_status=http_status, peer_status=peer_status)
 
 
 def _default_registry_url() -> str:
@@ -759,124 +776,11 @@ def forward_to_peer(
 
 # --- MCP server (a2a-design-3.md §P0-A) ---
 #
-# Minimal JSON-RPC 2.0 over POST /mcp. Exposes one tool `a2a_call_peer`
-# that wraps forward_to_peer in-process — every MCP tool call is a
-# function call, not a second HTTP hop. The handler is kept dependency-
-# injected (lookup + forward passed in) so tests don't need a stub
-# registry + a stub peer; unit tests drive the shape, the full
-# HTTP-server end-to-end lives in tests/test_a2a.py.
-
-MCP_PROTOCOL_VERSION = "2024-11-05"
-MCP_TOOL_NAME = "a2a_call_peer"
-MCP_MAX_PEERS_IN_DESCRIPTION = 16
-MCP_MAX_SKILLS_IN_PEER_LINE = 3
-
-# JSON-RPC 2.0 + MCP error codes.
-MCP_ERR_PARSE = -32700
-MCP_ERR_INVALID_REQUEST = -32600
-MCP_ERR_METHOD_NOT_FOUND = -32601
-MCP_ERR_INVALID_PARAMS = -32602
-MCP_ERR_INTERNAL = -32603
-MCP_ERR_A2A_UPSTREAM = -32001
-
-_MCP_BASE_DESCRIPTION = (
-    "Call another agent in the A2A federation and return its reply. "
-    "Use when the current task needs data or work owned by a different "
-    "agent (e.g., an analyst for market data, a writer for prose)."
-)
-
-
-def _format_peer_line(peer: dict[str, Any], *, include_role: bool = False) -> str:
-    skills = peer.get("skills") if isinstance(peer.get("skills"), list) else []
-    head = ", ".join(str(s) for s in skills[:MCP_MAX_SKILLS_IN_PEER_LINE])
-    tail = ", ..." if len(skills) > MCP_MAX_SKILLS_IN_PEER_LINE else ""
-    name = peer.get("name")
-    # a2a-design-6.md §P1-M: operator-gated role field (default off).
-    role_raw = peer.get("role") if include_role else None
-    role = f" [{role_raw}]" if isinstance(role_raw, str) and role_raw else ""
-    if not head:
-        return f"  - {name}{role}"
-    return f"  - {name}{role} ({head}{tail})"
-
-
-def _format_peer_summary(peers: Any, self_name: str | None, *, include_role: bool = False) -> str:
-    """Produce the multi-line summary injected into the tool description.
-    Excludes self and caps at MCP_MAX_PEERS_IN_DESCRIPTION entries. Returns
-    an empty string when the list is empty or only contains self (callers
-    then fall back to the static description).
-    """
-    if not isinstance(peers, list) or not peers:
-        return ""
-    others = [
-        p for p in peers
-        if isinstance(p, dict)
-        and isinstance(p.get("name"), str)
-        and p.get("name") != self_name
-    ]
-    if not others:
-        return ""
-    shown = others[:MCP_MAX_PEERS_IN_DESCRIPTION]
-    hidden = len(others) - len(shown)
-    lines = ["", "Available peers:"] + [
-        _format_peer_line(p, include_role=include_role) for p in shown
-    ]
-    if hidden > 0:
-        lines.append(f"  ...and {hidden} more")
-    return "\n".join(lines)
-
-
-def mcp_tool_descriptor(
-    peers: Any = None, self_name: str | None = None, *, include_role: bool = False
-) -> dict[str, Any]:
-    description = _MCP_BASE_DESCRIPTION
-    summary = _format_peer_summary(peers, self_name, include_role=include_role)
-    if summary:
-        description += summary
-        description += (
-            "\n\nThe `to` field must match one of the peers above "
-            "(case-sensitive)."
-        )
-    else:
-        description += (
-            " The target agent name must be registered in the A2A registry."
-        )
-    return {
-        "name": MCP_TOOL_NAME,
-        "description": description,
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "to": {
-                    "type": "string",
-                    "description": "Peer agent name as registered in the A2A registry.",
-                },
-                "message": {
-                    "type": "string",
-                    "description": "The question or task for the peer agent.",
-                },
-                "thread_id": {
-                    "type": "string",
-                    "description": "Optional. Reuse a prior conversation thread with the peer.",
-                },
-            },
-            "required": ["to", "message"],
-        },
-    }
-
-
-def _jsonrpc_result(rpc_id: Any, result: Any) -> dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": rpc_id, "result": result}
-
-
-def _jsonrpc_error(
-    rpc_id: Any, code: int, message: str, data: Any = None
-) -> dict[str, Any]:
-    err: dict[str, Any] = {"code": code, "message": message}
-    if data is not None:
-        err["data"] = data
-    return {"jsonrpc": "2.0", "id": rpc_id, "error": err}
-
-
+# The JSON-RPC 2.0 / MCP dispatch lives in ``_common/mcp.py`` and is shared
+# with the OpenClaw sidecar. This thin wrapper only defaults the DI
+# callbacks to the module-level ``lookup_peer`` / ``forward_to_peer`` so
+# the /mcp HTTP route (and tests that rely on module-level stubs) can call
+# ``handle_mcp_request`` without re-passing them every time.
 def handle_mcp_request(
     body: Any,
     *,
@@ -885,186 +789,25 @@ def handle_mcp_request(
     timeout: float,
     request_id: str | None,
     plugin_version: str,
-    lookup_peer_fn: Any = lookup_peer,
-    forward_to_peer_fn: Any = forward_to_peer,
+    lookup_peer_fn: Any = None,
+    forward_to_peer_fn: Any = None,
     outbound_limiter: Any = None,
     list_peers_fn: Any = None,
     include_role: bool = False,
 ) -> dict[str, Any]:
-    if (
-        not isinstance(body, dict)
-        or body.get("jsonrpc") != "2.0"
-        or not isinstance(body.get("method"), str)
-    ):
-        rpc_id = body.get("id") if isinstance(body, dict) else None
-        return _jsonrpc_error(
-            rpc_id, MCP_ERR_INVALID_REQUEST, "expected JSON-RPC 2.0 request"
-        )
-    rpc_id = body.get("id")
-    method = body["method"]
-    params = body.get("params") or {}
-    try:
-        if method == "initialize":
-            return _jsonrpc_result(
-                rpc_id,
-                {
-                    "protocolVersion": MCP_PROTOCOL_VERSION,
-                    "serverInfo": {
-                        "name": "clawcu-a2a",
-                        "version": plugin_version,
-                    },
-                    "capabilities": {"tools": {}},
-                },
-            )
-        if method == "tools/list":
-            peers: Any = None
-            if callable(list_peers_fn):
-                try:
-                    peers = list_peers_fn()
-                except Exception:  # noqa: BLE001
-                    # tools/list must never fail because of a registry hiccup
-                    # — the LLM must still see the tool. Fallback = static
-                    # description (a2a-design-5.md §P1-H).
-                    peers = None
-            return _jsonrpc_result(
-                rpc_id,
-                {
-                    "tools": [
-                        mcp_tool_descriptor(
-                            peers=peers,
-                            self_name=self_name,
-                            include_role=include_role,
-                        )
-                    ]
-                },
-            )
-        if method == "tools/call":
-            return _handle_mcp_tools_call(
-                rpc_id,
-                params,
-                self_name=self_name,
-                registry_url=registry_url,
-                timeout=timeout,
-                request_id=request_id,
-                lookup_peer_fn=lookup_peer_fn,
-                forward_to_peer_fn=forward_to_peer_fn,
-                outbound_limiter=outbound_limiter,
-            )
-        if method in ("notifications/initialized", "ping"):
-            return _jsonrpc_result(rpc_id, {})
-        return _jsonrpc_error(
-            rpc_id, MCP_ERR_METHOD_NOT_FOUND, f"unknown method: {method}"
-        )
-    except Exception as exc:  # noqa: BLE001
-        return _jsonrpc_error(rpc_id, MCP_ERR_INTERNAL, str(exc))
-
-
-def _handle_mcp_tools_call(
-    rpc_id: Any,
-    params: Any,
-    *,
-    self_name: str,
-    registry_url: str,
-    timeout: float,
-    request_id: str | None,
-    lookup_peer_fn: Any,
-    forward_to_peer_fn: Any,
-    outbound_limiter: Any = None,
-) -> dict[str, Any]:
-    # P2-K: every error response in this handler carries requestId in data
-    # so a JSON-RPC-only client can correlate to X-A2A-Request-Id.
-    def _with_rid(extra: dict[str, Any] | None = None) -> dict[str, Any]:
-        merged: dict[str, Any] = dict(extra or {})
-        merged["requestId"] = request_id
-        return merged
-
-    if not isinstance(params, dict) or params.get("name") != MCP_TOOL_NAME:
-        return _jsonrpc_error(
-            rpc_id,
-            MCP_ERR_METHOD_NOT_FOUND,
-            f"unknown tool: {params.get('name') if isinstance(params, dict) else None}",
-            _with_rid(),
-        )
-    args = params.get("arguments") or {}
-    if not isinstance(args.get("to"), str) or not args["to"]:
-        return _jsonrpc_error(
-            rpc_id, MCP_ERR_INVALID_PARAMS, "missing 'to' (string)", _with_rid()
-        )
-    if not isinstance(args.get("message"), str) or not args["message"]:
-        return _jsonrpc_error(
-            rpc_id, MCP_ERR_INVALID_PARAMS, "missing 'message' (string)", _with_rid()
-        )
-    raw_thread = args.get("thread_id")
-    thread_id = raw_thread if isinstance(raw_thread, str) and raw_thread else None
-
-    # Self-origin rate limit (a2a-design-4.md §P1-B). Shared bucket with
-    # /a2a/outbound so the LLM firing 200 a2a_call_peer calls in one turn
-    # can't nuke the provider quota.
-    if outbound_limiter is not None:
-        key = outbound_limit_key(thread_id=thread_id, self_name=self_name)
-        decision = outbound_limiter.check(key)
-        if not decision.allowed:
-            return _jsonrpc_error(
-                rpc_id,
-                MCP_ERR_A2A_UPSTREAM,
-                f"self-origin rate limit exceeded ({decision.limit}/min)",
-                _with_rid(
-                    {
-                        "httpStatus": 429,
-                        "retryAfterMs": decision.retry_after_ms,
-                    }
-                ),
-            )
-
-    try:
-        card = lookup_peer_fn(registry_url, args["to"], timeout)
-    except OutboundError as exc:
-        return _jsonrpc_error(
-            rpc_id,
-            MCP_ERR_A2A_UPSTREAM,
-            f"registry lookup failed: {exc}",
-            _with_rid({"httpStatus": exc.http_status}),
-        )
-
-    try:
-        peer_resp = forward_to_peer_fn(
-            card["endpoint"],
-            self_name,
-            args["to"],
-            args["message"],
-            thread_id,
-            1,
-            timeout,
-            request_id,
-        )
-    except OutboundError as exc:
-        return _jsonrpc_error(
-            rpc_id,
-            MCP_ERR_A2A_UPSTREAM,
-            f"peer call failed: {exc}",
-            _with_rid({
-                "httpStatus": exc.http_status,
-                "peerStatus": exc.peer_status,
-            }),
-        )
-
-    reply = peer_resp.get("reply") if isinstance(peer_resp.get("reply"), str) else ""
-    returned_thread = peer_resp.get("thread_id")
-    return _jsonrpc_result(
-        rpc_id,
-        {
-            "content": [{"type": "text", "text": reply}],
-            "isError": False,
-            "structuredContent": {
-                "from": peer_resp.get("from") or self_name,
-                "to": args["to"],
-                "reply": reply,
-                "thread_id": returned_thread
-                if isinstance(returned_thread, str)
-                else thread_id,
-                "request_id": request_id,
-            },
-        },
+    return _shared_handle_mcp_request(
+        body,
+        self_name=self_name,
+        registry_url=registry_url,
+        timeout=timeout,
+        request_id=request_id,
+        plugin_version=plugin_version,
+        lookup_peer_fn=lookup_peer_fn or lookup_peer,
+        forward_to_peer_fn=forward_to_peer_fn or forward_to_peer,
+        outbound_limiter=outbound_limiter,
+        outbound_limit_key_fn=outbound_limit_key,
+        list_peers_fn=list_peers_fn,
+        include_role=include_role,
     )
 
 

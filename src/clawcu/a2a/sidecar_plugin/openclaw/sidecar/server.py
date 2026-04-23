@@ -57,13 +57,13 @@ for _ in range(4):
     _probe = _parent
 
 from logsink import default_logger, setup_file_log  # noqa: E402
-from mcp import UpstreamError, handle_mcp_request  # noqa: E402
 from readiness import (  # noqa: E402
     invalidate_gateway_ready,
     looks_like_gateway_down,
     wait_for_gateway_ready,
 )
 from _common.bootstrap import run_bootstrap as run_mcp_bootstrap  # noqa: E402
+from _common.mcp import UpstreamError, handle_mcp_request  # noqa: E402
 from _common.outbound_limit import (  # noqa: E402
     create_outbound_limiter,
     create_sweep_timer,
@@ -1010,20 +1010,18 @@ def _make_handler_class(ctx: Dict[str, Any]):
             include_role = str(os.environ.get("A2A_TOOL_DESC_INCLUDE_ROLE") or "").lower() == "true"
 
             response = handle_mcp_request(
-                body=body,
-                deps={
-                    "self_name": self_name,
-                    "registry_url": registry_url,
-                    "timeout_ms": 60000,
-                    "request_id": request_id,
-                    "plugin_version": os.environ.get("CLAWCU_PLUGIN_VERSION") or "unknown",
-                    "lookup_peer": lookup_peer,
-                    "forward_to_peer": forward_to_peer,
-                    "outbound_limiter": OUTBOUND_LIMITER,
-                    "outbound_limit_key": outbound_limit_key,
-                    "list_peers": list_peers,
-                    "include_role": include_role,
-                },
+                body,
+                self_name=self_name,
+                registry_url=registry_url,
+                timeout=60000,
+                request_id=request_id,
+                plugin_version=os.environ.get("CLAWCU_PLUGIN_VERSION") or "unknown",
+                lookup_peer_fn=lookup_peer,
+                forward_to_peer_fn=forward_to_peer,
+                outbound_limiter=OUTBOUND_LIMITER,
+                outbound_limit_key_fn=outbound_limit_key,
+                list_peers_fn=list_peers,
+                include_role=include_role,
             )
             return _json_response(self, 200, response, rid_headers)
 

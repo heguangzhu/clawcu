@@ -31,7 +31,7 @@ if _SIDECAR not in sys.path:
     sys.path.insert(0, _SIDECAR)
 
 import server as sidecar  # noqa: E402
-from mcp import UpstreamError  # noqa: E402
+from _common.mcp import UpstreamError  # noqa: E402
 
 
 class _ThreadedHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
