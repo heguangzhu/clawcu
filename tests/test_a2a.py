@@ -469,6 +469,40 @@ def test_cli_a2a_send_unknown_target_fails():
     assert result.exit_code == 1
 
 
+# Review-1 §7: send vs lookup have distinct timeout semantics; the CLI
+# must expose both knobs so operators aren't stuck with a 300s --timeout
+# that secretly leaves the registry lookup at 5s (or vice versa).
+def test_cli_a2a_send_passes_lookup_and_send_timeouts(monkeypatch):
+    captured: dict[str, float] = {}
+
+    def fake_send(*, registry_url, sender, target, message, lookup_timeout, send_timeout):
+        captured["lookup_timeout"] = lookup_timeout
+        captured["send_timeout"] = send_timeout
+        return {"from": target, "reply": "ok", "request_id": "rid"}
+
+    monkeypatch.setattr("clawcu.a2a.cli.send_via_registry", fake_send)
+    result = runner.invoke(
+        app,
+        [
+            "a2a",
+            "send",
+            "--to",
+            "target",
+            "--message",
+            "hi",
+            "--registry",
+            "http://127.0.0.1:9100",
+            "--timeout",
+            "7.5",
+            "--lookup-timeout",
+            "2.25",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["send_timeout"] == 7.5
+    assert captured["lookup_timeout"] == 2.25
+
+
 # ---------- D5: plugin federation ----------
 
 

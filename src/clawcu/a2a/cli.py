@@ -18,7 +18,12 @@ from clawcu.a2a.card import (
     role_for_service,
     skills_for_service,
 )
-from clawcu.a2a.client import DEFAULT_SEND_TIMEOUT, A2AClientError, send_via_registry
+from clawcu.a2a.client import (
+    DEFAULT_SEND_TIMEOUT,
+    DEFAULT_TIMEOUT,
+    A2AClientError,
+    send_via_registry,
+)
 from clawcu.a2a.detect import detect_plugin_or_none, port_already_bound
 from clawcu.a2a.registry import make_cards_provider, serve_registry_forever
 from clawcu.service import ClawCUService
@@ -346,16 +351,36 @@ def send_command(
     ] = "clawcu-cli",
     timeout: Annotated[
         float,
-        typer.Option("--timeout", help="Seconds to wait for the LLM reply."),
+        typer.Option(
+            "--timeout",
+            help=(
+                "Seconds to wait for the LLM reply (POST /a2a/send). "
+                "Does not affect the registry lookup; see --lookup-timeout."
+            ),
+        ),
     ] = DEFAULT_SEND_TIMEOUT,
+    lookup_timeout: Annotated[
+        float,
+        typer.Option(
+            "--lookup-timeout",
+            help="Seconds to wait for the registry card lookup.",
+        ),
+    ] = DEFAULT_TIMEOUT,
 ) -> None:
-    """Look up TARGET in the registry and POST a message to its bridge."""
+    """Look up TARGET in the registry and POST a message to its bridge.
+
+    Review-1 §7: ``--timeout`` covers the LLM reply only; the registry
+    lookup has its own small budget via ``--lookup-timeout`` because the
+    registry is local and slow lookups almost always mean "no peer
+    running", not "wait longer."
+    """
     try:
         reply = send_via_registry(
             registry_url=registry,
             sender=sender,
             target=to,
             message=message,
+            lookup_timeout=lookup_timeout,
             send_timeout=timeout,
         )
     except A2AClientError as exc:
