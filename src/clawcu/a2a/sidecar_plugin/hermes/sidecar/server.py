@@ -291,6 +291,48 @@ from inbound_limits import (  # noqa: E402
 )
 
 
+def _hop_prelude(
+    handler: BaseHTTPRequestHandler,
+    *,
+    route: str,
+) -> tuple[int, str, dict[str, str], bool]:
+    """Parse hop + request_id headers; refuse with 508 if the hop budget is spent.
+
+    Shared prelude for ``/a2a/send`` and ``/a2a/outbound``. On refusal, writes
+    the 508 response itself (with the caller's ``X-A2A-Request-Id`` echoed
+    back) and returns ``refused=True`` so the caller just ``return``s.
+
+    ``route`` is the dot-notation label that appears in the refusal log line
+    (``a2a.send``, ``a2a.outbound``) — matches the cadence of the rest of the
+    sidecar's log messages so operators can grep uniformly.
+    """
+    incoming_hop = read_hop_header(handler.headers)
+    budget = _hop_budget()
+    request_id = read_or_mint_request_id(handler.headers)
+    rid_headers = {_REQUEST_ID_HEADER: request_id}
+    if incoming_hop >= budget:
+        log.warning(
+            "%s refused request_id=%s hop=%s budget=%s",
+            route,
+            request_id,
+            incoming_hop,
+            budget,
+        )
+        write_json_response(
+            handler,
+            508,
+            {
+                "error": (
+                    f"hop budget exceeded (hop={incoming_hop}, budget={budget})"
+                ),
+                "request_id": request_id,
+            },
+            extra_headers=rid_headers,
+        )
+        return incoming_hop, request_id, rid_headers, True
+    return incoming_hop, request_id, rid_headers, False
+
+
 # Response caps (Review-21 P2-M1 / Review-22 P2-N1):
 #   A2A_MAX_RESPONSE_BYTES (4 MiB)  — outbound peer/registry responses, owned
 #                                    by ``peering`` (a compromised peer is the
@@ -421,28 +463,10 @@ def build_handler(
 
             # Review-15 P0-A: hop-budget check lives BEFORE body parsing so a
             # runaway loop can't even spend JSON-parse cycles on us.
-            incoming_hop = read_hop_header(self.headers)
-            budget = _hop_budget()
-            request_id = read_or_mint_request_id(self.headers)
-            rid_headers = {_REQUEST_ID_HEADER: request_id}
-            if incoming_hop >= budget:
-                log.warning(
-                    "a2a.send refused request_id=%s hop=%s budget=%s",
-                    request_id,
-                    incoming_hop,
-                    budget,
-                )
-                write_json_response(
-                    self,
-                    508,
-                    {
-                        "error": (
-                            f"hop budget exceeded (hop={incoming_hop}, budget={budget})"
-                        ),
-                        "request_id": request_id,
-                    },
-                    extra_headers=rid_headers,
-                )
+            incoming_hop, request_id, rid_headers, refused = _hop_prelude(
+                self, route="a2a.send"
+            )
+            if refused:
                 return
 
             payload = read_inbound_json_body(
@@ -683,28 +707,10 @@ def build_handler(
             thread_id?, registry_url?, timeout_ms?}. Returns {from, to, reply,
             thread_id, request_id}.
             """
-            incoming_hop = read_hop_header(self.headers)
-            budget = _hop_budget()
-            request_id = read_or_mint_request_id(self.headers)
-            rid_headers = {_REQUEST_ID_HEADER: request_id}
-            if incoming_hop >= budget:
-                log.warning(
-                    "a2a.outbound refused request_id=%s hop=%s budget=%s",
-                    request_id,
-                    incoming_hop,
-                    budget,
-                )
-                write_json_response(
-                    self,
-                    508,
-                    {
-                        "error": (
-                            f"hop budget exceeded (hop={incoming_hop}, budget={budget})"
-                        ),
-                        "request_id": request_id,
-                    },
-                    extra_headers=rid_headers,
-                )
+            incoming_hop, request_id, rid_headers, refused = _hop_prelude(
+                self, route="a2a.outbound"
+            )
+            if refused:
                 return
 
             payload = read_inbound_json_body(
