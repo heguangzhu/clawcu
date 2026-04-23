@@ -7,6 +7,12 @@ from typing import Any
 DEFAULT_REGISTRY_PORT = 9100
 DEFAULT_BRIDGE_PORT = 19100
 
+# Review-1 §3: these per-service tables are now a fallback used only when
+# the caller cannot provide a ``ClawCUService`` (lightweight unit tests
+# that fake records without a full service instance). The authoritative
+# source of these values is each ``ServiceAdapter`` subclass — see
+# ``a2a_skills`` / ``a2a_role`` / ``a2a_plugin_port_offsets``. Adding a
+# third service should not require editing this module.
 _SERVICE_SKILLS: dict[str, list[str]] = {
     "openclaw": ["chat", "tools"],
     "hermes": ["chat", "analysis"],
@@ -17,23 +23,33 @@ _SERVICE_ROLES: dict[str, str] = {
     "hermes": "Hermes local analyst",
 }
 
-# Fallback for when the adapter pipeline cannot be reached — design-2 D5
-# anchors these as the canonical plugin-exposure ports. Kept in sync with
-# the adapter defaults manually; prefer display_port_for_record when a
-# ClawCUService is in hand.
 _SERVICE_DEFAULT_DISPLAY_PORT: dict[str, int] = {
     "openclaw": 18819,
     "hermes": 9129,
 }
 
-# OpenClaw's container occupies display_port with its gateway UI, so the
-# plugin sidecar binds display_port + 1 (see proto/openclaw-plugin/INSTALL.md).
-# Hermes binds display_port directly. Order matters: probed in sequence,
-# first hit wins, so the "true plugin" path precedes the sidecar fallback.
 _SERVICE_PLUGIN_PORT_OFFSETS: dict[str, tuple[int, ...]] = {
     "openclaw": (0, 1),
     "hermes": (0,),
 }
+
+
+def _adapter_for(service: Any, service_name: str) -> Any | None:
+    """Return the adapter for ``service_name`` via a ClawCUService handle,
+    or ``None`` if unavailable. Best-effort — falls back silently so unit
+    tests that pass minimal stubs still work."""
+    if service is None or not service_name:
+        return None
+    for attr in ("adapter_for_service", "adapter_for_record"):
+        method = getattr(service, attr, None)
+        if not callable(method):
+            continue
+        try:
+            if attr == "adapter_for_service":
+                return method(service_name)
+        except Exception:  # noqa: BLE001 — best-effort
+            return None
+    return None
 
 
 @dataclass(frozen=True)
@@ -99,12 +115,28 @@ class AgentCard:
         return cls.from_dict(json.loads(payload))
 
 
-def skills_for_service(service: str) -> list[str]:
-    return list(_SERVICE_SKILLS.get(service, ["chat"]))
+def skills_for_service(service_name: str, *, service: Any = None) -> list[str]:
+    """Return the A2A ``skills`` list advertised for this service type.
+
+    Prefers ``adapter.a2a_skills`` when a ``ClawCUService`` handle is
+    provided; falls back to the module-level table otherwise.
+    """
+    adapter = _adapter_for(service, service_name)
+    if adapter is not None:
+        skills = getattr(adapter, "a2a_skills", None)
+        if skills:
+            return list(skills)
+    return list(_SERVICE_SKILLS.get(service_name, ["chat"]))
 
 
-def role_for_service(service: str) -> str:
-    return _SERVICE_ROLES.get(service, f"{service} local agent")
+def role_for_service(service_name: str, *, service: Any = None) -> str:
+    """Return the A2A ``role`` string for this service type."""
+    adapter = _adapter_for(service, service_name)
+    if adapter is not None:
+        role = getattr(adapter, "a2a_role", None)
+        if role:
+            return role
+    return _SERVICE_ROLES.get(service_name, f"{service_name} local agent")
 
 
 def bridge_port_for(record: Any) -> int:
@@ -154,7 +186,12 @@ def plugin_port_candidates(record: Any, *, service: Any = None) -> list[int]:
     """
     base = display_port_for_record(record, service=service)
     service_name = getattr(record, "service", "") or ""
-    offsets = _SERVICE_PLUGIN_PORT_OFFSETS.get(service_name, (0,))
+    adapter = _adapter_for(service, service_name)
+    offsets: tuple[int, ...]
+    if adapter is not None and getattr(adapter, "a2a_plugin_port_offsets", None):
+        offsets = tuple(adapter.a2a_plugin_port_offsets)
+    else:
+        offsets = _SERVICE_PLUGIN_PORT_OFFSETS.get(service_name, (0,))
     ordered: list[int] = []
     for offset in offsets:
         port = base + offset
@@ -184,7 +221,7 @@ def card_from_record(
         raise ValueError("record.name is required to build an AgentCard")
     return AgentCard(
         name=name,
-        role=role_for_service(svc),
-        skills=skills_for_service(svc),
+        role=role_for_service(svc, service=service),
+        skills=skills_for_service(svc, service=service),
         endpoint=plugin_endpoint_for(record, service=service, host=host),
     )

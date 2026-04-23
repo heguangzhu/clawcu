@@ -113,6 +113,12 @@ class HermesAdapter(ServiceAdapter):
     dashboard_default_port = 9129
     dashboard_internal_port = 9119
 
+    # Review-1 §3: A2A protocol defaults. Hermes sidecar binds
+    # display_port directly — only one offset to probe.
+    a2a_skills = ("chat", "analysis")
+    a2a_role = "Hermes local analyst"
+    a2a_plugin_port_offsets = (0,)
+
     def __init__(self, manager: HermesManager):
         self.manager = manager
 

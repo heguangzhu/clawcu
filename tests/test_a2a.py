@@ -20,6 +20,7 @@ from clawcu.a2a.card import (
     bridge_endpoint_for,
     bridge_port_for,
     card_from_record,
+    role_for_service,
     skills_for_service,
 )
 from clawcu.a2a.client import (
@@ -204,6 +205,47 @@ def test_card_from_record_prefers_adapter_display_port():
     record = FakeRecord(name="alpha", service="openclaw", port=18799)
     card = card_from_record(record, service=FakeService())
     assert card.endpoint == "http://127.0.0.1:27000/a2a/send"
+
+
+# Review-1 §3: a new service should be able to advertise its A2A role,
+# skills, and plugin port offsets purely through its ServiceAdapter,
+# without editing clawcu.a2a.card. This test pretends "oracle" is a
+# third service and shows its adapter values flow through without any
+# entry in the per-service fallback tables in card.py.
+def test_adapter_attrs_drive_role_skills_and_plugin_port_candidates():
+    from clawcu.a2a.card import plugin_port_candidates
+
+    class OracleAdapter:
+        a2a_skills = ("query", "explain")
+        a2a_role = "Oracle local analyst"
+        a2a_plugin_port_offsets = (0, 2)
+
+        def display_port(self, service, record):  # noqa: ARG002
+            return 31000
+
+    class OracleService:
+        def adapter_for_service(self, service_name):  # noqa: ARG002
+            return OracleAdapter()
+
+        def adapter_for_record(self, record):  # noqa: ARG002
+            return OracleAdapter()
+
+    svc = OracleService()
+    assert skills_for_service("oracle", service=svc) == ["query", "explain"]
+    assert role_for_service("oracle", service=svc) == "Oracle local analyst"
+
+    record = FakeRecord(name="alpha", service="oracle", port=31000)
+    assert plugin_port_candidates(record, service=svc) == [31000, 31002]
+
+    card = card_from_record(record, service=svc)
+    assert card.role == "Oracle local analyst"
+    assert card.skills == ["query", "explain"]
+
+
+# Without a ClawCUService handle, card.py falls back to its per-service
+# table. Kept as a regression guard on the fallback contract.
+def test_role_for_service_falls_back_to_template_for_unknown():
+    assert role_for_service("unknown") == "unknown local agent"
 
 
 def test_bridge_endpoint_helper_unchanged():

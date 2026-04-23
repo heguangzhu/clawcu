@@ -140,9 +140,10 @@ def _resolve_bridge_card(
     if record is not None:
         display_port = display_port_for_record(record, service=service)
         resolved_port = port if port is not None else display_port
-        role = role_override or role_for_service(getattr(record, "service", "") or "")
+        svc_name = getattr(record, "service", "") or ""
+        role = role_override or role_for_service(svc_name, service=service)
         skills = skills_override if skills_override is not None else skills_for_service(
-            getattr(record, "service", "") or ""
+            svc_name, service=service
         )
         endpoint = endpoint_override or f"http://{host}:{resolved_port}/a2a/send"
         card = AgentCard(name=instance, role=role, skills=list(skills), endpoint=endpoint)

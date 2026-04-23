@@ -34,6 +34,14 @@ class OpenClawAdapter(ServiceAdapter):
     default_port = 18799
     internal_port = 18789
 
+    # Review-1 §3: A2A protocol defaults. Gateway occupies display_port,
+    # sidecar binds display_port + 1 — so federation probes try the base
+    # first (in case someone co-locates a custom plugin on the gateway
+    # port) then the sidecar slot.
+    a2a_skills = ("chat", "tools")
+    a2a_role = "OpenClaw local assistant"
+    a2a_plugin_port_offsets = (0, 1)
+
     def __init__(self, manager: OpenClawManager):
         self.manager = manager
 
