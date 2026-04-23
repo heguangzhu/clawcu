@@ -235,6 +235,36 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 peer_cache_holder["cache"] = create_peer_cache(registry_url=registry_url, timeout_ms=5000)
             return peer_cache_holder["cache"]
 
+    def _hop_prelude(handler, *, route: str) -> Tuple[int, str, Dict[str, str], bool]:
+        """Request-ID mint + hop-budget check shared by /a2a/send and /a2a/outbound.
+
+        Returns ``(incoming_hop, request_id, rid_headers, refused)``. When
+        ``refused`` is True the 508 response has already been written and
+        the caller's next line is just ``return``. The incoming hop count
+        comes back too because /a2a/outbound forwards ``hop+1`` on the
+        outgoing peer POST and both handlers include it in their accepted/
+        begin log lines. Pulled out because the prelude was a 12-line copy
+        at the top of each handler — only the ``route`` tag differed.
+        """
+        incoming_hop = read_hop_header(handler.headers)
+        request_id = read_or_mint_request_id(handler.headers)
+        rid_headers = {REQUEST_ID_HEADER: request_id}
+        if incoming_hop < A2A_HOP_BUDGET:
+            return incoming_hop, request_id, rid_headers, False
+        logger.warn(
+            f"[sidecar:{self_name}] {route} refused request_id={request_id} hop={incoming_hop} budget={A2A_HOP_BUDGET}"
+        )
+        write_json_response(
+            handler,
+            508,
+            {
+                "error": f"hop budget exceeded (hop={incoming_hop}, budget={A2A_HOP_BUDGET})",
+                "request_id": request_id,
+            },
+            rid_headers,
+        )
+        return incoming_hop, request_id, rid_headers, True
+
     class Handler(http.server.BaseHTTPRequestHandler):
         # Silence BaseHTTPRequestHandler's stderr default — we log ourselves.
         def log_message(self, format: str, *args) -> None:  # noqa: A003
@@ -289,22 +319,9 @@ def _make_handler_class(ctx: Dict[str, Any]):
         # ---- /a2a/send -------------------------------------------------------
 
         def _handle_a2a_send(self) -> None:
-            incoming_hop = read_hop_header(self.headers)
-            request_id = read_or_mint_request_id(self.headers)
-            rid_headers = {REQUEST_ID_HEADER: request_id}
-            if incoming_hop >= A2A_HOP_BUDGET:
-                logger.warn(
-                    f"[sidecar:{self_name}] a2a.send refused request_id={request_id} hop={incoming_hop} budget={A2A_HOP_BUDGET}"
-                )
-                return write_json_response(
-                    self,
-                    508,
-                    {
-                        "error": f"hop budget exceeded (hop={incoming_hop}, budget={A2A_HOP_BUDGET})",
-                        "request_id": request_id,
-                    },
-                    rid_headers,
-                )
+            incoming_hop, request_id, rid_headers, refused = _hop_prelude(self, route="a2a.send")
+            if refused:
+                return
             body, err = _read_request_json(self)
             if err is not None:
                 return write_json_response(self, 400, {"error": err, "request_id": request_id}, rid_headers)
@@ -420,22 +437,9 @@ def _make_handler_class(ctx: Dict[str, Any]):
         # ---- /a2a/outbound ---------------------------------------------------
 
         def _handle_a2a_outbound(self) -> None:
-            incoming_hop = read_hop_header(self.headers)
-            request_id = read_or_mint_request_id(self.headers)
-            rid_headers = {REQUEST_ID_HEADER: request_id}
-            if incoming_hop >= A2A_HOP_BUDGET:
-                logger.warn(
-                    f"[sidecar:{self_name}] a2a.outbound refused request_id={request_id} hop={incoming_hop} budget={A2A_HOP_BUDGET}"
-                )
-                return write_json_response(
-                    self,
-                    508,
-                    {
-                        "error": f"hop budget exceeded (hop={incoming_hop}, budget={A2A_HOP_BUDGET})",
-                        "request_id": request_id,
-                    },
-                    rid_headers,
-                )
+            incoming_hop, request_id, rid_headers, refused = _hop_prelude(self, route="a2a.outbound")
+            if refused:
+                return
             body, err = _read_request_json(self)
             if err is not None:
                 return write_json_response(self, 400, {"error": err, "request_id": request_id}, rid_headers)
