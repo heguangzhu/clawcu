@@ -5,10 +5,16 @@
 #   - /opt/a2a/adapters.py               config-source adapters
 #                                        (HostAdapter / LocalAdapter +
 #                                        read_gateway_auth)
+#   - /opt/a2a/chat.py                   co-resident gateway client
+#                                        (post_chat_completion +
+#                                        A2A system-prompt preamble)
 #   - /opt/a2a/http_client.py            outbound HTTP helpers
 #                                        (parse_http_url, post_json,
 #                                        http_request_raw, capped read)
 #   - /opt/a2a/logsink.py                stdout + optional file-tee logger
+#   - /opt/a2a/outbound.py               peer/registry calls
+#                                        (fetch_peer_list, lookup_peer,
+#                                        forward_to_peer, peer cache)
 #   - /opt/a2a/readiness.py              gateway readiness wait / invalidation
 #   - /opt/a2a/_common/                  stdlib primitives shared with the
 #                                        Hermes sidecar (streams, ratelimit,
