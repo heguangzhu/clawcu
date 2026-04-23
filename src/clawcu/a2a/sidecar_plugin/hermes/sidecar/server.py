@@ -274,39 +274,18 @@ from peering import (  # noqa: E402
 )
 
 
-# Hop budget — see a2a-design-1.md §Loop protection. X-A2A-Hop increments
-# on every mesh hop; an inbound /a2a/send that sees hop>=budget is refused
-# with 508 before any gateway work happens.
-def _hop_budget() -> int:
-    try:
-        v = int(os.environ.get("A2A_HOP_BUDGET") or "8")
-    except ValueError:
-        return 8
-    return v if v >= 1 else 8
-
-
-# Review-14 P1-F1: cap inbound POST body size. Without this, an attacker
-# declares Content-Length: 10GB and self.rfile.read(length) allocates that
-# much memory on the sidecar process (OOM). OpenClaw's sidecar already
-# applies a 64KB cap in readJsonBody; mirror that here so both runtimes
-# behave the same under adversarial load. Tunable via A2A_MAX_BODY_BYTES
-# for operators who need to route larger payloads (e.g. embedded images).
-DEFAULT_MAX_BODY_BYTES = 64 * 1024
-
-
-def _max_body_bytes() -> int:
-    raw = os.environ.get("A2A_MAX_BODY_BYTES")
-    if raw is None or str(raw).strip() == "":
-        return DEFAULT_MAX_BODY_BYTES
-    try:
-        v = int(raw)
-    except ValueError:
-        return DEFAULT_MAX_BODY_BYTES
-    return v if v > 0 else DEFAULT_MAX_BODY_BYTES
-
-
-class _BadContentLength(Exception):
-    """Raised when the client sends a Content-Length we refuse to honor."""
+# Inbound reject-early guards (body-size cap, content-length validation,
+# A2A hop budget) live in the ``inbound_limits`` sibling module. Re-imported
+# so pre-existing tests that reach them via ``mod._parse_content_length`` /
+# ``mod._BadContentLength`` / ``mod._max_body_bytes`` keep working.
+import inbound_limits  # noqa: E402,F401
+from inbound_limits import (  # noqa: E402
+    DEFAULT_MAX_BODY_BYTES,
+    _BadContentLength,
+    _hop_budget,
+    _max_body_bytes,
+    _parse_content_length,
+)
 
 
 # Response caps (Review-21 P2-M1 / Review-22 P2-N1):
@@ -325,34 +304,6 @@ A2A_MAX_RESPONSE_BYTES = peering.A2A_MAX_RESPONSE_BYTES
 # ``_read_capped`` / ``_ResponseTooLarge`` keep working without churn.
 _ResponseTooLarge = _streams.ResponseTooLarge
 _read_capped = _streams.read_capped_bytes
-
-
-def _parse_content_length(headers: Any, *, cap: int) -> int:
-    """Parse the request's Content-Length header, rejecting hostile values.
-
-    Review-15 P1-G1: a raw ``int(self.headers.get('Content-Length') or 0)``
-    accepts ``-1`` (causing ``rfile.read(-1)`` to block indefinitely waiting
-    for EOF — a DoS on the ThreadingHTTPServer worker thread) and raises
-    ``ValueError`` on non-numeric values (dropping the connection without
-    a proper 400 response). This helper returns a non-negative bounded
-    length or raises ``_BadContentLength`` for the handler to convert to
-    an HTTP 400 / 413.
-    """
-    raw = headers.get("Content-Length") if hasattr(headers, "get") else None
-    if raw is None:
-        return 0
-    stripped = str(raw).strip()
-    if stripped == "":
-        return 0
-    try:
-        length = int(stripped)
-    except ValueError as exc:
-        raise _BadContentLength(f"invalid Content-Length: {stripped!r}") from exc
-    if length < 0:
-        raise _BadContentLength(f"negative Content-Length: {length}")
-    if length > cap:
-        raise _BadContentLength(f"request body exceeds {cap} bytes")
-    return length
 
 
 # --- MCP server (a2a-design-3.md §P0-A) ---
