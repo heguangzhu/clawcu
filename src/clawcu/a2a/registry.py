@@ -78,7 +78,12 @@ def _fetch_card_at(url: str, timeout: float) -> AgentCard | None:
         _log.info("plugin card fetch too large: url=%s reason=%s", url, exc)
         return None
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        _log.info("plugin card fetch failed: url=%s reason=%s", url, exc)
+        # Review-1 §6: connection-refused/timeout/DNS failure is a normal
+        # "instance not up" negative during `a2a up` probing; logging at
+        # INFO floods 10+ lines when several stopped instances are in the
+        # registry. HTTP non-200, bad JSON, bad schema remain INFO — those
+        # mean the port *did* respond but the card is malformed.
+        _log.debug("plugin card fetch failed: url=%s reason=%s", url, exc)
         return None
     try:
         payload = json.loads(raw.decode("utf-8"))
