@@ -64,6 +64,7 @@ from readiness import (  # noqa: E402
 )
 from _common.bootstrap import run_bootstrap as run_mcp_bootstrap  # noqa: E402
 from _common.mcp import UpstreamError, handle_mcp_request  # noqa: E402
+from _common.peer_cache import create_peer_cache as _shared_peer_cache  # noqa: E402
 from _common.outbound_limit import (  # noqa: E402
     create_outbound_limiter,
     create_sweep_timer,
@@ -358,51 +359,25 @@ def create_peer_cache(
     now_fn: Callable[[], int] = _default_now_ms,
     fetch_fn: Callable[..., Optional[list]] = fetch_peer_list,
 ):
-    """TTL cache wrapping fetch_peer_list. Concurrent callers within the
-    same refresh window funnel through a single in-flight fetch (matches
-    Node's inflight-promise dedupe)."""
-    state: Dict[str, Any] = {"cached": None, "fetched_at": 0, "inflight": None}
-    lock = threading.Lock()
+    """TTL cache wrapping :func:`fetch_peer_list`. See
+    :func:`_common.peer_cache.create_peer_cache` for the algorithm. This
+    wrapper keeps OpenClaw's millisecond-unit external surface; internally
+    everything runs in seconds against the shared implementation."""
 
     def _do_fetch():
+        # Some callers pass a kwargs-style stub, the real fetch_peer_list
+        # accepts both — try kwargs first so we don't break existing fakes.
         try:
             return fetch_fn(registry_url=registry_url, timeout_ms=timeout_ms)
         except TypeError:
             return fetch_fn(registry_url, timeout_ms)
 
-    def get():
-        now = now_fn()
-        with lock:
-            if state["cached"] is not None and now - state["fetched_at"] < fresh_ms:
-                return state["cached"]
-            inflight = state["inflight"]
-            if inflight is None:
-                inflight = {"done": threading.Event(), "result": None}
-                state["inflight"] = inflight
-                is_leader = True
-            else:
-                is_leader = False
-        if is_leader:
-            try:
-                got = _do_fetch()
-            except Exception:
-                got = None
-            with lock:
-                if got is not None:
-                    state["cached"] = got
-                    state["fetched_at"] = now_fn()
-                elif state["cached"] is not None and now_fn() - state["fetched_at"] < stale_ms:
-                    pass
-                else:
-                    state["cached"] = None
-                inflight["result"] = state["cached"]
-                state["inflight"] = None
-                inflight["done"].set()
-            return inflight["result"]
-        inflight["done"].wait()
-        return inflight["result"]
-
-    return {"get": get}
+    return _shared_peer_cache(
+        _do_fetch,
+        fresh_s=fresh_ms / 1000.0,
+        stale_s=stale_ms / 1000.0,
+        now_fn=lambda: now_fn() / 1000.0,
+    )
 
 
 def lookup_peer(registry_url: str, peer_name: str, timeout_ms: int) -> Dict[str, Any]:
@@ -1005,7 +980,7 @@ def _make_handler_class(ctx: Dict[str, Any]):
 
             list_peers = None
             if os.environ.get("A2A_TOOL_DESC_MODE") != "static":
-                list_peers = lambda: cache["get"]()  # noqa: E731
+                list_peers = cache.get
 
             include_role = str(os.environ.get("A2A_TOOL_DESC_INCLUDE_ROLE") or "").lower() == "true"
 

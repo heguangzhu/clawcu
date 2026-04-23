@@ -163,8 +163,8 @@ def test_create_peer_cache_serves_cached_within_ttl():
         now_fn=lambda: 1000,
         fetch_fn=fetch,
     )
-    r1 = cache["get"]()
-    r2 = cache["get"]()
+    r1 = cache.get()
+    r2 = cache.get()
     assert calls["n"] == 1
     assert r1 == r2
 
@@ -184,9 +184,9 @@ def test_create_peer_cache_refetches_after_ttl_expires():
         now_fn=lambda: now["v"],
         fetch_fn=fetch,
     )
-    cache["get"]()
+    cache.get()
     now["v"] += 31_000
-    cache["get"]()
+    cache.get()
     assert calls["n"] == 2
 
 
@@ -206,10 +206,10 @@ def test_create_peer_cache_serves_stale_on_fetch_failure_inside_stale_window():
         now_fn=lambda: now["v"],
         fetch_fn=fetch,
     )
-    r1 = cache["get"]()
+    r1 = cache.get()
     assert r1 == [{"name": "a"}]
     now["v"] += 60_000
-    r2 = cache["get"]()
+    r2 = cache.get()
     assert r2 == [{"name": "a"}]
 
 
@@ -227,9 +227,9 @@ def test_create_peer_cache_returns_none_after_stale_window():
         now_fn=lambda: now["v"],
         fetch_fn=fetch,
     )
-    cache["get"]()
+    cache.get()
     now["v"] += 400_000
-    r = cache["get"]()
+    r = cache.get()
     assert r is None
 
 
@@ -254,7 +254,7 @@ def test_create_peer_cache_dedupes_concurrent_fetches():
     results = [None, None, None]
 
     def runner(i):
-        results[i] = cache["get"]()
+        results[i] = cache.get()
 
     threads = [threading.Thread(target=runner, args=(i,)) for i in range(3)]
     for t in threads:

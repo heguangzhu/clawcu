@@ -139,6 +139,7 @@ from _common.outbound_limit import (  # noqa: E402
     read_rpm as read_outbound_rpm,
     read_sweep_interval_ms as read_outbound_sweep_interval_ms,
 )
+from _common.peer_cache import create_peer_cache as _shared_peer_cache  # noqa: E402
 from _common.mcp import (  # noqa: E402
     ERR_A2A_UPSTREAM as MCP_ERR_A2A_UPSTREAM,
     ERR_INTERNAL as MCP_ERR_INTERNAL,
@@ -685,37 +686,21 @@ def create_peer_cache(
     timeout: float = 5.0,
     fresh_s: float = 30.0,
     stale_s: float = 300.0,
-    now_fn: Callable[[], float] = lambda: __import__("time").monotonic(),
+    now_fn: Any = None,
     fetch_fn: Any = None,
 ) -> Any:
-    """TTL cache around fetch_peer_list. See a2a-design-5.md §P1-H for the
-    cache strategy (30s fresh, 5min stale-OK on failure, null fallback)."""
-    import threading as _threading
-
+    """TTL cache around ``fetch_peer_list``. See a2a-design-5.md §P1-H for
+    the cache strategy (30s fresh, 5min stale-OK on failure, null fallback).
+    Thin wrapper that binds ``registry_url`` + ``timeout`` into the
+    zero-arg fetcher expected by :func:`_common.peer_cache.create_peer_cache`.
+    """
     fetcher = fetch_fn if fetch_fn is not None else fetch_peer_list
-    state = {"cached": None, "fetched_at": 0.0}
-    lock = _threading.Lock()
-
-    def get() -> list[dict[str, Any]] | None:
-        now = now_fn()
-        with lock:
-            if state["cached"] is not None and now - state["fetched_at"] < fresh_s:
-                return state["cached"]
-        # Fetch outside the lock so concurrent callers in other threads can
-        # observe a fresh cache once it lands (one extra fetch worst-case;
-        # acceptable).
-        got = fetcher(registry_url, timeout)
-        with lock:
-            if got is not None:
-                state["cached"] = got
-                state["fetched_at"] = now_fn()
-                return state["cached"]
-            if state["cached"] is not None and now_fn() - state["fetched_at"] < stale_s:
-                return state["cached"]
-            state["cached"] = None
-            return None
-
-    return type("PeerCache", (), {"get": staticmethod(get)})
+    return _shared_peer_cache(
+        lambda: fetcher(registry_url, timeout),
+        fresh_s=fresh_s,
+        stale_s=stale_s,
+        now_fn=now_fn,
+    )
 
 
 def forward_to_peer(
