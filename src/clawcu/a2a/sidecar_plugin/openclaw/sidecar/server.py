@@ -56,7 +56,6 @@ for _ in range(4):
         break
     _probe = _parent
 
-from bootstrap import run_bootstrap as run_mcp_bootstrap  # noqa: E402
 from logsink import default_logger, setup_file_log  # noqa: E402
 from mcp import UpstreamError, handle_mcp_request  # noqa: E402
 from readiness import (  # noqa: E402
@@ -64,6 +63,7 @@ from readiness import (  # noqa: E402
     looks_like_gateway_down,
     wait_for_gateway_ready,
 )
+from _common.bootstrap import run_bootstrap as run_mcp_bootstrap  # noqa: E402
 from _common.outbound_limit import (  # noqa: E402
     create_outbound_limiter,
     create_sweep_timer,

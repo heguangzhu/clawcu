@@ -36,9 +36,6 @@ RUN mkdir -p /opt/a2a
 # package. sidecar.py prepends __file__'s directory to sys.path at startup,
 # which then makes `import _common.xxx` resolve against /opt/a2a/_common/.
 COPY hermes/sidecar.py   /opt/a2a/sidecar.py
-# bootstrap.py is still loaded via spec_from_file_location (hermes-specific,
-# not shared). Must land in the image alongside sidecar.py.
-COPY hermes/bootstrap.py /opt/a2a/bootstrap.py
 COPY _common/            /opt/a2a/_common/
 COPY hermes/entrypoint.sh /usr/local/bin/entrypoint-a2a.sh
 RUN chmod +x /usr/local/bin/entrypoint-a2a.sh

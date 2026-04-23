@@ -131,6 +131,7 @@ for _ in range(4):
         break
     _probe = _parent
 
+from _common.bootstrap import run_bootstrap as run_mcp_bootstrap  # noqa: E402
 from _common.outbound_limit import (  # noqa: E402
     create_outbound_limiter,
     create_sweep_thread,
@@ -1685,22 +1686,13 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # Auto-wire the `a2a` MCP entry into the Hermes service config file on
-    # start (a2a-design-4.md §P0-A). Never raises operationally — any
-    # failure logs and returns so the sidecar still comes up.
+    # start (a2a-design-4.md §P0-A). Shared impl lives in _common/ so both
+    # runtimes use the same bootstrap. Never raises operationally.
     try:
-        import importlib.util as _ilu
-        import pathlib as _pl
-
-        _spec = _ilu.spec_from_file_location(
-            "_a2a_bootstrap",
-            str(_pl.Path(__file__).parent / "bootstrap.py"),
-        )
-        if _spec and _spec.loader:
-            _boot = _ilu.module_from_spec(_spec)
-            _spec.loader.exec_module(_boot)
-            _env = dict(os.environ)
-            _env.setdefault("A2A_BIND_PORT", str(cfg.bind_port))
-            _boot.run_bootstrap(env=_env)
+        _env = dict(os.environ)
+        _env.setdefault("A2A_BIND_PORT", str(cfg.bind_port))
+        _env.setdefault("A2A_SERVICE_MCP_CONFIG_FORMAT", "yaml")
+        run_mcp_bootstrap(env=_env)
     except Exception as exc:  # pragma: no cover - defensive path
         log.warning("mcp-bootstrap threw: %s; continuing", exc)
 

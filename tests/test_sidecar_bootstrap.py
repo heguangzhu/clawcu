@@ -1,4 +1,9 @@
-"""pytest port of tests/sidecar_bootstrap.test.js."""
+"""pytest port of tests/sidecar_bootstrap.test.js.
+
+Exercises the shared MCP auto-wire bootstrap in ``_common/bootstrap.py``.
+The tests originated as the OpenClaw-side JSON cases and still drive that
+codepath (logsink-shaped logger, no format env → default JSON).
+"""
 from __future__ import annotations
 
 import json
@@ -7,7 +12,7 @@ import sys
 
 import pytest
 
-_SIDECAR = os.path.abspath(
+_SIDECAR_PLUGIN_ROOT = os.path.abspath(
     os.path.join(
         os.path.dirname(__file__),
         "..",
@@ -15,14 +20,17 @@ _SIDECAR = os.path.abspath(
         "clawcu",
         "a2a",
         "sidecar_plugin",
-        "openclaw",
-        "sidecar",
     )
 )
-if _SIDECAR not in sys.path:
-    sys.path.insert(0, _SIDECAR)
+if _SIDECAR_PLUGIN_ROOT not in sys.path:
+    sys.path.insert(0, _SIDECAR_PLUGIN_ROOT)
 
-from bootstrap import MCP_ENTRY_NAME, build_mcp_url, plan_bootstrap, run_bootstrap  # noqa: E402
+from _common.bootstrap import (  # noqa: E402
+    MCP_ENTRY_NAME,
+    build_mcp_url,
+    plan_bootstrap,
+    run_bootstrap,
+)
 
 
 class CapturingLogger:
@@ -115,14 +123,18 @@ def test_run_bootstrap_skips_when_config_path_unset():
     assert any("A2A_SERVICE_MCP_CONFIG_PATH unset" in m for m in logger.info_msgs)
 
 
-def test_run_bootstrap_skips_when_format_not_json(tmp_path):
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text("mcp:\n  servers: {}\n", encoding="utf-8")
+def test_run_bootstrap_skips_on_unsupported_format(tmp_path):
+    # Shared bootstrap supports json + yaml. Anything else (toml, xml, …)
+    # must skip with reason=unsupported-format rather than attempting a
+    # parse. This replaces the old yaml-specific assertion: yaml is now a
+    # first-class supported format (Hermes uses it).
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('[mcp]\nservers = {}\n', encoding="utf-8")
     logger = CapturingLogger()
     r = run_bootstrap(
         env={
             "A2A_SERVICE_MCP_CONFIG_PATH": str(config_path),
-            "A2A_SERVICE_MCP_CONFIG_FORMAT": "yaml",
+            "A2A_SERVICE_MCP_CONFIG_FORMAT": "toml",
             "A2A_ENABLED": "true",
             "A2A_SIDECAR_PORT": "18790",
         },

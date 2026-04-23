@@ -1672,9 +1672,9 @@ def test_openclaw_adapter_extra_env_drives_bootstrap_merge_into_json(tmp_path):
     bootstrap_py = (
         Path(__file__).resolve().parent.parent
         / "src" / "clawcu" / "a2a" / "sidecar_plugin"
-        / "openclaw" / "sidecar" / "bootstrap.py"
+        / "_common" / "bootstrap.py"
     )
-    spec = importlib.util.spec_from_file_location("openclaw_sidecar_bootstrap", bootstrap_py)
+    spec = importlib.util.spec_from_file_location("a2a_common_bootstrap", bootstrap_py)
     bootstrap_mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(bootstrap_mod)
 
@@ -3653,7 +3653,11 @@ def test_hermes_mcp_endpoint_tools_list_end_to_end():
 
 
 def _load_hermes_bootstrap_module():
-    """Load bootstrap.py standalone (matches _load_hermes_sidecar_module pattern)."""
+    """Load the shared bootstrap module (lives in _common/ after the refactor).
+
+    The ``_load_hermes_*`` name is kept for test-history grep-ability even
+    though the implementation is now shared between hermes and openclaw.
+    """
     import importlib.util
 
     path = (
@@ -3662,10 +3666,10 @@ def _load_hermes_bootstrap_module():
         / "clawcu"
         / "a2a"
         / "sidecar_plugin"
-        / "hermes"
+        / "_common"
         / "bootstrap.py"
     )
-    spec = importlib.util.spec_from_file_location("_hermes_bootstrap_under_test", path)
+    spec = importlib.util.spec_from_file_location("_a2a_common_bootstrap_under_test", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
