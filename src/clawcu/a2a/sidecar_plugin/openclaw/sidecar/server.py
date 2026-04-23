@@ -105,7 +105,11 @@ from chat import (  # noqa: E402
     build_a2a_context,
     post_chat_completion,
 )
-from _common.payload import BadPayload, parse_optional_non_empty_string  # noqa: E402
+from _common.payload import (  # noqa: E402
+    BadPayload,
+    parse_optional_non_empty_string,
+    require_non_empty_string,
+)
 
 __all__ = [
     # Re-exported for tests and for any caller that used to import these
@@ -266,6 +270,20 @@ def _make_handler_class(ctx: Dict[str, Any]):
         )
         return incoming_hop, request_id, rid_headers, True
 
+    def _reject_bad_payload(
+        handler, exc: BadPayload, *, request_id: str, rid_headers: Dict[str, str]
+    ) -> None:
+        """Uniform 400 envelope for a :class:`BadPayload` raised by the
+        shared ``_common.payload`` validators. Both /a2a/send and
+        /a2a/outbound batch their required+optional field checks under a
+        single ``try`` so the rejection path is one helper call."""
+        write_json_response(
+            handler,
+            400,
+            {"error": str(exc), "request_id": request_id},
+            rid_headers,
+        )
+
     class Handler(http.server.BaseHTTPRequestHandler):
         # Silence BaseHTTPRequestHandler's stderr default — we log ourselves.
         def log_message(self, format: str, *args) -> None:  # noqa: A003
@@ -326,23 +344,20 @@ def _make_handler_class(ctx: Dict[str, Any]):
             body, err = _read_request_json(self)
             if err is not None:
                 return write_json_response(self, 400, {"error": err, "request_id": request_id}, rid_headers)
-            if not isinstance(body.get("message"), str) or not body.get("message"):
-                return write_json_response(self, 400, {"error": "missing 'message' (string)", "request_id": request_id}, rid_headers)
-            if not isinstance(body.get("from"), str) or not body.get("from"):
-                return write_json_response(self, 400, {"error": "missing 'from' (string)", "request_id": request_id}, rid_headers)
-
             try:
+                message = require_non_empty_string(body, "message")
+                peer_from = require_non_empty_string(body, "from")
                 thread_id = parse_optional_non_empty_string(body, "thread_id")
             except BadPayload as exc:
-                return write_json_response(
-                    self, 400, {"error": str(exc), "request_id": request_id}, rid_headers
+                return _reject_bad_payload(
+                    self, exc, request_id=request_id, rid_headers=rid_headers
                 )
 
             logger.info(
-                f"[sidecar:{self_name}] a2a.send accepted request_id={request_id} from={body['from']} hop={incoming_hop}"
+                f"[sidecar:{self_name}] a2a.send accepted request_id={request_id} from={peer_from} hop={incoming_hop}"
             )
 
-            rl = rate_limiter.allow(body["from"])
+            rl = rate_limiter.allow(peer_from)
             if not rl.ok:
                 headers_out = dict(rid_headers)
                 headers_out["Retry-After"] = str(max(1, int(rl.reset_ms / 1000 + 0.5)))
@@ -350,7 +365,7 @@ def _make_handler_class(ctx: Dict[str, Any]):
                     self,
                     429,
                     {
-                        "error": f"rate limit exceeded for peer '{body['from']}'",
+                        "error": f"rate limit exceeded for peer '{peer_from}'",
                         "resetMs": rl.reset_ms,
                         "request_id": request_id,
                     },
@@ -386,15 +401,15 @@ def _make_handler_class(ctx: Dict[str, Any]):
 
             history = []
             if thread_id and thread_store.enabled:
-                history = thread_store.load_history(body["from"], thread_id)
+                history = thread_store.load_history(peer_from, thread_id)
 
             try:
                 reply = post_chat_completion(
                     gateway_host=gateway_host,
                     gateway_port=gateway_port,
                     token=auth.get("token"),
-                    user_message=body["message"],
-                    system_prompt=build_a2a_context(self_name, body["from"]),
+                    user_message=message,
+                    system_prompt=build_a2a_context(self_name, peer_from),
                     history=history,
                     model=model,
                     timeout_ms=request_timeout_ms,
@@ -413,10 +428,10 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 )
 
             if thread_id and thread_store.enabled:
-                thread_store.append_turn(body["from"], thread_id, body["message"], reply)
+                thread_store.append_turn(peer_from, thread_id, message, reply)
 
             logger.info(
-                f"[sidecar:{self_name}] a2a.send replied request_id={request_id} from={body['from']}"
+                f"[sidecar:{self_name}] a2a.send replied request_id={request_id} from={peer_from}"
             )
             return write_json_response(
                 self,
@@ -439,16 +454,13 @@ def _make_handler_class(ctx: Dict[str, Any]):
             body, err = _read_request_json(self)
             if err is not None:
                 return write_json_response(self, 400, {"error": err, "request_id": request_id}, rid_headers)
-            if not isinstance(body.get("to"), str) or not body.get("to"):
-                return write_json_response(self, 400, {"error": "missing 'to' (string)", "request_id": request_id}, rid_headers)
-            if not isinstance(body.get("message"), str) or not body.get("message"):
-                return write_json_response(self, 400, {"error": "missing 'message' (string)", "request_id": request_id}, rid_headers)
-
             try:
+                to = require_non_empty_string(body, "to")
+                message = require_non_empty_string(body, "message")
                 out_thread_id = parse_optional_non_empty_string(body, "thread_id")
             except BadPayload as exc:
-                return write_json_response(
-                    self, 400, {"error": str(exc), "request_id": request_id}, rid_headers
+                return _reject_bad_payload(
+                    self, exc, request_id=request_id, rid_headers=rid_headers
                 )
 
             limit_key = outbound_limit_key(thread_id=out_thread_id, self_name=self_name)
@@ -500,22 +512,22 @@ def _make_handler_class(ctx: Dict[str, Any]):
             timeout_ms = int(timeout_ms_num) if timeout_ms_num == timeout_ms_num and timeout_ms_num > 0 else 60000
 
             logger.info(
-                f"[sidecar:{self_name}] a2a.outbound begin request_id={request_id} to={body['to']} hop={incoming_hop}"
+                f"[sidecar:{self_name}] a2a.outbound begin request_id={request_id} to={to} hop={incoming_hop}"
             )
 
             try:
                 card_resp = lookup_peer(
-                    registry_url=registry_url, peer_name=body["to"], timeout_ms=timeout_ms
+                    registry_url=registry_url, peer_name=to, timeout_ms=timeout_ms
                 )
             except UpstreamError as exc:
                 status = exc.http_status or 503
                 logger.warn(
-                    f"[sidecar:{self_name}] a2a.outbound lookup-failed request_id={request_id} to={body['to']} status={status}"
+                    f"[sidecar:{self_name}] a2a.outbound lookup-failed request_id={request_id} to={to} status={status}"
                 )
                 return write_json_response(self, status, {"error": str(exc), "request_id": request_id}, rid_headers)
             except Exception as exc:
                 logger.warn(
-                    f"[sidecar:{self_name}] a2a.outbound lookup-failed request_id={request_id} to={body['to']} status=503"
+                    f"[sidecar:{self_name}] a2a.outbound lookup-failed request_id={request_id} to={to} status=503"
                 )
                 return write_json_response(self, 503, {"error": str(exc), "request_id": request_id}, rid_headers)
 
@@ -523,8 +535,8 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 peer_resp = forward_to_peer(
                     endpoint=card_resp["endpoint"],
                     self_name=self_name,
-                    peer_name=body["to"],
-                    message=body["message"],
+                    peer_name=to,
+                    message=message,
                     thread_id=out_thread_id,
                     hop=incoming_hop + 1,
                     timeout_ms=timeout_ms,
@@ -533,7 +545,7 @@ def _make_handler_class(ctx: Dict[str, Any]):
             except UpstreamError as exc:
                 status = exc.http_status or 502
                 logger.warn(
-                    f"[sidecar:{self_name}] a2a.outbound forward-failed request_id={request_id} to={body['to']} "
+                    f"[sidecar:{self_name}] a2a.outbound forward-failed request_id={request_id} to={to} "
                     f"status={status} peer_status={exc.peer_status if exc.peer_status is not None else '-'}"
                 )
                 payload: Dict[str, Any] = {"error": str(exc), "request_id": request_id}
@@ -542,19 +554,19 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 return write_json_response(self, status, payload, rid_headers)
             except Exception as exc:
                 logger.warn(
-                    f"[sidecar:{self_name}] a2a.outbound forward-failed request_id={request_id} to={body['to']} status=502"
+                    f"[sidecar:{self_name}] a2a.outbound forward-failed request_id={request_id} to={to} status=502"
                 )
                 return write_json_response(self, 502, {"error": str(exc), "request_id": request_id}, rid_headers)
 
             logger.info(
-                f"[sidecar:{self_name}] a2a.outbound done request_id={request_id} to={body['to']}"
+                f"[sidecar:{self_name}] a2a.outbound done request_id={request_id} to={to}"
             )
             return write_json_response(
                 self,
                 200,
                 {
                     "from": self_name,
-                    "to": body["to"],
+                    "to": to,
                     "reply": peer_resp.get("reply") if isinstance(peer_resp.get("reply"), str) else "",
                     "thread_id": peer_resp.get("thread_id")
                     if isinstance(peer_resp.get("thread_id"), str)
