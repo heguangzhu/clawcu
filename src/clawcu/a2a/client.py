@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import ipaddress
 import json
+import logging
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -12,6 +15,8 @@ from clawcu.a2a.card import AgentCard
 DEFAULT_TIMEOUT = 5.0
 DEFAULT_SEND_TIMEOUT = 300.0
 
+_log = logging.getLogger("clawcu.a2a.client")
+
 # Review-11 P1-C1: the registry federates sidecar endpoints using the
 # container-advertise host (`host.docker.internal` on Darwin so
 # container→container hops resolve). When the clawcu CLI running on the
@@ -21,12 +26,47 @@ DEFAULT_SEND_TIMEOUT = 300.0
 # the operator to add a hosts-file entry.
 _CONTAINER_HOSTNAME_ALIASES = frozenset({"host.docker.internal", "gateway.docker.internal"})
 
+# RFC 1123 hostname: labels of letters/digits/hyphens, labels don't start
+# or end with a hyphen, labels ≤63 chars, whole name ≤253. We accept
+# unqualified names (no dot) — matches existing test fixtures like
+# ``docker.for.mac.localhost`` and bare ``localhost``.
+_HOSTNAME_LABEL = r"[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+_HOSTNAME_PATTERN = re.compile(rf"^{_HOSTNAME_LABEL}(\.{_HOSTNAME_LABEL})*$")
+
+
+def _is_valid_host_literal(raw: str) -> bool:
+    """Accept only a bare IP literal or RFC-1123 hostname.
+
+    Review-1 §12: ``CLAWCU_A2A_HOST_HOSTNAME`` was consumed with only a
+    ``.strip()`` — ``http://evil/`` or ``127.0.0.1:8080/path`` would be
+    spliced into the rewritten URL's netloc and yield garbage like
+    ``http://http://evil/:9100/a2a/send``. We guard the one-way flow into
+    ``localize_endpoint_for_host`` by accepting only values that could
+    safely live as a bare host token.
+    """
+    if not raw or len(raw) > 253:
+        return False
+    try:
+        ipaddress.ip_address(raw)
+        return True
+    except ValueError:
+        pass
+    return _HOSTNAME_PATTERN.match(raw) is not None
+
 
 def _host_localize_env_override() -> str | None:
     raw = os.environ.get("CLAWCU_A2A_HOST_HOSTNAME")
-    if isinstance(raw, str) and raw.strip():
-        return raw.strip()
-    return None
+    if not (isinstance(raw, str) and raw.strip()):
+        return None
+    cleaned = raw.strip()
+    if not _is_valid_host_literal(cleaned):
+        _log.warning(
+            "CLAWCU_A2A_HOST_HOSTNAME=%r is not a valid IP literal or hostname; "
+            "falling back to 127.0.0.1",
+            cleaned,
+        )
+        return None
+    return cleaned
 
 
 def localize_endpoint_for_host(endpoint: str) -> str:

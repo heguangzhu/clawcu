@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 import urllib.error
@@ -4906,6 +4907,41 @@ def test_localize_endpoint_ipv4_replacement_unchanged(monkeypatch):
     monkeypatch.delenv("CLAWCU_A2A_HOST_HOSTNAME", raising=False)
     out = localize_endpoint_for_host("http://host.docker.internal:9100/a2a/send")
     assert out == "http://127.0.0.1:9100/a2a/send"
+
+
+# Review-1 §12: CLAWCU_A2A_HOST_HOSTNAME was interpreted with only .strip(),
+# so `http://evil/` or `127.0.0.1:8080/path` would be spliced into the
+# rewritten URL's netloc and produce garbage. The env var must now be
+# validated as a bare IP literal or hostname; invalid values fall back
+# silently to 127.0.0.1 after a WARNING.
+@pytest.mark.parametrize(
+    "bad_value",
+    [
+        "http://evil/",
+        "127.0.0.1:8080/path",
+        "127.0.0.1/",
+        "foo bar",
+        "bad_hostname",  # underscore is not valid in RFC-1123
+        "-leading-hyphen",
+        "trailing-hyphen-",
+        "a" * 254,  # exceeds DNS max length
+    ],
+)
+def test_localize_endpoint_rejects_malformed_env_override(monkeypatch, caplog, bad_value):
+    monkeypatch.setenv("CLAWCU_A2A_HOST_HOSTNAME", bad_value)
+    with caplog.at_level(logging.WARNING, logger="clawcu.a2a.client"):
+        out = localize_endpoint_for_host("http://host.docker.internal:9100/a2a/send")
+    assert out == "http://127.0.0.1:9100/a2a/send"
+    assert any("CLAWCU_A2A_HOST_HOSTNAME" in r.message for r in caplog.records)
+
+
+def test_localize_endpoint_accepts_plain_hostname_override(monkeypatch):
+    # Valid RFC-1123 hostname, already covered by the docker.for.mac.localhost
+    # test above but kept as an explicit regression guard against over-strict
+    # validation.
+    monkeypatch.setenv("CLAWCU_A2A_HOST_HOSTNAME", "localhost")
+    out = localize_endpoint_for_host("http://host.docker.internal:9100/a2a/send")
+    assert out == "http://localhost:9100/a2a/send"
 
 
 # Review-14 P1-F1: hermes sidecar must cap the body size it will read. Before
