@@ -37,19 +37,16 @@ _SERVICE_PLUGIN_PORT_OFFSETS: dict[str, tuple[int, ...]] = {
 def _adapter_for(service: Any, service_name: str) -> Any | None:
     """Return the adapter for ``service_name`` via a ClawCUService handle,
     or ``None`` if unavailable. Best-effort — falls back silently so unit
-    tests that pass minimal stubs still work."""
+    tests that pass minimal service stubs still work."""
     if service is None or not service_name:
         return None
-    for attr in ("adapter_for_service", "adapter_for_record"):
-        method = getattr(service, attr, None)
-        if not callable(method):
-            continue
-        try:
-            if attr == "adapter_for_service":
-                return method(service_name)
-        except Exception:  # noqa: BLE001 — best-effort
-            return None
-    return None
+    lookup = getattr(service, "adapter_for_service", None)
+    if not callable(lookup):
+        return None
+    try:
+        return lookup(service_name)
+    except (ValueError, KeyError, AttributeError, TypeError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -162,7 +159,10 @@ def display_port_for_record(record: Any, *, service: Any = None) -> int:
         try:
             adapter = service.adapter_for_record(record)
             return int(adapter.display_port(service, record))
-        except Exception:  # noqa: BLE001 — best-effort, fall back
+        except (ValueError, KeyError, AttributeError, TypeError):
+            # Best-effort: fall through to the static table. Narrower than
+            # bare ``Exception`` so real bugs (ImportError, etc.) still
+            # surface.
             pass
     service_name = getattr(record, "service", "") or ""
     default = _SERVICE_DEFAULT_DISPLAY_PORT.get(service_name)
