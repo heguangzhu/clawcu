@@ -1,10 +1,25 @@
 # a2a-enabled OpenClaw image (baked by clawcu).
 #
 # Extends the stock OpenClaw image with:
-#   - /opt/a2a/server.py           python sidecar (stdlib only)
+#   - /opt/a2a/server.py                 stdlib-Python A2A sidecar (entry)
+#   - /opt/a2a/adapters.py               config-source adapters
+#                                        (HostAdapter / LocalAdapter +
+#                                        read_gateway_auth)
+#   - /opt/a2a/http_client.py            outbound HTTP helpers
+#                                        (parse_http_url, post_json,
+#                                        http_request_raw, capped read)
+#   - /opt/a2a/logsink.py                stdout + optional file-tee logger
+#   - /opt/a2a/readiness.py              gateway readiness wait / invalidation
+#   - /opt/a2a/_common/                  stdlib primitives shared with the
+#                                        Hermes sidecar (streams, ratelimit,
+#                                        readiness, thread store, MCP
+#                                        dispatch)
 #   - /usr/local/bin/entrypoint-a2a.sh   supervisor that runs both the
 #                                        stock OpenClaw gateway and the
 #                                        A2A sidecar in a single container.
+#
+# The COPY below grabs the entire sidecar/ dir so new sibling modules
+# land under /opt/a2a/ automatically — no Dockerfile edit needed.
 #
 # Build args:
 #   OPENCLAW_VERSION        base image tag (default 2026.4.12)
