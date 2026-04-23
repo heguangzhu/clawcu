@@ -818,6 +818,38 @@ def test_bridge_serve_unknown_instance_without_overrides_fails(monkeypatch, temp
     assert "--endpoint" in result.output
 
 
+def test_bridge_serve_unknown_instance_with_empty_skills_fails(monkeypatch, temp_clawcu_home):
+    """Review-1 §11: `--skills ""` parses to [] and must be rejected up front.
+
+    Without this guard the CLI would happily bind a bridge whose AgentCard
+    has no skills — peers can fetch it but no discovery query matches,
+    which is a worse user experience than a fail-fast error.
+    """
+    class EmptyService:
+        def list_instances(self, *, running_only=False):  # noqa: ARG002
+            return []
+
+    monkeypatch.setattr("clawcu.a2a.cli.ClawCUService", lambda: EmptyService())
+    result = runner.invoke(
+        app,
+        [
+            "a2a",
+            "bridge",
+            "serve",
+            "--instance",
+            "virtual",
+            "--role",
+            "demo",
+            "--skills",
+            "",
+            "--endpoint",
+            "http://example.test/a2a/send",
+        ],
+    )
+    assert result.exit_code == 1
+    assert "--skills" in result.output
+
+
 def test_bridge_serve_default_port_uses_display_port(monkeypatch, temp_clawcu_home):
     record = FakeRecord(name="writer", service="openclaw", port=0)
 

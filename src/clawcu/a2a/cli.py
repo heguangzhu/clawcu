@@ -158,6 +158,19 @@ def _resolve_bridge_card(
         )
         raise typer.Exit(code=1)
 
+    # Review-1 §11: `--skills ""` parses to [] (see `_parse_skills`). With
+    # the record branch we inherit non-empty skills from the service table,
+    # but here the user is the sole source. Empty skills produces a card
+    # peers can fetch yet can't match any discovery query against — and a
+    # future strict-mode `AgentCard.from_dict` would reject it outright.
+    # Fail fast rather than letting the user start an unusable bridge.
+    if not skills_override:
+        console.print(
+            "[bold red]Error:[/bold red] --skills must list at least one "
+            "non-empty skill."
+        )
+        raise typer.Exit(code=1)
+
     resolved_port = port if port is not None else DEFAULT_BRIDGE_PORT
     card = AgentCard(
         name=instance,
