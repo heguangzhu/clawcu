@@ -288,6 +288,7 @@ from inbound_limits import (  # noqa: E402
     _parse_content_length,
     parse_optional_non_empty_string,
     read_inbound_json_body,
+    read_inbound_mcp_body,
 )
 
 
@@ -689,42 +690,13 @@ def build_handler(
             """
             request_id = read_or_mint_request_id(self.headers)
             rid_headers = {_REQUEST_ID_HEADER: request_id}
-            cap = _max_body_bytes()
-            try:
-                length = _parse_content_length(self.headers, cap=cap)
-            except _BadContentLength as exc:
-                status = 413 if "exceeds" in str(exc) else 400
-                write_json_response(
-                    self,
-                    status,
-                    {
-                        "jsonrpc": "2.0",
-                        "id": None,
-                        "error": {
-                            "code": MCP_ERR_PARSE,
-                            "message": str(exc),
-                        },
-                    },
-                    extra_headers=rid_headers,
-                )
-                return
-            raw = self.rfile.read(length) if length else b""
-            try:
-                payload = json.loads(raw.decode("utf-8")) if raw else None
-            except Exception as exc:  # noqa: BLE001
-                write_json_response(
-                    self,
-                    400,
-                    {
-                        "jsonrpc": "2.0",
-                        "id": None,
-                        "error": {
-                            "code": MCP_ERR_PARSE,
-                            "message": f"bad json: {exc}",
-                        },
-                    },
-                    extra_headers=rid_headers,
-                )
+            ok, payload = read_inbound_mcp_body(
+                self,
+                cap=_max_body_bytes(),
+                err_parse_code=MCP_ERR_PARSE,
+                rid_headers=rid_headers,
+            )
+            if not ok:
                 return
             log.info(
                 "mcp.request request_id=%s method=%s",

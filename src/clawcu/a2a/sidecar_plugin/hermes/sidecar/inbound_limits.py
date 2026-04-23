@@ -10,8 +10,11 @@ or into 5-minute-timeout-pinned worker threads:
    with a 508 before any gateway work.
 4. ``read_inbound_json_body()`` — composes (1)+(2) with JSON + dict
    validation and writes a uniform ``{error, request_id}`` 400/413
-   response on any failure. ``/a2a/send`` and ``/a2a/outbound`` share
-   it; ``/mcp`` uses its own JSON-RPC-envelope error path.
+   response on any failure. ``/a2a/send`` and ``/a2a/outbound`` share it.
+5. ``read_inbound_mcp_body()`` — same body-cap + content-length discipline
+   as (4) but writes the JSON-RPC 2.0 envelope ``/mcp`` requires, and
+   allows ``None`` / non-dict payloads (``handle_mcp_request`` does its
+   own schema check).
 
 Lifted out of ``server.py`` so the handler code reads as business logic
 instead of a 1,000-line wall that mixes reject-early guards with
@@ -144,6 +147,63 @@ def read_inbound_json_body(
         )
         return None
     return payload
+
+
+def read_inbound_mcp_body(
+    handler: Any,
+    *,
+    cap: int,
+    err_parse_code: int,
+    rid_headers: dict[str, str],
+) -> tuple[bool, Any]:
+    """Parse an inbound POST body destined for ``/mcp``.
+
+    Counterpart to :func:`read_inbound_json_body` for the JSON-RPC 2.0
+    endpoint. Shares the body-size cap + ``Content-Length`` discipline,
+    but differs in two ways:
+
+    * Error responses use the JSON-RPC envelope
+      ``{"jsonrpc":"2.0","id":null,"error":{"code":<parse>,"message":...}}``
+      with the caller-supplied ``err_parse_code`` (``MCP_ERR_PARSE``).
+    * Empty bodies yield ``payload=None`` and non-dict payloads are
+      passed through — ``handle_mcp_request`` does its own schema check.
+
+    Returns ``(True, payload)`` on success (``payload`` may be any
+    JSON-decoded value, including ``None``). Returns ``(False, None)``
+    when an error response has already been written; the caller's next
+    line is just ``return``.
+    """
+    try:
+        length = _parse_content_length(handler.headers, cap=cap)
+    except _BadContentLength as exc:
+        status = 413 if "exceeds" in str(exc) else 400
+        write_json_response(
+            handler,
+            status,
+            {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": err_parse_code, "message": str(exc)},
+            },
+            extra_headers=rid_headers,
+        )
+        return False, None
+    raw = handler.rfile.read(length) if length else b""
+    try:
+        payload = json.loads(raw.decode("utf-8")) if raw else None
+    except Exception as exc:  # noqa: BLE001 — surface any parse error
+        write_json_response(
+            handler,
+            400,
+            {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {"code": err_parse_code, "message": f"bad json: {exc}"},
+            },
+            extra_headers=rid_headers,
+        )
+        return False, None
+    return True, payload
 
 
 # parse_optional_non_empty_string + the BadPayload exception live in
