@@ -10,13 +10,16 @@ hermes /a2a/send, hermes /a2a/outbound, openclaw /a2a/send, and openclaw
 
 :class:`BadPayload` is distinct from the pre-read ``_BadContentLength``:
 this one fires on an already-validated dict whose field-level type is
-wrong. Callers translate the message into a ``{error, request_id}``
-400 response (openclaw) or a flat ``{error}`` body (hermes).
+wrong. Callers translate the message into a uniform
+``{error, request_id}`` 400 response via
+:func:`write_bad_payload_response`.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
+
+from _common.http_response import write_json_response
 
 
 class BadPayload(Exception):
@@ -57,3 +60,26 @@ def require_non_empty_string(payload: dict[str, Any], field_name: str) -> str:
     if isinstance(raw, str) and raw:
         return raw
     raise BadPayload(f"'{field_name}' must be a non-empty string")
+
+
+def write_bad_payload_response(
+    handler: Any,
+    exc: BadPayload,
+    *,
+    request_id: str,
+    rid_headers: Mapping[str, str],
+) -> None:
+    """Write the uniform 400 envelope for a :class:`BadPayload`.
+
+    Both sidecars batch their required+optional field checks under one
+    ``try`` so the rejection path is a single call. The envelope
+    (``{error, request_id}`` + echoed ``X-A2A-Request-Id``) is identical
+    across runtimes, so it lives next to the validators that raise it
+    rather than being copy-pasted into each ``server.py``.
+    """
+    write_json_response(
+        handler,
+        400,
+        {"error": str(exc), "request_id": request_id},
+        extra_headers=rid_headers,
+    )

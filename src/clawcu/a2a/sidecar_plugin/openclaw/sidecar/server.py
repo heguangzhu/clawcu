@@ -109,6 +109,7 @@ from _common.payload import (  # noqa: E402
     BadPayload,
     parse_optional_non_empty_string,
     require_non_empty_string,
+    write_bad_payload_response,
 )
 
 __all__ = [
@@ -290,20 +291,6 @@ def _make_handler_class(ctx: Dict[str, Any]):
         )
         return incoming_hop, request_id, rid_headers, True
 
-    def _reject_bad_payload(
-        handler, exc: BadPayload, *, request_id: str, rid_headers: Dict[str, str]
-    ) -> None:
-        """Uniform 400 envelope for a :class:`BadPayload` raised by the
-        shared ``_common.payload`` validators. Both /a2a/send and
-        /a2a/outbound batch their required+optional field checks under a
-        single ``try`` so the rejection path is one helper call."""
-        write_json_response(
-            handler,
-            400,
-            {"error": str(exc), "request_id": request_id},
-            rid_headers,
-        )
-
     class Handler(http.server.BaseHTTPRequestHandler):
         # Silence BaseHTTPRequestHandler's stderr default — we log ourselves.
         def log_message(self, format: str, *args) -> None:  # noqa: A003
@@ -369,7 +356,7 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 peer_from = require_non_empty_string(body, "from")
                 thread_id = parse_optional_non_empty_string(body, "thread_id")
             except BadPayload as exc:
-                return _reject_bad_payload(
+                return write_bad_payload_response(
                     self, exc, request_id=request_id, rid_headers=rid_headers
                 )
 
@@ -479,7 +466,7 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 message = require_non_empty_string(body, "message")
                 out_thread_id = parse_optional_non_empty_string(body, "thread_id")
             except BadPayload as exc:
-                return _reject_bad_payload(
+                return write_bad_payload_response(
                     self, exc, request_id=request_id, rid_headers=rid_headers
                 )
 
