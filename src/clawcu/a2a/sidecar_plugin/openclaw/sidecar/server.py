@@ -26,7 +26,6 @@ import os
 import signal
 import socket
 import socketserver
-import subprocess
 import sys
 import threading
 import time
@@ -82,9 +81,27 @@ from _common.protocol import (  # noqa: E402
 from _common.ratelimit import create_rate_limiter  # noqa: E402
 from _common import streams as _streams  # noqa: E402
 from _common.thread import create_thread_store  # noqa: E402
+from adapters import (  # noqa: E402
+    HostAdapter,
+    LocalAdapter,
+    OPENCLAW_AUTH_PATH,
+    OPENCLAW_CONFIG_PATH,
+    make_host_adapter,
+    make_local_adapter,
+    read_gateway_auth,
+)
 
-OPENCLAW_CONFIG_PATH = "/home/node/.openclaw/openclaw.json"
-OPENCLAW_AUTH_PATH = "/home/node/.openclaw/auth.json"
+__all__ = [
+    # Re-exported for tests and for any caller that used to import these
+    # directly from server.py before the adapters/* split.
+    "HostAdapter",
+    "LocalAdapter",
+    "OPENCLAW_AUTH_PATH",
+    "OPENCLAW_CONFIG_PATH",
+    "make_host_adapter",
+    "make_local_adapter",
+    "read_gateway_auth",
+]
 
 A2A_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 READ_JSON_BODY_LIMIT = 64 * 1024
@@ -125,92 +142,6 @@ def parse_args(argv) -> Dict[str, Any]:
             out[key] = nxt
             i += 2
     return out
-
-
-# ---- Source adapters --------------------------------------------------------
-
-class HostAdapter:
-    mode = "host"
-
-    def __init__(self, container: str) -> None:
-        self.container = container
-
-    def _exec(self, args):
-        try:
-            res = subprocess.run(
-                ["docker", "exec", self.container, *args],
-                capture_output=True,
-                check=False,
-                text=True,
-            )
-            if res.returncode != 0:
-                return None
-            return res.stdout
-        except Exception:
-            return None
-
-    def read_file(self, path: str):
-        return self._exec(["cat", path])
-
-    def get_env(self, name: str):
-        v = self._exec(["printenv", name])
-        if v is None:
-            return None
-        v = v.strip()
-        return v or None
-
-
-class LocalAdapter:
-    mode = "local"
-
-    def read_file(self, path: str):
-        try:
-            with open(path, "r", encoding="utf-8") as fh:
-                return fh.read()
-        except OSError:
-            return None
-
-    def get_env(self, name: str):
-        v = os.environ.get(name)
-        return v or None
-
-
-def make_host_adapter(container: str) -> HostAdapter:
-    return HostAdapter(container)
-
-
-def make_local_adapter() -> LocalAdapter:
-    return LocalAdapter()
-
-
-def read_gateway_auth(adapter) -> Dict[str, Any]:
-    raw = adapter.read_file(OPENCLAW_CONFIG_PATH)
-    if not raw:
-        raise RuntimeError("could not read openclaw.json")
-    cfg = json.loads(raw)
-    gateway_cfg = cfg.get("gateway") if isinstance(cfg, dict) else None
-    auth_cfg = gateway_cfg.get("auth") if isinstance(gateway_cfg, dict) else None
-    auth_mode = "token"
-    token = None
-    if isinstance(auth_cfg, dict):
-        auth_mode = auth_cfg.get("mode") or "token"
-        token = auth_cfg.get("token")
-    if auth_mode == "token" and not token:
-        auth_raw = adapter.read_file(OPENCLAW_AUTH_PATH)
-        if auth_raw:
-            try:
-                auth_cfg2 = json.loads(auth_raw)
-                if isinstance(auth_cfg2, dict):
-                    inner = auth_cfg2.get("gateway", {}) if isinstance(auth_cfg2.get("gateway"), dict) else {}
-                    inner_auth = inner.get("auth", {}) if isinstance(inner.get("auth"), dict) else {}
-                    token = inner_auth.get("token") or auth_cfg2.get("token")
-            except Exception:
-                pass
-    if auth_mode == "token" and not token:
-        raise RuntimeError(
-            "gateway.auth.token missing in openclaw.json (and no fallback auth.json)"
-        )
-    return {"authMode": auth_mode, "token": token}
 
 
 # ---- HTTP helpers -----------------------------------------------------------
