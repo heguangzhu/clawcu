@@ -1887,7 +1887,7 @@ def _load_hermes_sidecar_module():
 def test_hermes_sidecar_wait_for_gateway_ready_succeeds_when_health_live(monkeypatch):
     mod = _load_hermes_sidecar_module()
     # Reset the cache so prior tests don't short-circuit.
-    monkeypatch.setattr(mod, "_GATEWAY_READY_UNTIL", 0.0, raising=False)
+    mod._gateway_ready_cache.invalidate()
 
     class _OKHandler(BaseHTTPRequestHandler):
         def log_message(self, *a, **kw):
@@ -1928,7 +1928,7 @@ def test_hermes_sidecar_honors_a2a_gateway_ready_path_env(monkeypatch):
     # not a hardcoded /health. This test points the sidecar at /custompath
     # and asserts that's what ends up in the HTTP request URL.
     mod = _load_hermes_sidecar_module()
-    monkeypatch.setattr(mod, "_GATEWAY_READY_UNTIL", 0.0, raising=False)
+    mod._gateway_ready_cache.invalidate()
 
     probed_paths: list[str] = []
 
@@ -1969,7 +1969,7 @@ def test_hermes_sidecar_honors_a2a_gateway_ready_path_env(monkeypatch):
 
 def test_hermes_sidecar_wait_for_gateway_ready_times_out_when_unreachable(monkeypatch):
     mod = _load_hermes_sidecar_module()
-    monkeypatch.setattr(mod, "_GATEWAY_READY_UNTIL", 0.0, raising=False)
+    mod._gateway_ready_cache.invalidate()
     # Port 1 is refused on every host.
     monkeypatch.setenv("HERMES_API_HOST", "127.0.0.1")
     monkeypatch.setenv("HERMES_API_PORT", "1")
@@ -2274,10 +2274,10 @@ def test_hermes_sidecar_invalidate_gateway_ready_resets_cache():
     """
     sidecar_mod = _load_hermes_sidecar_module()
     # Prime the cache: pretend we just saw a 200 /health.
-    sidecar_mod._GATEWAY_READY_UNTIL = 9e18  # far future
-    assert sidecar_mod._GATEWAY_READY_UNTIL > 0
+    sidecar_mod._gateway_ready_cache.mark_ready_until(9e18)
+    assert sidecar_mod._gateway_ready_cache.expires_at > 0
     sidecar_mod.invalidate_gateway_ready_cache()
-    assert sidecar_mod._GATEWAY_READY_UNTIL == 0.0
+    assert sidecar_mod._gateway_ready_cache.expires_at == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -2431,7 +2431,7 @@ def test_hermes_sidecar_wait_for_gateway_ready_uses_cache_until_invalidated(
     cfg = sidecar_mod.Config()
 
     # Reset module-level cache first; pristine state.
-    sidecar_mod._GATEWAY_READY_UNTIL = 0.0
+    sidecar_mod._gateway_ready_cache.invalidate()
 
     # 1st call → probes once, caches success.
     assert sidecar_mod.wait_for_gateway_ready(cfg) is True
@@ -2843,7 +2843,7 @@ def test_hermes_sidecar_outbound_handler_end_to_end(monkeypatch):
     reply to the caller.
     """
     mod = _load_hermes_sidecar_module()
-    monkeypatch.setattr(mod, "_GATEWAY_READY_UNTIL", 0.0, raising=False)
+    mod._gateway_ready_cache.invalidate()
     monkeypatch.setenv("A2A_SELF_NAME", "writer-hermes")
     monkeypatch.setenv("API_SERVER_KEY", "k")
     monkeypatch.setenv("A2A_ALLOW_CLIENT_REGISTRY_URL", "1")
@@ -5848,7 +5848,7 @@ def test_call_hermes_rejects_oversized_http_error_body(monkeypatch):
 
         # Pre-warm the gateway readiness cache so the sidecar doesn't
         # block for 30 s probing a /health that doesn't exist.
-        mod._GATEWAY_READY_UNTIL = time.time() + 300
+        mod._gateway_ready_cache.mark_ready_until(time.time() + 300)
 
         from http.server import ThreadingHTTPServer as _ThSrv
 

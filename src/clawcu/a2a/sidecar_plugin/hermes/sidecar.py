@@ -145,6 +145,7 @@ from _common.protocol import (  # noqa: E402
     read_hop_header,
     read_or_mint_request_id,
 )
+from _common.readiness import ReadinessCache  # noqa: E402
 from _common.mcp import (  # noqa: E402
     ERR_A2A_UPSTREAM as MCP_ERR_A2A_UPSTREAM,
     ERR_INTERNAL as MCP_ERR_INTERNAL,
@@ -299,7 +300,8 @@ class Config:
 
 # Cache a recent "ready" observation so we don't probe on every /a2a/send.
 # 5-minute TTL matches the openclaw sidecar.
-_GATEWAY_READY_UNTIL = 0.0
+_GATEWAY_READY_TTL_S = 5 * 60
+_gateway_ready_cache = ReadinessCache()
 
 
 def _probe_gateway_ready(cfg: Config) -> bool:
@@ -320,15 +322,14 @@ def wait_for_gateway_ready(cfg: Config, now_fn=None, sleep_fn=None) -> bool:
     """
     import time as _time
 
-    global _GATEWAY_READY_UNTIL
     now = now_fn or _time.time
     sleep = sleep_fn or _time.sleep
-    if now() < _GATEWAY_READY_UNTIL:
+    if _gateway_ready_cache.is_fresh(now()):
         return True
     deadline = now() + cfg.ready_deadline
     while now() < deadline:
         if _probe_gateway_ready(cfg):
-            _GATEWAY_READY_UNTIL = now() + 5 * 60
+            _gateway_ready_cache.mark_ready(now(), ttl=_GATEWAY_READY_TTL_S)
             return True
         sleep(cfg.ready_poll_interval)
     return False
@@ -342,8 +343,7 @@ def invalidate_gateway_ready_cache() -> None:
     sidecar keep pushing into a dead gateway without re-probing, turning one
     gateway flake into a 5-minute outage.
     """
-    global _GATEWAY_READY_UNTIL
-    _GATEWAY_READY_UNTIL = 0.0
+    _gateway_ready_cache.invalidate()
 
 
 def call_hermes(
