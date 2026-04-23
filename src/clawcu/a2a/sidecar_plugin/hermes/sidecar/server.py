@@ -333,6 +333,49 @@ def _hop_prelude(
     return incoming_hop, request_id, rid_headers, False
 
 
+def _resolve_outbound_registry_url(
+    handler: BaseHTTPRequestHandler,
+    *,
+    payload: dict[str, Any],
+    allow_client_override: bool,
+    request_id: str,
+    rid_headers: dict[str, str],
+) -> str | None:
+    """Pick the registry URL for ``/a2a/outbound``, enforcing SSRF policy.
+
+    Review-17 P1-I1: a body-level ``registry_url`` override lets the caller
+    point the sidecar at any URL for a GET (probe + leak). Require operator
+    opt-in (``A2A_ALLOW_CLIENT_REGISTRY_URL=true``), a non-empty string, and
+    an allow-listed scheme. On any failure this writes the 400 response
+    itself and returns ``None`` so the caller just ``return``s. On success
+    returns the resolved URL — either the validated override or the
+    environment/default registry URL.
+    """
+    raw_registry = payload.get("registry_url")
+    if raw_registry is None:
+        return _default_registry_url()
+
+    def _reject(msg: str) -> None:
+        write_json_response(
+            handler,
+            400,
+            {"error": msg, "request_id": request_id},
+            extra_headers=rid_headers,
+        )
+
+    if not allow_client_override:
+        _reject("client-supplied 'registry_url' is disabled by server policy")
+        return None
+    if not isinstance(raw_registry, str) or not raw_registry:
+        _reject("'registry_url' must be a non-empty string when provided")
+        return None
+    try:
+        return _validate_outbound_url(raw_registry)
+    except _BadOutboundUrl as exc:
+        _reject(f"invalid 'registry_url': {exc}")
+        return None
+
+
 # Response caps (Review-21 P2-M1 / Review-22 P2-N1):
 #   A2A_MAX_RESPONSE_BYTES (4 MiB)  — outbound peer/registry responses, owned
 #                                    by ``peering`` (a compromised peer is the
@@ -749,51 +792,15 @@ def build_handler(
                     extra_headers=rid_headers,
                 )
                 return
-            # Review-17 P1-I1: SSRF guard. The body-level registry_url
-            # override lets the caller point the sidecar at any URL for
-            # a GET (probe+leak) and, if the attacker controls the
-            # response, at any URL for a POST (via card.endpoint). Gate
-            # the override behind an operator opt-in; validate scheme
-            # even when allowed.
-            raw_registry = payload.get("registry_url")
-            if raw_registry is not None:
-                if not cfg.allow_client_registry_url:
-                    write_json_response(
-                        self,
-                        400,
-                        {
-                            "error": "client-supplied 'registry_url' is disabled by server policy",
-                            "request_id": request_id,
-                        },
-                        extra_headers=rid_headers,
-                    )
-                    return
-                if not isinstance(raw_registry, str) or not raw_registry:
-                    write_json_response(
-                        self,
-                        400,
-                        {
-                            "error": "'registry_url' must be a non-empty string when provided",
-                            "request_id": request_id,
-                        },
-                        extra_headers=rid_headers,
-                    )
-                    return
-                try:
-                    registry_url = _validate_outbound_url(raw_registry)
-                except _BadOutboundUrl as exc:
-                    write_json_response(
-                        self,
-                        400,
-                        {
-                            "error": f"invalid 'registry_url': {exc}",
-                            "request_id": request_id,
-                        },
-                        extra_headers=rid_headers,
-                    )
-                    return
-            else:
-                registry_url = _default_registry_url()
+            registry_url = _resolve_outbound_registry_url(
+                self,
+                payload=payload,
+                allow_client_override=cfg.allow_client_registry_url,
+                request_id=request_id,
+                rid_headers=rid_headers,
+            )
+            if registry_url is None:
+                return
             raw_timeout = payload.get("timeout_ms")
             if isinstance(raw_timeout, (int, float)) and raw_timeout > 0:
                 timeout_s = float(raw_timeout) / 1000.0
