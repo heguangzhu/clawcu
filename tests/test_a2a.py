@@ -111,6 +111,70 @@ def test_agent_card_rejects_missing_fields():
         )
 
 
+# Review-1 §2: older clients must tolerate newer cards that carry
+# additional fields. Gate against regressing to hard ValueError on
+# unknown keys.
+def test_agent_card_ignores_unknown_fields():
+    data = {
+        "name": "writer",
+        "role": "role",
+        "skills": ["s"],
+        "endpoint": "http://x/a2a/send",
+        "pub_key": "ignored",
+        "capabilities": {"stream": True},
+        "future_field": [1, 2, 3],
+    }
+    card = AgentCard.from_dict(data)
+    assert card.name == "writer"
+    assert card.role == "role"
+    assert card.skills == ["s"]
+    assert card.endpoint == "http://x/a2a/send"
+    # Unknown fields vanish — they are not stored anywhere on the card.
+    assert "pub_key" not in card.to_dict()
+    assert "capabilities" not in card.to_dict()
+
+
+# Review-1 §15: cards may now advertise the protocol version(s) they
+# speak. Absence is legacy and round-trips without appearing on the wire.
+def test_agent_card_protocol_round_trip():
+    data = {
+        "name": "writer",
+        "role": "role",
+        "skills": ["s"],
+        "endpoint": "http://x/a2a/send",
+        "protocol": ["a2a/v0.1"],
+    }
+    card = AgentCard.from_dict(data)
+    assert card.protocol == ["a2a/v0.1"]
+    assert card.to_dict()["protocol"] == ["a2a/v0.1"]
+
+
+def test_agent_card_protocol_absent_stays_absent_in_to_dict():
+    card = AgentCard(
+        name="writer",
+        role="role",
+        skills=["s"],
+        endpoint="http://x/a2a/send",
+    )
+    assert card.protocol is None
+    assert "protocol" not in card.to_dict()
+
+
+def test_agent_card_protocol_must_be_list_of_nonempty_strings():
+    base = {
+        "name": "writer",
+        "role": "role",
+        "skills": ["s"],
+        "endpoint": "http://x/a2a/send",
+    }
+    with pytest.raises(ValueError):
+        AgentCard.from_dict({**base, "protocol": "a2a/v0.1"})  # not a list
+    with pytest.raises(ValueError):
+        AgentCard.from_dict({**base, "protocol": [""]})  # empty element
+    with pytest.raises(ValueError):
+        AgentCard.from_dict({**base, "protocol": [1]})  # non-string element
+
+
 def test_skills_for_service_has_placeholder_map():
     assert skills_for_service("openclaw") == ["chat", "tools"]
     assert skills_for_service("hermes") == ["chat", "analysis"]

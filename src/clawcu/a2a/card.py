@@ -42,15 +42,29 @@ class AgentCard:
     role: str
     skills: list[str] = field(default_factory=list)
     endpoint: str = ""
+    # Review-1 §15: optional protocol-version advertisement, e.g.
+    # ``["a2a/v0.1"]``. ``None`` means "unspecified" (pre-§15 card); peers
+    # that care may treat it as implicit v0.1. Omitted from ``to_dict``
+    # when unset so the wire format is byte-identical to the pre-§15
+    # schema for cards that haven't opted in.
+    protocol: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        if data.get("protocol") is None:
+            data.pop("protocol", None)
+        return data
 
     def to_json(self, *, indent: int | None = 2) -> str:
         return json.dumps(self.to_dict(), indent=indent, sort_keys=True)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AgentCard":
+        # Review-1 §2: forward-compatibility — accept unknown fields and
+        # quietly drop them. A newer peer that adds ``pub_key`` or
+        # ``capabilities`` must not make an older client raise ValueError.
+        # Strict schema enforcement is a non-goal for a forward-compat
+        # protocol; callers that want stricter validation layer it above.
         missing = {"name", "role", "skills", "endpoint"} - data.keys()
         if missing:
             raise ValueError(f"AgentCard missing fields: {sorted(missing)}")
@@ -66,7 +80,19 @@ class AgentCard:
             raise ValueError("AgentCard.role must be a non-empty string")
         if not (isinstance(endpoint, str) and endpoint):
             raise ValueError("AgentCard.endpoint must be a non-empty string")
-        return cls(name=name, role=role, skills=skills, endpoint=endpoint)
+        protocol = data.get("protocol")
+        if protocol is not None and not (
+            isinstance(protocol, list)
+            and all(isinstance(p, str) and p for p in protocol)
+        ):
+            raise ValueError("AgentCard.protocol must be a list of non-empty strings")
+        return cls(
+            name=name,
+            role=role,
+            skills=skills,
+            endpoint=endpoint,
+            protocol=protocol,
+        )
 
     @classmethod
     def from_json(cls, payload: str) -> "AgentCard":
