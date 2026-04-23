@@ -494,16 +494,26 @@ def build_handler(
             write_json_response(self, 404, {"error": f"not found: {self.path}"})
 
         def do_POST(self) -> None:  # noqa: N802
+            if self.path == "/a2a/send":
+                self._handle_send()
+                return
             if self.path == "/a2a/outbound":
                 self._handle_outbound()
                 return
             if self.path == "/mcp":
                 self._handle_mcp()
                 return
-            if self.path != "/a2a/send":
-                write_json_response(self, 404, {"error": f"not found: {self.path}"})
-                return
+            write_json_response(self, 404, {"error": f"not found: {self.path}"})
 
+        def _handle_send(self) -> None:
+            """Native-agent turn: forward a peer message to Hermes and reply.
+
+            See module docstring for the full routing rationale. Error surfaces
+            — hop-budget 508, body-cap 413, shape 400, rate-limit 429, gateway
+            readiness 503, upstream 502/504, internal 500 — are all emitted via
+            the uniform ``{error, request_id}`` envelope with the caller's
+            ``X-A2A-Request-Id`` echoed back.
+            """
             # Review-15 P0-A: hop-budget check lives BEFORE body parsing so a
             # runaway loop can't even spend JSON-parse cycles on us.
             incoming_hop, request_id, rid_headers, refused = _hop_prelude(
