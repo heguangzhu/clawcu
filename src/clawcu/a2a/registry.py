@@ -15,6 +15,7 @@ from clawcu.a2a.card import (
     plugin_port_candidates,
 )
 from clawcu.a2a.sidecar_plugin import resolve_advertise_host
+from clawcu.a2a.sidecar_plugin._common import streams as _streams
 
 CardProvider = Callable[[], Iterable[AgentCard]]
 
@@ -46,20 +47,15 @@ _OPENER = urllib.request.build_opener(_NoRedirectHandler)
 A2A_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
 
-class _ResponseTooLarge(Exception):
-    """Raised when a plugin card response exceeds ``A2A_MAX_RESPONSE_BYTES``.
-
-    Review-21 P2-M1: a compromised plugin (or anything squatting on a
-    probed port) could stream GBs as its card and OOM the registry
-    process. Cap is a compile-time constant.
-    """
-
-
-def _read_capped(response, cap: int = A2A_MAX_RESPONSE_BYTES) -> bytes:
-    raw = response.read(cap + 1)
-    if len(raw) > cap:
-        raise _ResponseTooLarge(f"response exceeds {cap} bytes")
-    return raw
+# Review-21 P2-M1 (+ Batch 24 unification): a compromised plugin (or anything
+# squatting on a probed port) could stream GBs as its card and OOM the
+# registry. The chunked reader in ``_common.streams`` aborts after the first
+# 64 KiB chunk that crosses the cap, so we don't pre-allocate ``cap+1``
+# bytes even if ``Content-Length`` claims a huge number. Alias the shared
+# ``ResponseTooLarge`` as ``_ResponseTooLarge`` so the single ``except``
+# arm below keeps matching without rewriting call sites.
+_ResponseTooLarge = _streams.ResponseTooLarge
+_read_capped = _streams.read_capped_bytes
 
 
 def _fetch_card_at(url: str, timeout: float) -> AgentCard | None:
