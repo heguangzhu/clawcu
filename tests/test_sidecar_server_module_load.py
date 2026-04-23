@@ -7,7 +7,7 @@ wired inside `server.main()`.
 """
 from __future__ import annotations
 
-import importlib
+import importlib.util
 import os
 import sys
 import threading
@@ -24,17 +24,26 @@ _SIDECAR = os.path.abspath(
         "sidecar",
     )
 )
+# Expose openclaw's sidecar/ so ``from logsink import ...`` and siblings
+# resolve against the right copy (hermes's sidecar/ also has a server.py —
+# name-based ``import server`` would race). The actual server.py is loaded
+# by path below, so a later sys.path mutation from some hermes-side test
+# cannot steal the import.
 if _SIDECAR not in sys.path:
     sys.path.insert(0, _SIDECAR)
 
 
-def test_import_server_does_not_start_sweep_thread():
-    # Drop any cached import so the module body runs under our observation.
-    for name in ("server",):
-        sys.modules.pop(name, None)
+def _load_openclaw_server_module():
+    path = os.path.join(_SIDECAR, "server.py")
+    spec = importlib.util.spec_from_file_location("_openclaw_server_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
+
+def test_import_server_does_not_start_sweep_thread():
     before = {t.name for t in threading.enumerate()}
-    server = importlib.import_module("server")
+    server = _load_openclaw_server_module()
     after = {t.name for t in threading.enumerate()}
 
     # Importing server must not spawn a sweep thread. The class still

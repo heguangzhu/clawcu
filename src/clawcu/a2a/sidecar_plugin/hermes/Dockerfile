@@ -1,7 +1,8 @@
 # a2a-enabled Hermes image (baked by clawcu).
 #
 # Extends the stock Hermes image with:
-#   - /opt/a2a/sidecar.py                stdlib-Python A2A sidecar
+#   - /opt/a2a/server.py                 stdlib-Python A2A sidecar (entry)
+#   - /opt/a2a/gateway.py                sibling module — gateway readiness probe
 #   - /usr/local/bin/entrypoint-a2a.sh   supervisor that runs both the
 #                                        stock Hermes gateway and the
 #                                        A2A sidecar in a single container.
@@ -33,9 +34,10 @@ RUN apt-get update \
 RUN mkdir -p /opt/a2a
 # Build context is sidecar_plugin/ (one level up from this Dockerfile) so we
 # can COPY both the hermes-specific sidecar sources and the shared _common/
-# package. sidecar.py prepends __file__'s directory to sys.path at startup,
-# which then makes `import _common.xxx` resolve against /opt/a2a/_common/.
-COPY hermes/sidecar.py   /opt/a2a/sidecar.py
+# package baked beside them. server.py prepends __file__'s directory to
+# sys.path at startup, which then makes `import _common.xxx` and sibling
+# imports (e.g. `from gateway import ...`) resolve against /opt/a2a/.
+COPY hermes/sidecar/     /opt/a2a/
 COPY _common/            /opt/a2a/_common/
 COPY hermes/entrypoint.sh /usr/local/bin/entrypoint-a2a.sh
 RUN chmod +x /usr/local/bin/entrypoint-a2a.sh

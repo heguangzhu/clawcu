@@ -18,7 +18,7 @@ A2A_ADVERTISE_HOST="${A2A_ADVERTISE_HOST:-127.0.0.1}"
 A2A_ADVERTISE_PORT="${A2A_ADVERTISE_PORT:-9129}"
 export A2A_SELF_ENDPOINT="${A2A_SELF_ENDPOINT:-http://$A2A_ADVERTISE_HOST:$A2A_ADVERTISE_PORT/a2a/send}"
 
-python3 /opt/a2a/sidecar.py &
+python3 /opt/a2a/server.py &
 SIDECAR_PID=$!
 
 /opt/hermes/docker/entrypoint.sh "$@" &

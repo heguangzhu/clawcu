@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 import urllib.error
@@ -2049,7 +2050,8 @@ def _load_hermes_sidecar_module():
         / "a2a"
         / "sidecar_plugin"
         / "hermes"
-        / "sidecar.py"
+        / "sidecar"
+        / "server.py"
     )
     spec = importlib.util.spec_from_file_location("_hermes_sidecar_under_test", path)
     module = importlib.util.module_from_spec(spec)
@@ -2370,12 +2372,40 @@ def test_plugin_source_sha_still_reacts_to_real_source_edits(tmp_path, monkeypat
     baseline = plugin_mod.plugin_source_sha("hermes")
 
     # Touch a real source file.
-    sidecar = fake_hermes / "sidecar.py"
+    sidecar = fake_hermes / "sidecar" / "server.py"
     sidecar.write_text(sidecar.read_text(encoding="utf-8") + "\n# perturbation\n", encoding="utf-8")
     perturbed = plugin_mod.plugin_source_sha("hermes")
 
     assert perturbed != baseline, (
         "editing a real sidecar file must still change the fingerprint"
+    )
+
+
+def _assert_dockerfile_copies_whole_sidecar_dir(service: str) -> None:
+    from clawcu.a2a import sidecar_plugin as plugin_mod
+
+    source_dir = plugin_mod.plugin_source_dir(service)
+    dockerfile = (source_dir / "Dockerfile").read_text(encoding="utf-8")
+    sidecar_dir = source_dir / "sidecar"
+    py_files = sorted(p.name for p in sidecar_dir.glob("*.py") if p.name != "__init__.py")
+    assert py_files, f"test preconditions broken: no {service} sidecar .py files found"
+
+    copy_lines = [
+        line.strip()
+        for line in dockerfile.splitlines()
+        if line.lstrip().startswith("COPY") and "sidecar" in line
+    ]
+    # Collapse runs of whitespace so Dockerfile column-aligned COPY lines
+    # (``COPY hermes/sidecar/     /opt/a2a/``) still match the one-space
+    # substring probe.
+    joined = "\n".join(re.sub(r"\s+", " ", line) for line in copy_lines)
+    # Either the whole directory is copied (preferred), or every file is.
+    directory_copy = "sidecar/ /opt/a2a" in joined or "sidecar /opt/a2a" in joined
+    per_file = all(f"sidecar/{name}" in joined for name in py_files)
+    assert directory_copy or per_file, (
+        f"Dockerfile must COPY all {service} sidecar .py files; "
+        f"found COPY lines:\n{joined}\n"
+        f"expected files: {py_files}"
     )
 
 
@@ -2389,28 +2419,17 @@ def test_openclaw_dockerfile_copies_whole_sidecar_dir():
     directive — and the simplest way to guarantee that is to copy the
     directory, not individual files.
     """
-    from clawcu.a2a import sidecar_plugin as plugin_mod
+    _assert_dockerfile_copies_whole_sidecar_dir("openclaw")
 
-    source_dir = plugin_mod.plugin_source_dir("openclaw")
-    dockerfile = (source_dir / "Dockerfile").read_text(encoding="utf-8")
-    sidecar_dir = source_dir / "sidecar"
-    py_files = sorted(p.name for p in sidecar_dir.glob("*.py") if p.name != "__init__.py")
-    assert py_files, "test preconditions broken: no sidecar .py files found"
 
-    copy_lines = [
-        line.strip()
-        for line in dockerfile.splitlines()
-        if line.lstrip().startswith("COPY") and "sidecar" in line
-    ]
-    joined = "\n".join(copy_lines)
-    # Either the whole directory is copied (preferred), or every file is.
-    directory_copy = "sidecar/ /opt/a2a" in joined or "sidecar /opt/a2a" in joined
-    per_file = all(f"sidecar/{name}" in joined for name in py_files)
-    assert directory_copy or per_file, (
-        f"Dockerfile must COPY all sidecar .py files; "
-        f"found COPY lines:\n{joined}\n"
-        f"expected files: {py_files}"
-    )
+def test_hermes_dockerfile_copies_whole_sidecar_dir():
+    """Design-review §1: the Hermes sidecar is now split into ``sidecar/``
+    sibling modules (server.py, gateway.py, ...), mirroring openclaw. The
+    same COPY-directory guard protects against a refactor that adds a
+    sibling module but forgets to update the Dockerfile — the sidecar
+    would import-fail at container startup with a green unit-test suite.
+    """
+    _assert_dockerfile_copies_whole_sidecar_dir("hermes")
 
 
 def test_a2a_image_tag_embeds_source_sha_not_raw_version(tmp_path, monkeypatch):
@@ -2596,7 +2615,10 @@ def test_hermes_sidecar_wait_for_gateway_ready_uses_cache_until_invalidated(
         probe_calls["n"] += 1
         return True
 
-    monkeypatch.setattr(sidecar_mod, "_probe_gateway_ready", fake_probe)
+    # Patch on the gateway submodule (where wait_for_gateway_ready resolves
+    # the name); server.py just re-exports it, so patching server alone
+    # wouldn't intercept calls made from inside gateway.wait_for_gateway_ready.
+    monkeypatch.setattr(sidecar_mod.gateway, "_probe_gateway_ready", fake_probe)
     monkeypatch.setenv("HERMES_API_HOST", "127.0.0.1")
     monkeypatch.setenv("HERMES_API_PORT", "1")
     monkeypatch.setenv("A2A_GATEWAY_READY_DEADLINE_S", "2")
@@ -2623,7 +2645,7 @@ def test_hermes_sidecar_wait_for_gateway_ready_uses_cache_until_invalidated(
 # -- Review-14 P1-C hermes ThreadStore unit tests ----------------------------
 # Parallel of tests/sidecar_thread.test.js (node --test). We reuse the
 # `_load_hermes_sidecar_module` harness so the class is tested in the same
-# shape it runs in production (inline in sidecar.py, no separate module).
+# shape it runs in production (inline in server.py alongside the handler).
 
 
 def test_hermes_thread_store_disabled_when_dir_empty():
@@ -5175,8 +5197,12 @@ def _raw_socket_post(host: str, port: int, path: str, headers: list[bytes]) -> b
     """POST with explicit header bytes so we can send malformed Content-Length.
 
     urllib's client validates Content-Length, so we need a raw socket to
-    reproduce the exploit shape. Returns the status line (bytes up to \\r\\n)
-    or b"" if the server dropped the connection.
+    reproduce the exploit shape. Drains the socket until EOF or 16 KiB so
+    callers that inspect the response body (not just the status line) get
+    a deterministic view — a prior version stopped at ``\\r\\n\\r\\n`` and
+    lost the body when the server flushed headers and body in separate
+    writes, producing a ~1-in-3 flake on assertions like
+    ``b'"jsonrpc"' in resp``.
     """
     import socket
 
@@ -5188,8 +5214,11 @@ def _raw_socket_post(host: str, port: int, path: str, headers: list[bytes]) -> b
         req += b"\r\n".join(headers) + b"\r\n\r\n"
         sock.sendall(req)
         data = b""
-        while b"\r\n\r\n" not in data and len(data) < 8192:
-            chunk = sock.recv(4096)
+        while len(data) < 16384:
+            try:
+                chunk = sock.recv(4096)
+            except socket.timeout:
+                break
             if not chunk:
                 break
             data += chunk
