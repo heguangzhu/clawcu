@@ -175,6 +175,26 @@ def parse_args(argv) -> Dict[str, Any]:
     return out
 
 
+def _int_from_sources(*sources: Any, default: int) -> int:
+    """Pick the first truthy source, parse it as ``int``, fall back to ``default``.
+
+    ``main()`` reads half a dozen integer knobs that each accept an
+    argv override first, then one or more env-var fallbacks, then a
+    literal default — the same "try each, int-parse, tolerate a bad
+    value by reverting to the hardcoded fallback" loop inlined six
+    times. Collecting it here keeps ``main()`` linear and makes each
+    knob's source ordering immediately scannable instead of buried
+    under a try/except wrapper.
+    """
+    for src in sources:
+        if src:
+            try:
+                return int(src)
+            except (TypeError, ValueError):
+                return default
+    return default
+
+
 # HTTP helpers live in http_client.py. Re-imported above.
 
 
@@ -661,11 +681,11 @@ def main() -> None:
 
     bind_host = "0.0.0.0" if local else "127.0.0.1"
     advertise_host = args.get("advertise-host") or os.environ.get("A2A_SIDECAR_ADVERTISE_HOST") or "127.0.0.1"
-    advertise_port_raw = args.get("advertise-port") or os.environ.get("A2A_SIDECAR_ADVERTISE_PORT") or port
-    try:
-        advertise_port = int(advertise_port_raw)
-    except (TypeError, ValueError):
-        advertise_port = port
+    advertise_port = _int_from_sources(
+        args.get("advertise-port"),
+        os.environ.get("A2A_SIDECAR_ADVERTISE_PORT"),
+        default=port,
+    )
     endpoint = f"http://{advertise_host}:{advertise_port}/a2a/send"
 
     gateway_host = (
@@ -673,32 +693,24 @@ def main() -> None:
         if local
         else (args.get("gateway-host") or os.environ.get("A2A_GATEWAY_HOST") or "127.0.0.1")
     )
-    gateway_port_raw = (
-        args.get("gateway-port")
-        or os.environ.get("A2A_GATEWAY_PORT")
-        or os.environ.get("OPENCLAW_GATEWAY_PORT")
-        or "18789"
+    gateway_port = _int_from_sources(
+        args.get("gateway-port"),
+        os.environ.get("A2A_GATEWAY_PORT"),
+        os.environ.get("OPENCLAW_GATEWAY_PORT"),
+        default=18789,
     )
-    try:
-        gateway_port = int(gateway_port_raw)
-    except (TypeError, ValueError):
-        gateway_port = 18789
 
-    try:
-        request_timeout_ms = int(
-            args.get("request-timeout-ms") or os.environ.get("A2A_REQUEST_TIMEOUT_MS") or "300000"
-        )
-    except (TypeError, ValueError):
-        request_timeout_ms = 300000
+    request_timeout_ms = _int_from_sources(
+        args.get("request-timeout-ms"),
+        os.environ.get("A2A_REQUEST_TIMEOUT_MS"),
+        default=300000,
+    )
 
-    try:
-        gateway_ready_deadline_ms = int(
-            args.get("gateway-ready-deadline-ms")
-            or os.environ.get("A2A_GATEWAY_READY_DEADLINE_MS")
-            or "30000"
-        )
-    except (TypeError, ValueError):
-        gateway_ready_deadline_ms = 30000
+    gateway_ready_deadline_ms = _int_from_sources(
+        args.get("gateway-ready-deadline-ms"),
+        os.environ.get("A2A_GATEWAY_READY_DEADLINE_MS"),
+        default=30000,
+    )
 
     gateway_ready_path_raw = (
         args.get("gateway-ready-path") or os.environ.get("A2A_GATEWAY_READY_PATH") or "/healthz"
@@ -708,21 +720,18 @@ def main() -> None:
     )
     model = args.get("model") or os.environ.get("A2A_MODEL") or "openclaw"
 
-    try:
-        rate_limit_per_minute = int(
-            args.get("rate-limit-per-minute")
-            or os.environ.get("A2A_RATE_LIMIT_PER_MINUTE")
-            or "30"
-        )
-    except (TypeError, ValueError):
-        rate_limit_per_minute = 30
+    rate_limit_per_minute = _int_from_sources(
+        args.get("rate-limit-per-minute"),
+        os.environ.get("A2A_RATE_LIMIT_PER_MINUTE"),
+        default=30,
+    )
     rate_limiter = create_rate_limiter(per_minute=rate_limit_per_minute)
 
-    try:
-        thread_max_pairs = int(os.environ.get("A2A_THREAD_MAX_HISTORY_PAIRS") or "10")
-        if thread_max_pairs < 0:
-            thread_max_pairs = 10
-    except (TypeError, ValueError):
+    thread_max_pairs = _int_from_sources(
+        os.environ.get("A2A_THREAD_MAX_HISTORY_PAIRS"),
+        default=10,
+    )
+    if thread_max_pairs < 0:
         thread_max_pairs = 10
 
     thread_store = create_thread_store(
