@@ -2,10 +2,21 @@
 #
 # Extends the stock Hermes image with:
 #   - /opt/a2a/server.py                 stdlib-Python A2A sidecar (entry)
-#   - /opt/a2a/gateway.py                sibling module — gateway readiness probe
+#   - /opt/a2a/config.py                 runtime env-var config
+#   - /opt/a2a/gateway.py                co-resident Hermes gateway surface
+#                                        (readiness probe + /v1/chat/completions)
+#   - /opt/a2a/peering.py                outbound peer/registry helpers
+#   - /opt/a2a/inbound_limits.py         body-size / hop-budget / content-length
+#                                        reject-early guards
+#   - /opt/a2a/_common/                  stdlib primitives shared with the
+#                                        OpenClaw sidecar (streams, ratelimit,
+#                                        readiness, thread store, MCP dispatch)
 #   - /usr/local/bin/entrypoint-a2a.sh   supervisor that runs both the
 #                                        stock Hermes gateway and the
 #                                        A2A sidecar in a single container.
+#
+# The COPY below grabs the entire sidecar/ dir so new sibling modules
+# land under /opt/a2a/ automatically — no Dockerfile edit needed.
 #
 # Build args:
 #   HERMES_VERSION         base image tag (default v2026.4.8)
