@@ -6,15 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 
 from clawcu.a2a.card import AgentCard
-
-
-def _write_json(handler: BaseHTTPRequestHandler, status: int, payload) -> None:
-    body = json.dumps(payload).encode("utf-8")
-    handler.send_response(status)
-    handler.send_header("Content-Type", "application/json")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.end_headers()
-    handler.wfile.write(body)
+from clawcu.a2a.sidecar_plugin._common.http_response import write_json_response as _write_json
 
 
 def echo_reply(name: str, message: str) -> str:

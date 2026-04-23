@@ -16,6 +16,7 @@ from clawcu.a2a.card import (
 )
 from clawcu.a2a.sidecar_plugin import resolve_advertise_host
 from clawcu.a2a.sidecar_plugin._common import streams as _streams
+from clawcu.a2a.sidecar_plugin._common.http_response import write_json_response as _write_json
 
 CardProvider = Callable[[], Iterable[AgentCard]]
 
@@ -215,15 +216,6 @@ def make_cards_provider(
             return list(cards)
 
     return provider
-
-
-def _write_json(handler: BaseHTTPRequestHandler, status: int, payload) -> None:
-    body = json.dumps(payload).encode("utf-8")
-    handler.send_response(status)
-    handler.send_header("Content-Type", "application/json")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.end_headers()
-    handler.wfile.write(body)
 
 
 def make_registry_handler(provider: CardProvider) -> type[BaseHTTPRequestHandler]:
