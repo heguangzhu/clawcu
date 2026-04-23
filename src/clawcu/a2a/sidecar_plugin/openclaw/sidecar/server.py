@@ -63,6 +63,7 @@ from readiness import (  # noqa: E402
     wait_for_gateway_ready,
 )
 from _common.bootstrap import run_bootstrap as run_mcp_bootstrap  # noqa: E402
+from _common.http_response import write_json_response  # noqa: E402
 from _common.mcp import UpstreamError, handle_mcp_request  # noqa: E402
 from _common.peer_cache import create_peer_cache as _shared_peer_cache  # noqa: E402
 from _common.outbound_limit import (  # noqa: E402
@@ -568,17 +569,6 @@ def _make_handler_class(ctx: Dict[str, Any]):
     # Shared, lazily-initialised peer cache.
     peer_cache_holder: Dict[str, Any] = {"cache": None, "lock": threading.Lock()}
 
-    def _json_response(handler, status: int, body_obj, extra_headers: Optional[Dict[str, str]] = None) -> None:
-        payload = json.dumps(body_obj, ensure_ascii=False).encode("utf-8")
-        handler.send_response(status)
-        handler.send_header("content-type", "application/json")
-        handler.send_header("content-length", str(len(payload)))
-        if extra_headers:
-            for k, v in extra_headers.items():
-                handler.send_header(k, v)
-        handler.end_headers()
-        handler.wfile.write(payload)
-
     def _read_request_json(handler) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         try:
             content_length = int(handler.headers.get("content-length") or "0")
@@ -606,9 +596,9 @@ def _make_handler_class(ctx: Dict[str, Any]):
             try:
                 path = (self.path or "/").split("?", 1)[0]
                 if path == "/.well-known/agent-card.json":
-                    return _json_response(self, 200, card)
+                    return write_json_response(self, 200, card)
                 if path in ("/health", "/healthz"):
-                    return _json_response(
+                    return write_json_response(
                         self,
                         200,
                         {
@@ -619,11 +609,11 @@ def _make_handler_class(ctx: Dict[str, Any]):
                             "gateway": f"{gateway_host}:{gateway_port}",
                         },
                     )
-                return _json_response(self, 404, {"error": "not found"})
+                return write_json_response(self, 404, {"error": "not found"})
             except Exception as err:
                 logger.error(f"[sidecar:{self_name}] unhandled:", traceback.format_exc() or err)
                 try:
-                    _json_response(self, 500, {"error": "internal error"})
+                    write_json_response(self, 500, {"error": "internal error"})
                 except Exception:
                     pass
 
@@ -638,11 +628,11 @@ def _make_handler_class(ctx: Dict[str, Any]):
                     return self._handle_a2a_outbound()
                 if path == "/mcp":
                     return self._handle_mcp()
-                return _json_response(self, 404, {"error": "not found"})
+                return write_json_response(self, 404, {"error": "not found"})
             except Exception as err:
                 logger.error(f"[sidecar:{self_name}] unhandled:", traceback.format_exc() or err)
                 try:
-                    _json_response(self, 500, {"error": "internal error"})
+                    write_json_response(self, 500, {"error": "internal error"})
                 except Exception:
                     pass
 
@@ -656,7 +646,7 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 logger.warn(
                     f"[sidecar:{self_name}] a2a.send refused request_id={request_id} hop={incoming_hop} budget={A2A_HOP_BUDGET}"
                 )
-                return _json_response(
+                return write_json_response(
                     self,
                     508,
                     {
@@ -667,15 +657,15 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 )
             body, err = _read_request_json(self)
             if err is not None:
-                return _json_response(self, 400, {"error": err, "request_id": request_id}, rid_headers)
+                return write_json_response(self, 400, {"error": err, "request_id": request_id}, rid_headers)
             if not isinstance(body.get("message"), str) or not body.get("message"):
-                return _json_response(self, 400, {"error": "missing 'message' (string)", "request_id": request_id}, rid_headers)
+                return write_json_response(self, 400, {"error": "missing 'message' (string)", "request_id": request_id}, rid_headers)
             if not isinstance(body.get("from"), str) or not body.get("from"):
-                return _json_response(self, 400, {"error": "missing 'from' (string)", "request_id": request_id}, rid_headers)
+                return write_json_response(self, 400, {"error": "missing 'from' (string)", "request_id": request_id}, rid_headers)
 
             thread_id = body.get("thread_id") if isinstance(body.get("thread_id"), str) and body.get("thread_id") else None
             if "thread_id" in body and thread_id is None:
-                return _json_response(
+                return write_json_response(
                     self,
                     400,
                     {
@@ -693,7 +683,7 @@ def _make_handler_class(ctx: Dict[str, Any]):
             if not rl.ok:
                 headers_out = dict(rid_headers)
                 headers_out["Retry-After"] = str(max(1, int(rl.reset_ms / 1000 + 0.5)))
-                return _json_response(
+                return write_json_response(
                     self,
                     429,
                     {
@@ -707,7 +697,7 @@ def _make_handler_class(ctx: Dict[str, Any]):
             try:
                 auth = read_gateway_auth(adapter)
             except Exception as exc:
-                return _json_response(
+                return write_json_response(
                     self,
                     503,
                     {"error": f"instance not ready: {exc}", "request_id": request_id},
@@ -721,7 +711,7 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 deadline_ms=gateway_ready_deadline_ms,
             )
             if not ready:
-                return _json_response(
+                return write_json_response(
                     self,
                     503,
                     {
@@ -752,7 +742,7 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 )
                 if looks_like_gateway_down(exc):
                     invalidate_gateway_ready()
-                return _json_response(
+                return write_json_response(
                     self,
                     502,
                     {"error": f"upstream agent failed: {exc}", "request_id": request_id},
@@ -765,7 +755,7 @@ def _make_handler_class(ctx: Dict[str, Any]):
             logger.info(
                 f"[sidecar:{self_name}] a2a.send replied request_id={request_id} from={body['from']}"
             )
-            return _json_response(
+            return write_json_response(
                 self,
                 200,
                 {
@@ -787,7 +777,7 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 logger.warn(
                     f"[sidecar:{self_name}] a2a.outbound refused request_id={request_id} hop={incoming_hop} budget={A2A_HOP_BUDGET}"
                 )
-                return _json_response(
+                return write_json_response(
                     self,
                     508,
                     {
@@ -798,15 +788,15 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 )
             body, err = _read_request_json(self)
             if err is not None:
-                return _json_response(self, 400, {"error": err, "request_id": request_id}, rid_headers)
+                return write_json_response(self, 400, {"error": err, "request_id": request_id}, rid_headers)
             if not isinstance(body.get("to"), str) or not body.get("to"):
-                return _json_response(self, 400, {"error": "missing 'to' (string)", "request_id": request_id}, rid_headers)
+                return write_json_response(self, 400, {"error": "missing 'to' (string)", "request_id": request_id}, rid_headers)
             if not isinstance(body.get("message"), str) or not body.get("message"):
-                return _json_response(self, 400, {"error": "missing 'message' (string)", "request_id": request_id}, rid_headers)
+                return write_json_response(self, 400, {"error": "missing 'message' (string)", "request_id": request_id}, rid_headers)
 
             out_thread_id = body.get("thread_id") if isinstance(body.get("thread_id"), str) and body.get("thread_id") else None
             if "thread_id" in body and out_thread_id is None:
-                return _json_response(
+                return write_json_response(
                     self,
                     400,
                     {
@@ -822,7 +812,7 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 logger.warn(
                     f"[sidecar:{self_name}] a2a.outbound self-rate-limited request_id={request_id} key={limit_key} limit={limit.limit}"
                 )
-                return _json_response(
+                return write_json_response(
                     self,
                     429,
                     {
@@ -835,7 +825,7 @@ def _make_handler_class(ctx: Dict[str, Any]):
 
             if "registry_url" in body:
                 if not read_allow_client_registry_url(os.environ):
-                    return _json_response(
+                    return write_json_response(
                         self,
                         400,
                         {
@@ -845,7 +835,7 @@ def _make_handler_class(ctx: Dict[str, Any]):
                         rid_headers,
                     )
                 if not isinstance(body.get("registry_url"), str) or not body.get("registry_url"):
-                    return _json_response(
+                    return write_json_response(
                         self,
                         400,
                         {
@@ -877,12 +867,12 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 logger.warn(
                     f"[sidecar:{self_name}] a2a.outbound lookup-failed request_id={request_id} to={body['to']} status={status}"
                 )
-                return _json_response(self, status, {"error": str(exc), "request_id": request_id}, rid_headers)
+                return write_json_response(self, status, {"error": str(exc), "request_id": request_id}, rid_headers)
             except Exception as exc:
                 logger.warn(
                     f"[sidecar:{self_name}] a2a.outbound lookup-failed request_id={request_id} to={body['to']} status=503"
                 )
-                return _json_response(self, 503, {"error": str(exc), "request_id": request_id}, rid_headers)
+                return write_json_response(self, 503, {"error": str(exc), "request_id": request_id}, rid_headers)
 
             try:
                 peer_resp = forward_to_peer(
@@ -904,17 +894,17 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 payload: Dict[str, Any] = {"error": str(exc), "request_id": request_id}
                 if exc.peer_status is not None:
                     payload["peer_status"] = exc.peer_status
-                return _json_response(self, status, payload, rid_headers)
+                return write_json_response(self, status, payload, rid_headers)
             except Exception as exc:
                 logger.warn(
                     f"[sidecar:{self_name}] a2a.outbound forward-failed request_id={request_id} to={body['to']} status=502"
                 )
-                return _json_response(self, 502, {"error": str(exc), "request_id": request_id}, rid_headers)
+                return write_json_response(self, 502, {"error": str(exc), "request_id": request_id}, rid_headers)
 
             logger.info(
                 f"[sidecar:{self_name}] a2a.outbound done request_id={request_id} to={body['to']}"
             )
-            return _json_response(
+            return write_json_response(
                 self,
                 200,
                 {
@@ -936,7 +926,7 @@ def _make_handler_class(ctx: Dict[str, Any]):
             rid_headers = {REQUEST_ID_HEADER: request_id}
             body, err = _read_request_json(self)
             if err is not None:
-                return _json_response(
+                return write_json_response(
                     self,
                     400,
                     {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": err}},
@@ -967,7 +957,7 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 list_peers_fn=list_peers,
                 include_role=include_role,
             )
-            return _json_response(self, 200, response, rid_headers)
+            return write_json_response(self, 200, response, rid_headers)
 
     return Handler
 

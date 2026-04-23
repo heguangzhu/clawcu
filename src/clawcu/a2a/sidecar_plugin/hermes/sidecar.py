@@ -140,6 +140,7 @@ from _common.outbound_limit import (  # noqa: E402
     read_sweep_interval_ms as read_outbound_sweep_interval_ms,
 )
 from _common.peer_cache import create_peer_cache as _shared_peer_cache  # noqa: E402
+from _common.http_response import write_json_response  # noqa: E402
 from _common.protocol import (  # noqa: E402
     REQUEST_ID_HEADER,
     read_hop_header,
@@ -391,23 +392,6 @@ def call_hermes(
         raise RuntimeError(
             f"unexpected chat response shape: {payload!r}"
         ) from exc
-
-
-def _write_json(
-    h: BaseHTTPRequestHandler,
-    status: int,
-    obj: Any,
-    extra_headers: dict[str, str] | None = None,
-) -> None:
-    data = json.dumps(obj).encode("utf-8")
-    h.send_response(status)
-    h.send_header("Content-Type", "application/json")
-    h.send_header("Content-Length", str(len(data)))
-    if extra_headers:
-        for name, value in extra_headers.items():
-            h.send_header(name, value)
-    h.end_headers()
-    h.wfile.write(data)
 
 
 # Review-2 P1-D: request correlation.
@@ -806,14 +790,14 @@ def build_handler(
 
         def do_GET(self) -> None:  # noqa: N802
             if self.path == "/.well-known/agent-card.json":
-                _write_json(self, 200, cfg.agent_card())
+                write_json_response(self, 200, cfg.agent_card())
                 return
             if self.path in ("/health", "/healthz"):
                 # Accept both spellings so external callers don't need to know
                 # which service the sidecar wraps (review-7 P2-E): hermes uses
                 # /health internally, openclaw uses /healthz, and the sidecar
                 # layer hides that by responding to both.
-                _write_json(
+                write_json_response(
                     self,
                     200,
                     {
@@ -829,7 +813,7 @@ def build_handler(
                     },
                 )
                 return
-            _write_json(self, 404, {"error": f"not found: {self.path}"})
+            write_json_response(self, 404, {"error": f"not found: {self.path}"})
 
         def do_POST(self) -> None:  # noqa: N802
             if self.path == "/a2a/outbound":
@@ -839,7 +823,7 @@ def build_handler(
                 self._handle_mcp()
                 return
             if self.path != "/a2a/send":
-                _write_json(self, 404, {"error": f"not found: {self.path}"})
+                write_json_response(self, 404, {"error": f"not found: {self.path}"})
                 return
 
             # Review-15 P0-A: hop-budget check lives BEFORE body parsing so a
@@ -855,7 +839,7 @@ def build_handler(
                     incoming_hop,
                     budget,
                 )
-                _write_json(
+                write_json_response(
                     self,
                     508,
                     {
@@ -873,7 +857,7 @@ def build_handler(
                 length = _parse_content_length(self.headers, cap=cap)
             except _BadContentLength as exc:
                 status = 413 if "exceeds" in str(exc) else 400
-                _write_json(
+                write_json_response(
                     self,
                     status,
                     {"error": str(exc), "request_id": request_id},
@@ -884,7 +868,7 @@ def build_handler(
             try:
                 payload = json.loads(raw.decode("utf-8"))
             except Exception as exc:
-                _write_json(
+                write_json_response(
                     self,
                     400,
                     {"error": f"bad json: {exc}", "request_id": request_id},
@@ -893,7 +877,7 @@ def build_handler(
                 return
 
             if not isinstance(payload, dict):
-                _write_json(
+                write_json_response(
                     self,
                     400,
                     {"error": "body must be a JSON object", "request_id": request_id},
@@ -905,7 +889,7 @@ def build_handler(
             peer_to = str(payload.get("to") or "")
             message = payload.get("message")
             if not isinstance(message, str) or not message:
-                _write_json(
+                write_json_response(
                     self,
                     400,
                     {"error": "`message` must be a non-empty string", "request_id": request_id},
@@ -933,7 +917,7 @@ def build_handler(
                     rl_peer,
                     rl.reset_ms,
                 )
-                _write_json(
+                write_json_response(
                     self,
                     429,
                     {
@@ -958,7 +942,7 @@ def build_handler(
             elif isinstance(raw_thread_id, str) and raw_thread_id:
                 thread_id = raw_thread_id
             else:
-                _write_json(
+                write_json_response(
                     self,
                     400,
                     {"error": "'thread_id' must be a non-empty string when provided", "request_id": request_id},
@@ -976,7 +960,7 @@ def build_handler(
                 )
 
             if not wait_for_gateway_ready(cfg):
-                _write_json(
+                write_json_response(
                     self,
                     503,
                     {"error": f"gateway not ready after {cfg.ready_deadline}s", "request_id": request_id},
@@ -992,7 +976,7 @@ def build_handler(
                 reply = call_hermes(cfg, message, peer_from, history=history)
             except _ResponseTooLarge as e:
                 log.error("Hermes response too large request_id=%s: %s", request_id, e)
-                _write_json(
+                write_json_response(
                     self,
                     502,
                     {"error": f"upstream response too large: {e}", "request_id": request_id},
@@ -1009,7 +993,7 @@ def build_handler(
                     # 5xx suggests gateway is sick; drop the ready-cache so the
                     # next request re-probes instead of blindly retrying.
                     invalidate_gateway_ready_cache()
-                _write_json(
+                write_json_response(
                     self,
                     502,
                     {"error": f"upstream Hermes HTTP {e.code}", "detail": body[:500], "request_id": request_id},
@@ -1025,14 +1009,14 @@ def build_handler(
                 # Review-2 P1-C (iter 3): network-layer (URLError) → 504,
                 # distinct from peer HTTP errors above (502). Unifies with
                 # /a2a/outbound's forward_to_peer.
-                _write_json(
+                write_json_response(
                     self, 504, {"error": f"upstream Hermes unreachable: {e.reason}", "request_id": request_id},
                     extra_headers=rid_headers,
                 )
                 return
             except Exception as e:  # noqa: BLE001 — we want to surface anything
                 log.exception("unexpected error while calling Hermes request_id=%s", request_id)
-                _write_json(
+                write_json_response(
                     self,
                     500,
                     {"error": f"internal: {e}", "request_id": request_id},
@@ -1044,7 +1028,7 @@ def build_handler(
                 thread_store.append_turn(peer_from, thread_id, message, reply)
 
             log.info("a2a.send replied request_id=%s from=%s", request_id, peer_from or "?")
-            _write_json(
+            write_json_response(
                 self,
                 200,
                 {
@@ -1071,7 +1055,7 @@ def build_handler(
                 length = _parse_content_length(self.headers, cap=cap)
             except _BadContentLength as exc:
                 status = 413 if "exceeds" in str(exc) else 400
-                _write_json(
+                write_json_response(
                     self,
                     status,
                     {
@@ -1089,7 +1073,7 @@ def build_handler(
             try:
                 payload = json.loads(raw.decode("utf-8")) if raw else None
             except Exception as exc:  # noqa: BLE001
-                _write_json(
+                write_json_response(
                     self,
                     400,
                     {
@@ -1127,7 +1111,7 @@ def build_handler(
                     os.environ.get("A2A_TOOL_DESC_INCLUDE_ROLE", "").lower() == "true"
                 ),
             )
-            _write_json(self, 200, response, extra_headers=rid_headers)
+            write_json_response(self, 200, response, extra_headers=rid_headers)
 
         def _handle_outbound(self) -> None:
             """Container-local outbound primitive. See a2a-design-1.md §Protocol.
@@ -1148,7 +1132,7 @@ def build_handler(
                     incoming_hop,
                     budget,
                 )
-                _write_json(
+                write_json_response(
                     self,
                     508,
                     {
@@ -1166,7 +1150,7 @@ def build_handler(
                 length = _parse_content_length(self.headers, cap=cap)
             except _BadContentLength as exc:
                 status = 413 if "exceeds" in str(exc) else 400
-                _write_json(
+                write_json_response(
                     self,
                     status,
                     {"error": str(exc), "request_id": request_id},
@@ -1177,7 +1161,7 @@ def build_handler(
             try:
                 payload = json.loads(raw.decode("utf-8"))
             except Exception as exc:
-                _write_json(
+                write_json_response(
                     self,
                     400,
                     {"error": f"bad json: {exc}", "request_id": request_id},
@@ -1185,7 +1169,7 @@ def build_handler(
                 )
                 return
             if not isinstance(payload, dict):
-                _write_json(
+                write_json_response(
                     self,
                     400,
                     {"error": "body must be a JSON object", "request_id": request_id},
@@ -1194,7 +1178,7 @@ def build_handler(
                 return
             to = payload.get("to")
             if not isinstance(to, str) or not to:
-                _write_json(
+                write_json_response(
                     self,
                     400,
                     {"error": "missing 'to' (string)", "request_id": request_id},
@@ -1203,7 +1187,7 @@ def build_handler(
                 return
             message = payload.get("message")
             if not isinstance(message, str) or not message:
-                _write_json(
+                write_json_response(
                     self,
                     400,
                     {"error": "'message' must be a non-empty string", "request_id": request_id},
@@ -1216,7 +1200,7 @@ def build_handler(
             elif isinstance(raw_thread, str) and raw_thread:
                 out_thread = raw_thread
             else:
-                _write_json(
+                write_json_response(
                     self,
                     400,
                     {"error": "'thread_id' must be a non-empty string when provided", "request_id": request_id},
@@ -1232,7 +1216,7 @@ def build_handler(
             raw_registry = payload.get("registry_url")
             if raw_registry is not None:
                 if not cfg.allow_client_registry_url:
-                    _write_json(
+                    write_json_response(
                         self,
                         400,
                         {
@@ -1243,7 +1227,7 @@ def build_handler(
                     )
                     return
                 if not isinstance(raw_registry, str) or not raw_registry:
-                    _write_json(
+                    write_json_response(
                         self,
                         400,
                         {
@@ -1256,7 +1240,7 @@ def build_handler(
                 try:
                     registry_url = _validate_outbound_url(raw_registry)
                 except _BadOutboundUrl as exc:
-                    _write_json(
+                    write_json_response(
                         self,
                         400,
                         {
@@ -1289,7 +1273,7 @@ def build_handler(
                         limit_key,
                         decision.limit,
                     )
-                    _write_json(
+                    write_json_response(
                         self,
                         429,
                         {
@@ -1316,7 +1300,7 @@ def build_handler(
                     to,
                     e.http_status,
                 )
-                _write_json(
+                write_json_response(
                     self,
                     e.http_status,
                     {"error": str(e), "request_id": request_id},
@@ -1345,13 +1329,13 @@ def build_handler(
                 body: dict[str, Any] = {"error": str(e), "request_id": request_id}
                 if e.peer_status is not None:
                     body["peer_status"] = e.peer_status
-                _write_json(self, e.http_status, body, extra_headers=rid_headers)
+                write_json_response(self, e.http_status, body, extra_headers=rid_headers)
                 return
 
             reply = peer_resp.get("reply") if isinstance(peer_resp, dict) else None
             resp_thread = peer_resp.get("thread_id") if isinstance(peer_resp, dict) else None
             log.info("a2a.outbound done request_id=%s to=%s", request_id, to)
-            _write_json(
+            write_json_response(
                 self,
                 200,
                 {
