@@ -101,6 +101,10 @@ from outbound import (  # noqa: E402
     lookup_peer,
     read_allow_client_registry_url,
 )
+from chat import (  # noqa: E402
+    build_a2a_context,
+    post_chat_completion,
+)
 
 __all__ = [
     # Re-exported for tests and for any caller that used to import these
@@ -111,6 +115,7 @@ __all__ = [
     "OPENCLAW_AUTH_PATH",
     "OPENCLAW_CONFIG_PATH",
     "ResponseTooLarge",
+    "build_a2a_context",
     "create_peer_cache",
     "fetch_peer_list",
     "forward_to_peer",
@@ -119,6 +124,7 @@ __all__ = [
     "make_host_adapter",
     "make_local_adapter",
     "parse_http_url",
+    "post_chat_completion",
     "post_json",
     "read_allow_client_registry_url",
     "read_gateway_auth",
@@ -167,55 +173,6 @@ def parse_args(argv) -> Dict[str, Any]:
 # HTTP helpers live in http_client.py. Re-imported above.
 
 
-def post_chat_completion(
-    gateway_host: str,
-    gateway_port: int,
-    token: Optional[str],
-    user_message: str,
-    system_prompt: Optional[str],
-    history: list,
-    model: str,
-    timeout_ms: int,
-) -> str:
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.extend(history or [])
-    messages.append({"role": "user", "content": user_message})
-    payload = {
-        "model": model or "openclaw",
-        "stream": False,
-        "messages": messages,
-    }
-    headers = {"authorization": f"Bearer {token}"} if token else {}
-    resp = post_json(
-        host=gateway_host,
-        port=gateway_port,
-        path="/v1/chat/completions",
-        headers=headers,
-        body_obj=payload,
-        timeout_ms=timeout_ms,
-    )
-    status = resp["status"]
-    body = resp["body"]
-    if status != 200:
-        raise RuntimeError(f"gateway /v1/chat/completions {status}: {body[:400]}")
-    try:
-        parsed = json.loads(body)
-    except Exception as exc:
-        raise RuntimeError(f"gateway returned non-json: {exc}")
-    choices = parsed.get("choices") if isinstance(parsed, dict) else None
-    choice = choices[0] if isinstance(choices, list) and choices else None
-    content = None
-    if isinstance(choice, dict):
-        msg = choice.get("message")
-        if isinstance(msg, dict):
-            content = msg.get("content")
-    if not isinstance(content, str) or not content:
-        raise RuntimeError(f"gateway returned empty content: {body[:400]}")
-    return content
-
-
 def read_json_body(rfile, content_length: int, limit: int = READ_JSON_BODY_LIMIT):
     if content_length > limit:
         raise RuntimeError("request body too large")
@@ -237,15 +194,6 @@ def read_json_body(rfile, content_length: int, limit: int = READ_JSON_BODY_LIMIT
         return json.loads(raw.decode("utf-8"))
     except Exception as exc:
         raise RuntimeError(f"invalid json: {exc}")
-
-
-def build_a2a_context(self_name: str, from_agent: str) -> str:
-    return (
-        f'You are being addressed by a peer agent named "{from_agent}" '
-        f'over the A2A bridge as "{self_name}". Respond in plain text, '
-        f"preserving your own persona and skills. Keep the reply focused on "
-        f"the peer's request; do not prefix with your own name."
-    )
 
 
 # ---- HTTP server ------------------------------------------------------------
