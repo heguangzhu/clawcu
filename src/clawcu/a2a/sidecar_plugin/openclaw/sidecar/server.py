@@ -254,6 +254,46 @@ def _read_capped(resp, limit: int = A2A_MAX_RESPONSE_BYTES) -> str:
     return _streams.read_capped_text(resp, cap=limit)
 
 
+def _http_call(
+    *,
+    method: str,
+    host: str,
+    port: int,
+    path: str,
+    headers: Optional[Dict[str, str]] = None,
+    body: Optional[bytes] = None,
+    timeout_ms: int,
+    scheme: str = "http",
+) -> Dict[str, Any]:
+    """Shared connect/request/read/close skeleton for outbound HTTP.
+
+    Both ``post_json`` and ``http_request_raw`` were 30-line near-identical
+    copies of this shape (connect → request → capped-read → timeout/cap
+    translation → close). The single difference — whether the caller sends
+    a serialized body — is expressed here as an optional ``body`` argument.
+    Exception translation (``ResponseTooLarge`` → ``RuntimeError``,
+    ``socket.timeout`` → ``RuntimeError``) lives in one place so the two
+    public wrappers stay thin.
+    """
+    conn = _connection_for(host, port, timeout_ms / 1000.0, scheme=scheme)
+    try:
+        conn.request(method, path, body=body, headers=headers or {})
+        resp = conn.getresponse()
+        status = resp.status or 0
+        try:
+            raw = _read_capped(resp)
+        except ResponseTooLarge as exc:
+            raise RuntimeError(str(exc))
+        return {"status": status, "body": raw}
+    except socket.timeout:
+        raise RuntimeError(f"request timed out after {timeout_ms}ms")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def post_json(
     host: str,
     port: int,
@@ -270,25 +310,17 @@ def post_json(
         "user-agent": "a2a-bridge-sidecar/0.3",
     }
     if headers:
-        for k, v in headers.items():
-            merged[k] = v
-    conn = _connection_for(host, port, timeout_ms / 1000.0, scheme=scheme)
-    try:
-        conn.request("POST", path, body=body, headers=merged)
-        resp = conn.getresponse()
-        status = resp.status or 0
-        try:
-            raw = _read_capped(resp)
-        except ResponseTooLarge as exc:
-            raise RuntimeError(str(exc))
-        return {"status": status, "body": raw}
-    except socket.timeout:
-        raise RuntimeError(f"request timed out after {timeout_ms}ms")
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        merged.update(headers)
+    return _http_call(
+        method="POST",
+        host=host,
+        port=port,
+        path=path,
+        headers=merged,
+        body=body,
+        timeout_ms=timeout_ms,
+        scheme=scheme,
+    )
 
 
 def http_request_raw(
@@ -300,23 +332,15 @@ def http_request_raw(
     timeout_ms: int = 30000,
     scheme: str = "http",
 ) -> Dict[str, Any]:
-    conn = _connection_for(host, port, timeout_ms / 1000.0, scheme=scheme)
-    try:
-        conn.request(method, path, headers=headers or {})
-        resp = conn.getresponse()
-        status = resp.status or 0
-        try:
-            raw = _read_capped(resp)
-        except ResponseTooLarge as exc:
-            raise RuntimeError(str(exc))
-        return {"status": status, "body": raw}
-    except socket.timeout:
-        raise RuntimeError(f"request timed out after {timeout_ms}ms")
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+    return _http_call(
+        method=method,
+        host=host,
+        port=port,
+        path=path,
+        headers=headers,
+        timeout_ms=timeout_ms,
+        scheme=scheme,
+    )
 
 
 def fetch_peer_list(registry_url: str, timeout_ms: int) -> Optional[list]:
