@@ -103,7 +103,12 @@ class A2AImageBuilder:
                 f"Could not split base image '{base_image}' into repo:tag."
             )
         version_arg, repo_arg = _A2A_BUILD_ARGS[service]
-        source_dir = plugin_source_dir(service)
+        service_dir = plugin_source_dir(service)
+        # Build context is sidecar_plugin/ (parent of the service dir) so the
+        # Dockerfile can COPY both the service-specific assets and the shared
+        # _common/ package baked alongside them.
+        context_dir = service_dir.parent
+        dockerfile_path = service_dir / "Dockerfile"
         fingerprint = plugin_fingerprint(service, self.clawcu_version)
         self._report(
             f"Baking A2A-enabled image {target_tag} from {base_image} "
@@ -111,9 +116,9 @@ class A2AImageBuilder:
             "on the first build."
         )
         self.docker.build_image(
-            source_dir,
+            context_dir,
             target_tag,
-            dockerfile=source_dir / "Dockerfile",
+            dockerfile=dockerfile_path,
             build_args={
                 version_arg: tag,
                 repo_arg: repo,

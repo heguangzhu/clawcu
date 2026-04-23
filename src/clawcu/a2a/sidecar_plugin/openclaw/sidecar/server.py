@@ -40,24 +40,39 @@ from urllib.parse import urlparse, urlunparse
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
+# Also expose whichever ancestor directory contains _common/. In the baked
+# image server.py and _common/ are siblings under /opt/a2a, so _THIS_DIR
+# itself satisfies this. When loaded from the source tree during tests
+# (openclaw/sidecar/server.py) _common/ lives two levels up at
+# sidecar_plugin/_common/. Walk up until found.
+_probe = _THIS_DIR
+for _ in range(4):
+    if os.path.isdir(os.path.join(_probe, "_common")):
+        if _probe not in sys.path:
+            sys.path.insert(0, _probe)
+        break
+    _parent = os.path.dirname(_probe)
+    if _parent == _probe:
+        break
+    _probe = _parent
 
 from bootstrap import run_bootstrap as run_mcp_bootstrap  # noqa: E402
 from logsink import default_logger, setup_file_log  # noqa: E402
 from mcp import UpstreamError, handle_mcp_request  # noqa: E402
-from outbound_limit import (  # noqa: E402
+from readiness import (  # noqa: E402
+    invalidate_gateway_ready,
+    looks_like_gateway_down,
+    wait_for_gateway_ready,
+)
+from _common.outbound_limit import (  # noqa: E402
     create_outbound_limiter,
     create_sweep_timer,
     key_for as outbound_limit_key,
     read_rpm as read_outbound_rpm,
     read_sweep_interval_ms as read_outbound_sweep_interval_ms,
 )
-from ratelimit import create_rate_limiter  # noqa: E402
-from readiness import (  # noqa: E402
-    invalidate_gateway_ready,
-    looks_like_gateway_down,
-    wait_for_gateway_ready,
-)
-from thread import create_thread_store  # noqa: E402
+from _common.ratelimit import create_rate_limiter  # noqa: E402
+from _common.thread import create_thread_store  # noqa: E402
 
 OPENCLAW_CONFIG_PATH = "/home/node/.openclaw/openclaw.json"
 OPENCLAW_AUTH_PATH = "/home/node/.openclaw/auth.json"

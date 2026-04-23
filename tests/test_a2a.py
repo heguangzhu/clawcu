@@ -2144,20 +2144,26 @@ def test_plugin_source_sha_ignores_pycache_and_pyc(tmp_path, monkeypatch):
     from clawcu.a2a import sidecar_plugin as plugin_mod
 
     real_source = plugin_mod.plugin_source_dir("hermes")
+    real_common = plugin_mod._PLUGIN_ROOT / "_common"
     baseline_sha = plugin_mod.plugin_source_sha("hermes")
 
     # Clone the plugin tree into tmp_path, add bytecode/garbage, point
-    # plugin_source_dir at the clone, and recompute.
+    # plugin_source_dir at the clone, and recompute. ``_common/`` is folded
+    # into the service sha, so it also needs to live at the fake root.
     fake_root = tmp_path / "plugin"
     fake_root.mkdir()
     fake_hermes = fake_root / "hermes"
     shutil.copytree(real_source, fake_hermes)
+    shutil.copytree(real_common, fake_root / "_common")
 
     pycache = fake_hermes / "__pycache__"
     pycache.mkdir(exist_ok=True)
     (pycache / "sidecar.cpython-312.pyc").write_bytes(b"compiled bytecode garbage\0")
     # Also a .pyc at top level (belt & suspenders).
     (fake_hermes / "stale.pyc").write_bytes(b"more garbage")
+    # And inside _common/ — the filter must apply there too.
+    (fake_root / "_common" / "__pycache__").mkdir(exist_ok=True)
+    (fake_root / "_common" / "__pycache__" / "ratelimit.cpython-312.pyc").write_bytes(b"x\0")
 
     monkeypatch.setattr(plugin_mod, "_PLUGIN_ROOT", fake_root)
     perturbed_sha = plugin_mod.plugin_source_sha("hermes")
@@ -2179,11 +2185,13 @@ def test_plugin_source_sha_still_reacts_to_real_source_edits(tmp_path, monkeypat
     from clawcu.a2a import sidecar_plugin as plugin_mod
 
     real_source = plugin_mod.plugin_source_dir("hermes")
+    real_common = plugin_mod._PLUGIN_ROOT / "_common"
 
     fake_root = tmp_path / "plugin"
     fake_root.mkdir()
     fake_hermes = fake_root / "hermes"
     shutil.copytree(real_source, fake_hermes)
+    shutil.copytree(real_common, fake_root / "_common")
 
     monkeypatch.setattr(plugin_mod, "_PLUGIN_ROOT", fake_root)
     baseline = plugin_mod.plugin_source_sha("hermes")
@@ -3853,7 +3861,9 @@ def test_hermes_bootstrap_handles_json_format_roundtrip(tmp_path):
 # --- Hermes outbound rate limiter (a2a-design-4.md §P1-B) --------------------
 
 def _load_hermes_outbound_limit_module():
-    """Load outbound_limit.py standalone (same pattern as bootstrap loader)."""
+    """Load the shared outbound_limit.py standalone. Historically this loaded
+    hermes-specific outbound_limit.py; the implementation has moved to the
+    shared ``_common/`` package so both sidecars use one copy."""
     import importlib.util
 
     path = (
@@ -3862,13 +3872,17 @@ def _load_hermes_outbound_limit_module():
         / "clawcu"
         / "a2a"
         / "sidecar_plugin"
-        / "hermes"
+        / "_common"
         / "outbound_limit.py"
     )
     spec = importlib.util.spec_from_file_location(
         "_hermes_outbound_limit_under_test", path
     )
     module = importlib.util.module_from_spec(spec)
+    # Register in sys.modules before exec_module so @dataclass can resolve
+    # string annotations (PEP 563) via sys.modules[cls.__module__].
+    import sys as _sys
+    _sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -3900,34 +3914,34 @@ def test_hermes_outbound_limit_allows_up_to_rpm_then_rejects():
     mod = _load_hermes_outbound_limit_module()
     now = [1000.0]
     lim = mod.create_outbound_limiter(rpm=3, now_fn=lambda: now[0])
-    assert lim.check("k")["allowed"] is True
-    assert lim.check("k")["allowed"] is True
-    assert lim.check("k")["allowed"] is True
+    assert lim.check("k").allowed is True
+    assert lim.check("k").allowed is True
+    assert lim.check("k").allowed is True
     r = lim.check("k")
-    assert r["allowed"] is False
-    assert 0 < r["retry_after_ms"] <= mod.WINDOW_MS
-    assert r["limit"] == 3
+    assert r.allowed is False
+    assert 0 < r.retry_after_ms <= mod.WINDOW_MS
+    assert r.limit == 3
 
 
 def test_hermes_outbound_limit_prunes_after_window_slides_past():
     mod = _load_hermes_outbound_limit_module()
     now = [1000.0]
     lim = mod.create_outbound_limiter(rpm=2, now_fn=lambda: now[0])
-    assert lim.check("k")["allowed"] is True
-    assert lim.check("k")["allowed"] is True
-    assert lim.check("k")["allowed"] is False
+    assert lim.check("k").allowed is True
+    assert lim.check("k").allowed is True
+    assert lim.check("k").allowed is False
     now[0] += mod.WINDOW_MS + 1
-    assert lim.check("k")["allowed"] is True
+    assert lim.check("k").allowed is True
 
 
 def test_hermes_outbound_limit_buckets_are_per_key():
     mod = _load_hermes_outbound_limit_module()
     now = [1000.0]
     lim = mod.create_outbound_limiter(rpm=1, now_fn=lambda: now[0])
-    assert lim.check("thread:a")["allowed"] is True
-    assert lim.check("thread:b")["allowed"] is True
-    assert lim.check("thread:a")["allowed"] is False
-    assert lim.check("thread:b")["allowed"] is False
+    assert lim.check("thread:a").allowed is True
+    assert lim.check("thread:b").allowed is True
+    assert lim.check("thread:a").allowed is False
+    assert lim.check("thread:b").allowed is False
 
 
 def test_hermes_outbound_limit_default_rpm_when_no_args():
@@ -3941,9 +3955,9 @@ def test_hermes_outbound_limit_reset_clears_buckets():
     now = [1000.0]
     lim = mod.create_outbound_limiter(rpm=1, now_fn=lambda: now[0])
     lim.check("k")
-    assert lim.check("k")["allowed"] is False
+    assert lim.check("k").allowed is False
     lim.reset()
-    assert lim.check("k")["allowed"] is True
+    assert lim.check("k").allowed is True
 
 
 # -- P1-J: empty-bucket sweep (a2a-design-5.md) ------------------------------
@@ -4526,21 +4540,21 @@ def test_hermes_peer_rate_limiter_allows_below_cap_then_denies():
 
     now = [1_000_000]  # monotonic-ish ms, advanced explicitly
     limiter = sidecar_mod.PeerRateLimiter(
-        per_minute=3, window_ms=60_000, now_ms=lambda: now[0]
+        per_minute=3, window_ms=60_000, now_fn=lambda: now[0]
     )
     peer = "alpha"
     for _ in range(3):
         d = limiter.allow(peer)
-        assert d["ok"] is True
+        assert d.ok is True
         now[0] += 1  # 1 ms apart
     denied = limiter.allow(peer)
-    assert denied["ok"] is False
-    assert denied["remaining"] == 0
+    assert denied.ok is False
+    assert denied.remaining == 0
     # First hit was at 1_000_000, now is 1_000_003 → reset = 60_000 - 3 = 59_997
-    assert denied["reset_ms"] == 59_997
+    assert denied.reset_ms == 59_997
     # After the window rolls past the oldest, traffic flows again.
     now[0] += 60_000
-    assert limiter.allow(peer)["ok"] is True
+    assert limiter.allow(peer).ok is True
 
 
 def test_hermes_peer_rate_limiter_zero_disables():
@@ -4548,7 +4562,7 @@ def test_hermes_peer_rate_limiter_zero_disables():
     limiter = sidecar_mod.PeerRateLimiter(per_minute=0)
     # 100 "hits" in a row must all succeed when quota is 0 (disabled).
     for _ in range(100):
-        assert limiter.allow("spammy")["ok"] is True
+        assert limiter.allow("spammy").ok is True
 
 
 def test_hermes_peer_rate_limiter_is_keyed_by_peer():
@@ -4557,14 +4571,14 @@ def test_hermes_peer_rate_limiter_is_keyed_by_peer():
     sidecar_mod = _load_hermes_sidecar_module()
     now = [2_000_000]
     limiter = sidecar_mod.PeerRateLimiter(
-        per_minute=2, window_ms=60_000, now_ms=lambda: now[0]
+        per_minute=2, window_ms=60_000, now_fn=lambda: now[0]
     )
-    assert limiter.allow("alpha")["ok"] is True
-    assert limiter.allow("alpha")["ok"] is True
-    assert limiter.allow("alpha")["ok"] is False  # alpha is full
+    assert limiter.allow("alpha").ok is True
+    assert limiter.allow("alpha").ok is True
+    assert limiter.allow("alpha").ok is False  # alpha is full
     # beta has its own bucket, fully available.
-    assert limiter.allow("beta")["ok"] is True
-    assert limiter.allow("beta")["ok"] is True
+    assert limiter.allow("beta").ok is True
+    assert limiter.allow("beta").ok is True
 
 
 def test_hermes_peer_rate_limiter_evicts_stalest_at_max_peers():
@@ -4574,17 +4588,17 @@ def test_hermes_peer_rate_limiter_evicts_stalest_at_max_peers():
     sidecar_mod = _load_hermes_sidecar_module()
     now = [3_000_000]
     limiter = sidecar_mod.PeerRateLimiter(
-        per_minute=1, window_ms=60_000, max_peers=2, now_ms=lambda: now[0]
+        per_minute=1, window_ms=60_000, max_peers=2, now_fn=lambda: now[0]
     )
     # Fill the map with alpha + beta, each at quota.
-    assert limiter.allow("alpha")["ok"] is True
+    assert limiter.allow("alpha").ok is True
     now[0] += 10
-    assert limiter.allow("beta")["ok"] is True
+    assert limiter.allow("beta").ok is True
     # Bringing in gamma evicts alpha (the stalest).
     now[0] += 10
-    assert limiter.allow("gamma")["ok"] is True
+    assert limiter.allow("gamma").ok is True
     # alpha should now have a fresh bucket; admitted again despite same name.
-    assert limiter.allow("alpha")["ok"] is True
+    assert limiter.allow("alpha").ok is True
 
 
 def test_hermes_sidecar_post_a2a_send_returns_429_when_peer_over_cap():

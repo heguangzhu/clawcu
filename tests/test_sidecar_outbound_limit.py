@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-_SIDECAR = os.path.abspath(
+_COMMON_PARENT = os.path.abspath(
     os.path.join(
         os.path.dirname(__file__),
         "..",
@@ -14,14 +14,12 @@ _SIDECAR = os.path.abspath(
         "clawcu",
         "a2a",
         "sidecar_plugin",
-        "openclaw",
-        "sidecar",
     )
 )
-if _SIDECAR not in sys.path:
-    sys.path.insert(0, _SIDECAR)
+if _COMMON_PARENT not in sys.path:
+    sys.path.insert(0, _COMMON_PARENT)
 
-from outbound_limit import (  # noqa: E402
+from _common.outbound_limit import (  # noqa: E402
     DEFAULT_RPM,
     DEFAULT_SWEEP_INTERVAL_MS,
     WINDOW_MS,
@@ -159,7 +157,7 @@ def test_read_sweep_interval_parses_and_clamps():
 
 
 def test_sweep_timer_returns_none_when_interval_zero():
-    from outbound_limit import create_sweep_timer
+    from _common.outbound_limit import create_sweep_timer
 
     lim = create_outbound_limiter(rpm=1)
     h = create_sweep_timer(limiter=lim, interval_ms=0)
@@ -169,7 +167,7 @@ def test_sweep_timer_returns_none_when_interval_zero():
 def test_sweep_timer_invokes_sweep_periodically():
     """Uses a very short interval to confirm the daemon thread fires at least once."""
     import time
-    from outbound_limit import SweepTimer
+    from _common.outbound_limit import SweepTimer
 
     clock = _Clock(1000)
     lim = create_outbound_limiter(rpm=5, now_fn=clock)
@@ -191,7 +189,7 @@ def test_sweep_timer_invokes_sweep_periodically():
 def test_sweep_timer_swallows_exceptions_and_logs():
     """When sweep throws, the timer keeps running and logs a warning."""
     import time
-    from outbound_limit import SweepTimer
+    from _common.outbound_limit import SweepTimer
 
     class ExplodingLimiter:
         def __init__(self):

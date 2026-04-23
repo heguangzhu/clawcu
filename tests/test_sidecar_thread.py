@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import sys
 
-_SIDECAR = os.path.abspath(
+_COMMON_PARENT = os.path.abspath(
     os.path.join(
         os.path.dirname(__file__),
         "..",
@@ -12,14 +12,12 @@ _SIDECAR = os.path.abspath(
         "clawcu",
         "a2a",
         "sidecar_plugin",
-        "openclaw",
-        "sidecar",
     )
 )
-if _SIDECAR not in sys.path:
-    sys.path.insert(0, _SIDECAR)
+if _COMMON_PARENT not in sys.path:
+    sys.path.insert(0, _COMMON_PARENT)
 
-from thread import create_thread_store, safe_id  # noqa: E402
+from _common.thread import create_thread_store, safe_id  # noqa: E402
 
 
 def test_disabled_store_is_noop():

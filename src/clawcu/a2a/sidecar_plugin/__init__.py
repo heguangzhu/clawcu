@@ -88,30 +88,40 @@ def plugin_source_sha(service: str) -> str:
     """Return a short hex digest over every file under the service's plugin dir.
 
     The digest folds in both file path (relative, posix) and byte content in
-    sorted order, so reordering or renaming files invalidates the hash. Only
-    files under the service subdir are considered — shared ``__init__.py``
-    changes do not invalidate per-service fingerprints.
+    sorted order, so reordering or renaming files invalidates the hash. Files
+    under the shared ``_common/`` package are included with a ``_common/``
+    prefix so changes to shared sidecar primitives invalidate the fingerprint
+    for every service that bakes them in.
 
     Runtime artifacts (``__pycache__`` dirs, ``.pyc``/``.pyo`` bytecode,
     ``node_modules``, VCS metadata) are excluded so a transient import of
     the sidecar during CLI use doesn't invalidate the cached image tag.
     """
-    source_dir = plugin_source_dir(service)
+    service_dir = plugin_source_dir(service)
+    common_dir = _PLUGIN_ROOT / "_common"
     hasher = hashlib.sha256()
-    for path in sorted(source_dir.rglob("*")):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(source_dir)
-        if any(part in _PLUGIN_SHA_IGNORED_DIRS for part in rel.parts):
-            continue
-        if path.suffix in _PLUGIN_SHA_IGNORED_SUFFIXES:
-            continue
-        if path.name in _PLUGIN_SHA_IGNORED_NAMES:
-            continue
-        hasher.update(rel.as_posix().encode("utf-8"))
-        hasher.update(b"\0")
-        hasher.update(path.read_bytes())
-        hasher.update(b"\0")
+
+    def _feed(root: Path, prefix: str) -> None:
+        if not root.is_dir():
+            return
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(root)
+            if any(part in _PLUGIN_SHA_IGNORED_DIRS for part in rel.parts):
+                continue
+            if path.suffix in _PLUGIN_SHA_IGNORED_SUFFIXES:
+                continue
+            if path.name in _PLUGIN_SHA_IGNORED_NAMES:
+                continue
+            key = f"{prefix}{rel.as_posix()}"
+            hasher.update(key.encode("utf-8"))
+            hasher.update(b"\0")
+            hasher.update(path.read_bytes())
+            hasher.update(b"\0")
+
+    _feed(service_dir, "")
+    _feed(common_dir, "_common/")
     return hasher.hexdigest()[:10]
 
 

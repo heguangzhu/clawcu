@@ -1,8 +1,8 @@
-"""Per-peer / per-thread conversation history (Python port of thread.js).
+"""Per-peer / per-thread conversation history.
 
-Append-only JSONL at `<storage_dir>/<peer>/<thread_id>.jsonl`. Enabled only
-when `storage_dir` is truthy; otherwise load/append no-op. Peer and thread
-ids must match SAFE_ID to prevent path traversal.
+Append-only JSONL at ``<storage_dir>/<peer>/<thread_id>.jsonl``. Enabled only
+when ``storage_dir`` is truthy; otherwise load/append are no-ops. Peer and
+thread ids must match ``SAFE_ID`` to prevent path traversal.
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ def safe_id(value) -> Optional[str]:
 
 
 def _default_now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{datetime.now(timezone.utc).microsecond // 1000:03d}Z"
+    return datetime.now(timezone.utc).isoformat()
 
 
 class ThreadStore:
@@ -37,10 +37,10 @@ class ThreadStore:
         max_history_pairs: int = 10,
         now_fn: Callable[[], str] = _default_now,
     ) -> None:
-        self.storage_dir = storage_dir
-        self.max_history_pairs = max_history_pairs
+        self.storage_dir = storage_dir or ""
+        self.max_history_pairs = max_history_pairs if max_history_pairs >= 0 else 10
         self.now_fn = now_fn
-        self.enabled = bool(storage_dir)
+        self.enabled = bool(self.storage_dir)
 
     def _thread_paths(self, peer: str, thread_id: str):
         p = safe_id(peer)
@@ -88,7 +88,9 @@ class ThreadStore:
             return out[len(out) - cap :]
         return out
 
-    def append_turn(self, peer: str, thread_id: str, user_msg: str, assistant_msg: str) -> bool:
+    def append_turn(
+        self, peer: str, thread_id: str, user_msg: str, assistant_msg: str
+    ) -> bool:
         if not self.enabled:
             return False
         paths = self._thread_paths(peer, thread_id)
@@ -100,8 +102,13 @@ class ThreadStore:
         try:
             os.makedirs(directory, exist_ok=True)
             ts = self.now_fn()
-            line_u = json.dumps({"role": "user", "content": user_msg, "ts": ts}, ensure_ascii=False)
-            line_a = json.dumps({"role": "assistant", "content": assistant_msg, "ts": ts}, ensure_ascii=False)
+            line_u = json.dumps(
+                {"role": "user", "content": user_msg, "ts": ts}, ensure_ascii=False
+            )
+            line_a = json.dumps(
+                {"role": "assistant", "content": assistant_msg, "ts": ts},
+                ensure_ascii=False,
+            )
             with open(file_path, "a", encoding="utf-8") as fh:
                 fh.write(line_u + "\n")
                 fh.write(line_a + "\n")
@@ -118,4 +125,8 @@ def create_thread_store(
     max_history_pairs: int = 10,
     now_fn: Callable[[], str] = _default_now,
 ) -> ThreadStore:
-    return ThreadStore(storage_dir=storage_dir, max_history_pairs=max_history_pairs, now_fn=now_fn)
+    return ThreadStore(
+        storage_dir=storage_dir,
+        max_history_pairs=max_history_pairs,
+        now_fn=now_fn,
+    )

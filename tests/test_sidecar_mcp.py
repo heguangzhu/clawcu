@@ -21,6 +21,13 @@ _SIDECAR = os.path.abspath(
 if _SIDECAR not in sys.path:
     sys.path.insert(0, _SIDECAR)
 
+# Also expose the shared sidecar_plugin/ root so ``from _common.xxx`` works.
+_SIDECAR_PLUGIN_ROOT = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "src", "clawcu", "a2a", "sidecar_plugin")
+)
+if _SIDECAR_PLUGIN_ROOT not in sys.path:
+    sys.path.insert(0, _SIDECAR_PLUGIN_ROOT)
+
 import mcp  # noqa: E402
 from mcp import (  # noqa: E402
     ERR_A2A_UPSTREAM,
@@ -278,7 +285,7 @@ def test_null_id_preserved_in_error_response():
 
 
 def test_tools_call_rate_limits_after_rpm_returns_429_and_retry_after_ms():
-    from outbound_limit import create_outbound_limiter, key_for
+    from _common.outbound_limit import create_outbound_limiter, key_for
 
     limiter = create_outbound_limiter(rpm=2)
 

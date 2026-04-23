@@ -103,7 +103,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import sys
 import threading
 import time
@@ -111,10 +110,36 @@ import traceback
 import urllib.parse
 import urllib.request
 import uuid
-from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
+
+# Make the _common/ package importable when this file is run directly as
+# `python3 /opt/a2a/sidecar.py` (no package). In the baked image sidecar.py
+# and _common/ are siblings under /opt/a2a; when loaded from the source tree
+# during tests _common/ lives one level up at sidecar_plugin/_common/. Walk
+# up until we find it.
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_probe = _THIS_DIR
+for _ in range(4):
+    if os.path.isdir(os.path.join(_probe, "_common")):
+        if _probe not in sys.path:
+            sys.path.insert(0, _probe)
+        break
+    _parent = os.path.dirname(_probe)
+    if _parent == _probe:
+        break
+    _probe = _parent
+
+from _common.outbound_limit import (  # noqa: E402
+    create_outbound_limiter,
+    create_sweep_thread,
+    key_for as outbound_limit_key,
+    read_rpm as read_outbound_rpm,
+    read_sweep_interval_ms as read_outbound_sweep_interval_ms,
+)
+from _common.ratelimit import RateLimiter as PeerRateLimiter  # noqa: E402
+from _common.thread import ThreadStore, safe_id  # noqa: E402
 
 
 def _setup_logging() -> None:
@@ -247,171 +272,9 @@ class Config:
         return f"http://{self.hermes_host}:{self.hermes_port}{self.ready_path}"
 
 
-# --- Inbound per-peer rate limiter (review-11 P1-B1) ---
-#
-# Sliding-window counter mirroring openclaw/sidecar/ratelimit.js. Kept inline
-# to match the hermes single-file convention; the module-loading cost via
-# ``spec_from_file_location`` is not worth it for a ~40-line helper.
-#
-# Keyed on the ``from`` field of /a2a/send. Not auth — peers can spoof the
-# header; this is quota to keep one misbehaving peer from draining the
-# upstream LLM. ``max_peers`` caps memory so a rotating-name attacker can't
-# blow up the map.
-
-class PeerRateLimiter:
-    def __init__(
-        self,
-        per_minute: int = 30,
-        window_ms: int = 60_000,
-        max_peers: int = 1024,
-        now_ms: Callable[[], int] | None = None,
-    ) -> None:
-        self._per_minute = per_minute
-        self._window_ms = window_ms
-        self._max_peers = max_peers
-        self._hits: dict[str, list[int]] = {}
-        self._lock = threading.Lock()
-        self._now_ms = now_ms or (lambda: int(time.time() * 1000))
-
-    def allow(self, peer: str) -> dict[str, Any]:
-        if self._per_minute <= 0:
-            return {"ok": True, "remaining": float("inf"), "reset_ms": 0}
-        now = self._now_ms()
-        window_start = now - self._window_ms
-        with self._lock:
-            timestamps = self._hits.get(peer)
-            if timestamps is None:
-                if len(self._hits) >= self._max_peers:
-                    # Evict the stalest peer. O(n) scan is fine at max_peers=1024.
-                    stalest_key = min(
-                        self._hits,
-                        key=lambda k: self._hits[k][-1] if self._hits[k] else 0,
-                    )
-                    self._hits.pop(stalest_key, None)
-                timestamps = []
-                self._hits[peer] = timestamps
-            while timestamps and timestamps[0] < window_start:
-                timestamps.pop(0)
-            if len(timestamps) >= self._per_minute:
-                oldest = timestamps[0]
-                reset_ms = max(0, oldest + self._window_ms - now)
-                return {"ok": False, "remaining": 0, "reset_ms": reset_ms}
-            timestamps.append(now)
-            return {
-                "ok": True,
-                "remaining": self._per_minute - len(timestamps),
-                "reset_ms": 0,
-            }
-
-
-# --- Thread-history store (review-14 P1-C, mirror of openclaw thread.js) ---
-#
-# Design matches openclaw/sidecar/thread.js:
-#   - append-only JSONL at <storageDir>/<peer>/<threadId>.jsonl
-#   - SAFE_ID regex gates peer + thread_id, blocking path traversal
-#   - load-time cap (maxHistoryPairs * 2 messages), file keeps everything
-#   - disabled when storageDir is empty → no-op load/append
-#
-# Kept inline (not split into a module) because the hermes sidecar convention
-# is single-file — see design-11 §4. ``thread`` is not a Python stdlib module
-# name in 3.x, but ``ThreadStore`` + ``safe_id`` are scoped via module prefix
-# to stay distinct from the ``threading`` stdlib domain.
-
-_SAFE_ID = re.compile(r"^[A-Za-z0-9._\-]{1,128}$")
-
-
-def safe_id(value: Any) -> str | None:
-    if not isinstance(value, str) or not value:
-        return None
-    if not _SAFE_ID.match(value):
-        return None
-    if value in (".", ".."):
-        return None
-    return value
-
-
-class ThreadStore:
-    def __init__(self, storage_dir: str, max_history_pairs: int = 10) -> None:
-        self.storage_dir = storage_dir or ""
-        self.enabled = bool(self.storage_dir)
-        self.max_history_pairs = max_history_pairs if max_history_pairs >= 0 else 10
-
-    def _thread_file(self, peer: str, thread_id: str) -> tuple[str, str] | None:
-        p = safe_id(peer)
-        t = safe_id(thread_id)
-        if not p or not t:
-            return None
-        dir_ = os.path.join(self.storage_dir, p)
-        return dir_, os.path.join(dir_, f"{t}.jsonl")
-
-    def load_history(self, peer: str, thread_id: str) -> list[dict[str, str]]:
-        if not self.enabled:
-            return []
-        paths = self._thread_file(peer, thread_id)
-        if paths is None:
-            return []
-        _dir, file_path = paths
-        try:
-            with open(file_path, encoding="utf-8") as fh:
-                raw = fh.read()
-        except FileNotFoundError:
-            return []
-        except OSError as exc:
-            sys.stderr.write(
-                f"a2a-sidecar: thread load failed for {peer}/{thread_id}: {exc}\n"
-            )
-            return []
-        out: list[dict[str, str]] = []
-        for line in raw.split("\n"):
-            trimmed = line.strip()
-            if not trimmed:
-                continue
-            try:
-                parsed = json.loads(trimmed)
-            except Exception:
-                # Corrupt line — skip but keep loading; a partial write
-                # shouldn't poison the whole thread's replay.
-                continue
-            if not isinstance(parsed, dict):
-                continue
-            role = parsed.get("role")
-            content = parsed.get("content")
-            if role not in ("user", "assistant") or not isinstance(content, str):
-                continue
-            out.append({"role": role, "content": content})
-        cap = max(0, self.max_history_pairs) * 2
-        if cap > 0 and len(out) > cap:
-            return out[-cap:]
-        return out
-
-    def append_turn(
-        self, peer: str, thread_id: str, user_msg: str, assistant_msg: str
-    ) -> bool:
-        if not self.enabled:
-            return False
-        paths = self._thread_file(peer, thread_id)
-        if paths is None:
-            return False
-        if not isinstance(user_msg, str) or not isinstance(assistant_msg, str):
-            return False
-        dir_, file_path = paths
-        try:
-            os.makedirs(dir_, exist_ok=True)
-            ts = datetime.now(timezone.utc).isoformat()
-            lines = (
-                json.dumps({"role": "user", "content": user_msg, "ts": ts})
-                + "\n"
-                + json.dumps({"role": "assistant", "content": assistant_msg, "ts": ts})
-                + "\n"
-            )
-            with open(file_path, "a", encoding="utf-8") as fh:
-                fh.write(lines)
-            return True
-        except OSError as exc:
-            sys.stderr.write(
-                f"a2a-sidecar: thread append failed for {peer}/{thread_id}: {exc}\n"
-            )
-            return False
+# Inbound per-peer rate limiter + thread-history store live in _common/
+# (imported at the top of this file) — shared with the openclaw sidecar so
+# both runtimes share one implementation.
 
 
 # Cache a recent "ready" observation so we don't probe on every /a2a/send.
@@ -1135,25 +998,19 @@ def _handle_mcp_tools_call(
 
     # Self-origin rate limit (a2a-design-4.md §P1-B). Shared bucket with
     # /a2a/outbound so the LLM firing 200 a2a_call_peer calls in one turn
-    # can't nuke the provider quota. Inline the key (two lines) rather than
-    # crossing a package boundary — sidecar.py is loaded as a top-level
-    # script in tests so `from .outbound_limit import key_for` fails.
+    # can't nuke the provider quota.
     if outbound_limiter is not None:
-        key = (
-            f"thread:{thread_id}"
-            if isinstance(thread_id, str) and thread_id
-            else f"self:{self_name or 'anon'}"
-        )
+        key = outbound_limit_key(thread_id=thread_id, self_name=self_name)
         decision = outbound_limiter.check(key)
-        if not decision["allowed"]:
+        if not decision.allowed:
             return _jsonrpc_error(
                 rpc_id,
                 MCP_ERR_A2A_UPSTREAM,
-                f"self-origin rate limit exceeded ({decision['limit']}/min)",
+                f"self-origin rate limit exceeded ({decision.limit}/min)",
                 _with_rid(
                     {
                         "httpStatus": 429,
-                        "retryAfterMs": decision["retry_after_ms"],
+                        "retryAfterMs": decision.retry_after_ms,
                     }
                 ),
             )
@@ -1367,24 +1224,24 @@ def build_handler(
             # Retry-After + resetMs in the body so the peer can back off.
             rl_peer = peer_from or "?"
             rl = peer_limiter.allow(rl_peer)
-            if not rl["ok"]:
+            if not rl.ok:
                 log.warning(
                     "a2a.send rate-limited request_id=%s from=%s reset_ms=%s",
                     request_id,
                     rl_peer,
-                    rl["reset_ms"],
+                    rl.reset_ms,
                 )
                 _write_json(
                     self,
                     429,
                     {
                         "error": f"rate limit exceeded for peer '{rl_peer}'",
-                        "resetMs": rl["reset_ms"],
+                        "resetMs": rl.reset_ms,
                         "request_id": request_id,
                     },
                     extra_headers={
                         **rid_headers,
-                        "Retry-After": str((rl["reset_ms"] + 999) // 1000),
+                        "Retry-After": str((rl.reset_ms + 999) // 1000),
                     },
                 )
                 return
@@ -1719,26 +1576,24 @@ def build_handler(
             # (a2a-design-4.md §P1-B). Checked after input validation so
             # malformed requests aren't counted against the quota.
             if outbound_limiter is not None:
-                limit_key = (
-                    f"thread:{out_thread}"
-                    if isinstance(out_thread, str) and out_thread
-                    else f"self:{cfg.self_name or 'anon'}"
+                limit_key = outbound_limit_key(
+                    thread_id=out_thread, self_name=cfg.self_name
                 )
                 decision = outbound_limiter.check(limit_key)
-                if not decision["allowed"]:
+                if not decision.allowed:
                     log.warning(
                         "a2a.outbound rate-limited request_id=%s key=%s limit=%s",
                         request_id,
                         limit_key,
-                        decision["limit"],
+                        decision.limit,
                     )
                     _write_json(
                         self,
                         429,
                         {
-                            "error": f"self-origin rate limit exceeded ({decision['limit']}/min)",
+                            "error": f"self-origin rate limit exceeded ({decision.limit}/min)",
                             "request_id": request_id,
-                            "retry_after_ms": decision["retry_after_ms"],
+                            "retry_after_ms": decision.retry_after_ms,
                         },
                         extra_headers=rid_headers,
                     )
@@ -1851,31 +1706,18 @@ def main(argv: list[str] | None = None) -> int:
 
     # Shared outbound rate limiter: same bucket for /a2a/outbound and /mcp
     # tool-call so an LLM can't bypass the cap by picking a different path
-    # (a2a-design-4.md §P1-B).
+    # (a2a-design-4.md §P1-B). The implementation lives in _common/ so both
+    # runtimes share the same policy.
     try:
-        import importlib.util as _ilu2
-        import pathlib as _pl2
-
-        _lim_spec = _ilu2.spec_from_file_location(
-            "_a2a_outbound_limit",
-            str(_pl2.Path(__file__).parent / "outbound_limit.py"),
+        outbound_limiter = create_outbound_limiter(rpm=read_outbound_rpm(os.environ))
+        # a2a-design-6.md §P2-L: periodic empty-bucket sweep so long-running
+        # sidecars with high thread_id churn don't grow their hits map
+        # unboundedly. Daemon thread; dies with the process. Disable via
+        # A2A_OUTBOUND_SWEEP_INTERVAL_MS=0.
+        create_sweep_thread(
+            outbound_limiter,
+            read_outbound_sweep_interval_ms(os.environ),
         )
-        if _lim_spec and _lim_spec.loader:
-            _lim_mod = _ilu2.module_from_spec(_lim_spec)
-            _lim_spec.loader.exec_module(_lim_mod)
-            outbound_limiter = _lim_mod.create_outbound_limiter(
-                rpm=_lim_mod.read_rpm(os.environ)
-            )
-            # a2a-design-6.md §P2-L: periodic empty-bucket sweep so
-            # long-running sidecars with high thread_id churn don't
-            # grow their hits map unboundedly. Daemon thread; dies
-            # with the process. Disable via A2A_OUTBOUND_SWEEP_INTERVAL_MS=0.
-            _lim_mod.create_sweep_thread(
-                outbound_limiter,
-                _lim_mod.read_sweep_interval_ms(os.environ),
-            )
-        else:
-            outbound_limiter = None
     except Exception as exc:  # pragma: no cover - defensive path
         log.warning("outbound-limiter init failed: %s; running unthrottled", exc)
         outbound_limiter = None

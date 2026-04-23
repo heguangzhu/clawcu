@@ -29,13 +29,15 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /opt/a2a && chown node:node /opt/a2a
-# Copy the entire sidecar/ directory, not just server.py. The sidecar is
-# split across multiple files (server.py, readiness.py, ratelimit.py, ...)
-# and server.py imports them as siblings at __file__'s directory. Copying
-# only server.py would leave the module-resolution chain broken at runtime.
-COPY --chown=node:node sidecar/ /opt/a2a/
+# Build context is sidecar_plugin/ (one level up from this Dockerfile) so we
+# can COPY both the service-specific sidecar sources and the shared _common/
+# package baked beside them. server.py prepends __file__'s directory to
+# sys.path at startup, which then makes `import _common.xxx` resolve against
+# /opt/a2a/_common/.
+COPY --chown=node:node openclaw/sidecar/ /opt/a2a/
+COPY --chown=node:node _common/          /opt/a2a/_common/
 
-COPY entrypoint.sh /usr/local/bin/entrypoint-a2a.sh
+COPY openclaw/entrypoint.sh /usr/local/bin/entrypoint-a2a.sh
 RUN chmod +x /usr/local/bin/entrypoint-a2a.sh
 
 USER node

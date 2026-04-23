@@ -1,17 +1,26 @@
-"""Self-origin outbound rate limiter (Python port of outbound_limit.js).
+"""Self-origin outbound rate limit shared by /a2a/outbound and /mcp tool-call
+handlers (a2a-design-4.md §P1-B). Hop budget caps depth (A→B→A→B runaway);
+this caps breadth (one LLM turn fires 200 parallel a2a_call_peer calls and
+nukes the provider quota).
 
-Shared limiter for /a2a/outbound and MCP tools/call handlers. The key is
-either `thread:<threadId>` or `self:<selfName>` (defaulting to "anon").
-Default 60 calls / 60s, configurable via A2A_OUTBOUND_RATE_LIMIT.
+Key: thread_id when present, else the caller's own registered name
+(``self:<name>``). Limit: N calls / rolling 60s / key. Default 60/min,
+tunable via ``A2A_OUTBOUND_RATE_LIMIT`` env var.
+
+Thread-safe: both sidecars use ThreadingHTTPServer, so /a2a/outbound and
+/mcp can land on different threads at the same instant.
 """
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Deque, Dict, Mapping, Optional
+
+_log = logging.getLogger("clawcu.a2a.outbound_limit")
 
 DEFAULT_RPM = 60
 WINDOW_MS = 60_000
@@ -22,7 +31,9 @@ def _default_now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def _coerce_int_env(raw, fallback: int, allow_zero: bool = False, clamp_nonneg: bool = False) -> int:
+def _coerce_int_env(
+    raw, fallback: int, allow_zero: bool = False, clamp_nonneg: bool = False
+) -> int:
     if raw is None:
         return fallback
     s = str(raw).strip()
@@ -56,7 +67,9 @@ def read_sweep_interval_ms(env: Optional[Mapping[str, str]] = None) -> int:
     )
 
 
-def key_for(thread_id: Optional[str] = None, self_name: Optional[str] = None) -> str:
+def key_for(
+    thread_id: Optional[str] = None, self_name: Optional[str] = None
+) -> str:
     if isinstance(thread_id, str) and thread_id:
         return f"thread:{thread_id}"
     return f"self:{self_name or 'anon'}"
@@ -79,39 +92,48 @@ class OutboundLimiter:
         self.limit = rpm if (isinstance(rpm, int) and rpm > 0) else DEFAULT_RPM
         self.now_fn = now_fn
         self._hits: Dict[str, Deque[int]] = {}
+        self._lock = threading.Lock()
 
     def check(self, key: str) -> OutboundDecision:
         now = self.now_fn()
         cutoff = now - WINDOW_MS
-        arr = self._hits.get(key)
-        if arr is None:
-            arr = deque()
-            self._hits[key] = arr
-        while arr and arr[0] <= cutoff:
-            arr.popleft()
-        if len(arr) >= self.limit:
-            retry_after_ms = max(0, arr[0] + WINDOW_MS - now)
-            return OutboundDecision(allowed=False, limit=self.limit, retry_after_ms=retry_after_ms)
-        arr.append(now)
-        return OutboundDecision(allowed=True, limit=self.limit, count=len(arr))
+        with self._lock:
+            arr = self._hits.get(key)
+            if arr is None:
+                arr = deque()
+                self._hits[key] = arr
+            while arr and arr[0] <= cutoff:
+                arr.popleft()
+            if len(arr) >= self.limit:
+                retry_after_ms = max(0, arr[0] + WINDOW_MS - now)
+                return OutboundDecision(
+                    allowed=False, limit=self.limit, retry_after_ms=retry_after_ms
+                )
+            arr.append(now)
+            return OutboundDecision(
+                allowed=True, limit=self.limit, count=len(arr)
+            )
 
     def sweep(self) -> None:
         now = self.now_fn()
         cutoff = now - WINDOW_MS
-        empty_keys = []
-        for k, arr in self._hits.items():
-            while arr and arr[0] <= cutoff:
-                arr.popleft()
-            if not arr:
-                empty_keys.append(k)
-        for k in empty_keys:
-            self._hits.pop(k, None)
+        with self._lock:
+            empty_keys = []
+            for k, arr in self._hits.items():
+                while arr and arr[0] <= cutoff:
+                    arr.popleft()
+                if not arr:
+                    empty_keys.append(k)
+            for k in empty_keys:
+                self._hits.pop(k, None)
 
     def size(self) -> int:
-        return len(self._hits)
+        with self._lock:
+            return len(self._hits)
 
     def reset(self) -> None:
-        self._hits.clear()
+        with self._lock:
+            self._hits.clear()
 
 
 def create_outbound_limiter(
@@ -122,9 +144,7 @@ def create_outbound_limiter(
 
 
 class SweepTimer:
-    """Best-effort periodic sweep. `.unref()`-style: daemon thread, so it
-    doesn't block interpreter shutdown.
-    """
+    """Best-effort periodic sweep. Daemon thread; dies with the process."""
 
     def __init__(
         self,
@@ -141,7 +161,9 @@ class SweepTimer:
     def start(self) -> None:
         if self._thread is not None:
             return
-        t = threading.Thread(target=self._run, name="a2a-outbound-sweep", daemon=True)
+        t = threading.Thread(
+            target=self._run, name="a2a-outbound-sweep", daemon=True
+        )
         self._thread = t
         t.start()
 
@@ -156,12 +178,16 @@ class SweepTimer:
         while not self._stop.wait(self.interval_s):
             try:
                 self.limiter.sweep()
-            except Exception as err:  # pragma: no cover - defensive
+            except Exception as err:
                 if self._logger is not None:
                     try:
-                        self._logger.warn(f"[sidecar] outbound-sweep failed: {err}")
+                        self._logger.warn(
+                            f"[sidecar] outbound-sweep failed: {err}"
+                        )
                     except Exception:
                         pass
+                else:
+                    _log.warning("outbound-sweep failed: %s", err)
 
 
 def create_sweep_timer(
@@ -176,3 +202,31 @@ def create_sweep_timer(
     timer = SweepTimer(limiter=limiter, interval_ms=interval_ms, logger=logger)
     timer.start()
     return timer
+
+
+def create_sweep_thread(
+    limiter: OutboundLimiter,
+    interval_ms: int,
+    *,
+    stop_event: Optional[threading.Event] = None,
+) -> Optional[threading.Thread]:
+    """Legacy entry point for the Hermes sidecar that wanted a bare Thread
+    with a caller-supplied stop_event. Implemented on top of SweepTimer for
+    the common path; returns the underlying Thread when interval > 0 so
+    hermes tests that inspect ``Thread.is_alive()`` still work.
+    """
+    if interval_ms <= 0 or limiter is None or not hasattr(limiter, "sweep"):
+        return None
+    event = stop_event if stop_event is not None else threading.Event()
+    interval_s = interval_ms / 1000.0
+
+    def _loop() -> None:
+        while not event.wait(interval_s):
+            try:
+                limiter.sweep()
+            except Exception as exc:
+                _log.warning("outbound-sweep failed: %s", exc)
+
+    t = threading.Thread(target=_loop, name="a2a-outbound-sweep", daemon=True)
+    t.start()
+    return t

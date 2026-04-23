@@ -31,14 +31,16 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /opt/a2a
-COPY sidecar.py         /opt/a2a/sidecar.py
-# bootstrap.py and outbound_limit.py are loaded at runtime by
-# sidecar.py via spec_from_file_location. They must land in the
-# image alongside sidecar.py — else the sidecar silently skips
-# MCP auto-wire and outbound rate limiting (review-9 P0-A3).
-COPY bootstrap.py       /opt/a2a/bootstrap.py
-COPY outbound_limit.py  /opt/a2a/outbound_limit.py
-COPY entrypoint.sh /usr/local/bin/entrypoint-a2a.sh
+# Build context is sidecar_plugin/ (one level up from this Dockerfile) so we
+# can COPY both the hermes-specific sidecar sources and the shared _common/
+# package. sidecar.py prepends __file__'s directory to sys.path at startup,
+# which then makes `import _common.xxx` resolve against /opt/a2a/_common/.
+COPY hermes/sidecar.py   /opt/a2a/sidecar.py
+# bootstrap.py is still loaded via spec_from_file_location (hermes-specific,
+# not shared). Must land in the image alongside sidecar.py.
+COPY hermes/bootstrap.py /opt/a2a/bootstrap.py
+COPY _common/            /opt/a2a/_common/
+COPY hermes/entrypoint.sh /usr/local/bin/entrypoint-a2a.sh
 RUN chmod +x /usr/local/bin/entrypoint-a2a.sh
 
 # Container port the sidecar binds. Publish at run time (e.g. -p 9129:9119).
