@@ -225,59 +225,14 @@ from config import Config, _env_list, _envs  # noqa: E402,F401
 # continue to work (the cache object is shared by identity, not copied).
 import gateway  # noqa: E402,F401
 from gateway import (  # noqa: E402
+    A2A_LOCAL_UPSTREAM_CAP,
     _GATEWAY_READY_TTL_S,
     _gateway_ready_cache,
     _probe_gateway_ready,
+    call_hermes,
     invalidate_gateway_ready_cache,
     wait_for_gateway_ready,
 )
-
-
-def call_hermes(
-    cfg: Config,
-    message: str,
-    peer_from: str,
-    history: list[dict[str, str]] | None = None,
-) -> str:
-    """POST to Hermes' OpenAI-compat /v1/chat/completions, return assistant text."""
-
-    messages: list[dict[str, str]] = []
-    if cfg.system_prompt:
-        messages.append({"role": "system", "content": cfg.system_prompt})
-    if history:
-        messages.extend(history)
-    # Tag the incoming message with its A2A origin so the LLM has context.
-    prefix = f"[from agent '{peer_from}'] " if peer_from else ""
-    messages.append({"role": "user", "content": prefix + message})
-
-    body = json.dumps(
-        {
-            "model": cfg.model,
-            "messages": messages,
-            "stream": False,
-        }
-    ).encode("utf-8")
-
-    headers = {
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-    if cfg.api_key:
-        headers["Authorization"] = f"Bearer {cfg.api_key}"
-
-    req = urllib.request.Request(
-        cfg.chat_url(), data=body, method="POST", headers=headers
-    )
-    with urllib.request.urlopen(req, timeout=cfg.timeout) as resp:
-        raw = _read_capped(resp, cap=A2A_LOCAL_UPSTREAM_CAP).decode("utf-8")
-    payload = json.loads(raw)
-
-    try:
-        return payload["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise RuntimeError(
-            f"unexpected chat response shape: {payload!r}"
-        ) from exc
 
 
 # Review-2 P1-D: request correlation.
@@ -354,16 +309,16 @@ class _BadContentLength(Exception):
     """Raised when the client sends a Content-Length we refuse to honor."""
 
 
-# Two caps with different trust boundaries (Review-21 P2-M1 / Review-22 P2-N1):
-#   A2A_MAX_RESPONSE_BYTES (4 MiB)  — outbound peer/registry responses (also
-#                                    re-exported from peering so tests can
-#                                    read the value off either module)
-#   A2A_LOCAL_UPSTREAM_CAP (64 MiB) — the co-resident Hermes gateway, where
-#                                    a buggy streaming response can still
-#                                    OOM the sidecar even though the peer
-#                                    is trusted
+# Response caps (Review-21 P2-M1 / Review-22 P2-N1):
+#   A2A_MAX_RESPONSE_BYTES (4 MiB)  — outbound peer/registry responses, owned
+#                                    by ``peering`` (a compromised peer is the
+#                                    OOM threat)
+#   A2A_LOCAL_UPSTREAM_CAP (64 MiB) — co-resident Hermes gateway, owned by
+#                                    ``gateway`` (trusted host, still bounded
+#                                    against runaway streaming bugs)
+# Re-exported here so tests and diagnostic paths can read either value off
+# the main sidecar module.
 A2A_MAX_RESPONSE_BYTES = peering.A2A_MAX_RESPONSE_BYTES
-A2A_LOCAL_UPSTREAM_CAP = 64 * 1024 * 1024
 
 # The reader + exception live in _common/ so both sidecars share one
 # implementation. Aliased locally so pre-existing references to
