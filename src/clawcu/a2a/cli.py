@@ -214,7 +214,12 @@ def bridge_serve(
     service: ClawCUService | None
     try:
         service = _get_service()
-    except Exception:  # noqa: BLE001 — clawcu may be uninitialised in demo mode
+    except (OSError, json.JSONDecodeError, ValueError):
+        # Review-1 §8: only swallow the "clawcu not initialised / state
+        # unreadable" failure modes — missing home dir, unreadable paths,
+        # corrupt bootstrap JSON, or an adapter rejecting a malformed
+        # config value. Letting bare Exception through hid real bugs
+        # (AttributeError, ImportError) behind a silent fallback to None.
         service = None
     card, resolved_port = _resolve_bridge_card(
         service=service,
