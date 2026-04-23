@@ -1,6 +1,6 @@
 """Hermes sidecar inbound-request reject-early guards.
 
-Three knobs keep the sidecar from turning adversarial requests into OOMs
+Four knobs keep the sidecar from turning adversarial requests into OOMs
 or into 5-minute-timeout-pinned worker threads:
 
 1. ``_max_body_bytes()`` — cap on ``rfile.read(length)`` allocations.
@@ -8,6 +8,10 @@ or into 5-minute-timeout-pinned worker threads:
    over-the-cap ``Content-Length`` headers before any read happens.
 3. ``_hop_budget()`` — A2A ``X-A2A-Hop`` limit that refuses loop traffic
    with a 508 before any gateway work.
+4. ``read_inbound_json_body()`` — composes (1)+(2) with JSON + dict
+   validation and writes a uniform ``{error, request_id}`` 400/413
+   response on any failure. ``/a2a/send`` and ``/a2a/outbound`` share
+   it; ``/mcp`` uses its own JSON-RPC-envelope error path.
 
 Lifted out of ``server.py`` so the handler code reads as business logic
 instead of a 1,000-line wall that mixes reject-early guards with
@@ -17,8 +21,11 @@ request dispatch. ``server.py`` re-imports the names so tests reading
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
+
+from _common.http_response import write_json_response
 
 
 # Hop budget — see a2a-design-1.md §Loop protection. X-A2A-Hop increments
@@ -82,3 +89,57 @@ def _parse_content_length(headers: Any, *, cap: int) -> int:
     if length > cap:
         raise _BadContentLength(f"request body exceeds {cap} bytes")
     return length
+
+
+def read_inbound_json_body(
+    handler: Any,
+    *,
+    cap: int,
+    request_id: str,
+    rid_headers: dict[str, str],
+) -> dict[str, Any] | None:
+    """Parse an inbound POST body into a JSON dict.
+
+    Unified prelude for ``/a2a/send`` and ``/a2a/outbound``: enforces the
+    body-size cap, reads ``Content-Length`` bytes, parses UTF-8 JSON, and
+    rejects non-dict payloads. On any failure it writes a uniform
+    ``{error, request_id}`` response (400 for bad shape / JSON, 413 for
+    oversize) with the caller's ``X-A2A-Request-Id`` header echoed back,
+    and returns ``None`` — so the caller's next line is just ``return``.
+    Returns the parsed dict on success.
+
+    Not used by ``/mcp``: that endpoint needs JSON-RPC envelopes
+    (``{jsonrpc, id, error: {code, message}}``) rather than flat
+    ``{error}`` bodies, so it keeps its own parse path.
+    """
+    try:
+        length = _parse_content_length(handler.headers, cap=cap)
+    except _BadContentLength as exc:
+        status = 413 if "exceeds" in str(exc) else 400
+        write_json_response(
+            handler,
+            status,
+            {"error": str(exc), "request_id": request_id},
+            extra_headers=rid_headers,
+        )
+        return None
+    raw = handler.rfile.read(length) if length else b""
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 — surface any parse error
+        write_json_response(
+            handler,
+            400,
+            {"error": f"bad json: {exc}", "request_id": request_id},
+            extra_headers=rid_headers,
+        )
+        return None
+    if not isinstance(payload, dict):
+        write_json_response(
+            handler,
+            400,
+            {"error": "body must be a JSON object", "request_id": request_id},
+            extra_headers=rid_headers,
+        )
+        return None
+    return payload

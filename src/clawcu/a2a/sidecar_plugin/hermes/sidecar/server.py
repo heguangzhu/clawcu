@@ -285,6 +285,7 @@ from inbound_limits import (  # noqa: E402
     _hop_budget,
     _max_body_bytes,
     _parse_content_length,
+    read_inbound_json_body,
 )
 
 
@@ -442,37 +443,13 @@ def build_handler(
                 )
                 return
 
-            cap = _max_body_bytes()
-            try:
-                length = _parse_content_length(self.headers, cap=cap)
-            except _BadContentLength as exc:
-                status = 413 if "exceeds" in str(exc) else 400
-                write_json_response(
-                    self,
-                    status,
-                    {"error": str(exc), "request_id": request_id},
-                    extra_headers=rid_headers,
-                )
-                return
-            raw = self.rfile.read(length) if length else b""
-            try:
-                payload = json.loads(raw.decode("utf-8"))
-            except Exception as exc:
-                write_json_response(
-                    self,
-                    400,
-                    {"error": f"bad json: {exc}", "request_id": request_id},
-                    extra_headers=rid_headers,
-                )
-                return
-
-            if not isinstance(payload, dict):
-                write_json_response(
-                    self,
-                    400,
-                    {"error": "body must be a JSON object", "request_id": request_id},
-                    extra_headers=rid_headers,
-                )
+            payload = read_inbound_json_body(
+                self,
+                cap=_max_body_bytes(),
+                request_id=request_id,
+                rid_headers=rid_headers,
+            )
+            if payload is None:
                 return
 
             peer_from = str(payload.get("from") or "")
@@ -735,36 +712,13 @@ def build_handler(
                 )
                 return
 
-            cap = _max_body_bytes()
-            try:
-                length = _parse_content_length(self.headers, cap=cap)
-            except _BadContentLength as exc:
-                status = 413 if "exceeds" in str(exc) else 400
-                write_json_response(
-                    self,
-                    status,
-                    {"error": str(exc), "request_id": request_id},
-                    extra_headers=rid_headers,
-                )
-                return
-            raw = self.rfile.read(length) if length else b""
-            try:
-                payload = json.loads(raw.decode("utf-8"))
-            except Exception as exc:
-                write_json_response(
-                    self,
-                    400,
-                    {"error": f"bad json: {exc}", "request_id": request_id},
-                    extra_headers=rid_headers,
-                )
-                return
-            if not isinstance(payload, dict):
-                write_json_response(
-                    self,
-                    400,
-                    {"error": "body must be a JSON object", "request_id": request_id},
-                    extra_headers=rid_headers,
-                )
+            payload = read_inbound_json_body(
+                self,
+                cap=_max_body_bytes(),
+                request_id=request_id,
+                rid_headers=rid_headers,
+            )
+            if payload is None:
                 return
             to = payload.get("to")
             if not isinstance(to, str) or not to:
