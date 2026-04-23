@@ -177,21 +177,27 @@ def test_agent_card_protocol_must_be_list_of_nonempty_strings():
         AgentCard.from_dict({**base, "protocol": [1]})  # non-string element
 
 
-def test_skills_for_service_has_placeholder_map():
-    assert skills_for_service("openclaw") == ["chat", "tools"]
-    assert skills_for_service("hermes") == ["chat", "analysis"]
+def test_skills_for_service_fallback_is_generic():
+    # Review-1 §3 cleanup: card.py no longer carries a per-service map —
+    # every service-aware caller passes ``service=`` and the adapter
+    # supplies the real skills list. Without an adapter, the fallback
+    # is a single generic ``["chat"]`` regardless of service name.
+    assert skills_for_service("openclaw") == ["chat"]
+    assert skills_for_service("hermes") == ["chat"]
     assert skills_for_service("unknown") == ["chat"]
 
 
-def test_card_from_record_uses_display_port_fallback_map():
+def test_card_from_record_falls_back_to_record_port():
+    # Without a service handle, display_port_for_record has no adapter to
+    # consult; it falls back to ``record.port`` rather than a service-name
+    # table. Real callers (registry, cli, detect) always pass a service
+    # handle, so production wiring is unaffected — this fallback exists
+    # only for lightweight unit-test fakes.
     record = FakeRecord(name="alpha", service="openclaw", port=18799)
     card = card_from_record(record)
     assert card.name == "alpha"
-    assert card.skills == ["chat", "tools"]
-    # Without a service handle, card_from_record falls back to the
-    # service-type default map (openclaw → 18819), not record.port and not
-    # the deprecated bridge port (record.port + 1000).
-    assert card.endpoint == "http://127.0.0.1:18819/a2a/send"
+    assert card.skills == ["chat"]
+    assert card.endpoint == "http://127.0.0.1:18799/a2a/send"
 
 
 def test_card_from_record_prefers_adapter_display_port():
@@ -593,8 +599,19 @@ def _stop(server, thread):
 
 
 class _FixedPortAdapter:
-    def __init__(self, port: int) -> None:
+    # Review-1 §3 cleanup: card.py no longer maps service names → A2A
+    # defaults. The fake adapter now carries the same ``a2a_*`` contract
+    # a real ``ServiceAdapter`` exposes, keyed off ``service_name`` so
+    # tests that exercise openclaw's ``(0, 1)`` neighbor-port probe keep
+    # working after the per-service tables were removed.
+    _OFFSETS_BY_SERVICE = {
+        "openclaw": (0, 1),
+        "hermes": (0,),
+    }
+
+    def __init__(self, port: int, service_name: str = "") -> None:
         self._port = port
+        self.a2a_plugin_port_offsets = self._OFFSETS_BY_SERVICE.get(service_name, (0,))
 
     def display_port(self, service, record):  # noqa: ARG002
         return self._port
@@ -610,7 +627,14 @@ class _FakeService:
 
     def adapter_for_record(self, record):
         port = self._port_map.get(record.name, getattr(record, "port", 0))
-        return _FixedPortAdapter(port)
+        svc = getattr(record, "service", "") or ""
+        return _FixedPortAdapter(port, svc)
+
+    def adapter_for_service(self, service_name: str):
+        # Any port will do — this path is only read for ``a2a_plugin_port_offsets``
+        # in ``plugin_port_candidates``; the real port comes from
+        # ``adapter_for_record`` above.
+        return _FixedPortAdapter(0, service_name)
 
 
 def test_try_fetch_plugin_card_success():
@@ -822,9 +846,13 @@ def test_cards_from_service_mixes_plugin_and_fallback():
         by_name = {c.name: c for c in cards}
         assert by_name["alpha"].role == "real plugin role"
         assert by_name["alpha"].skills == ["s1"]
-        # beta had no plugin → fallback role/skills from service-type map
-        assert by_name["beta"].role == "Hermes local analyst"
-        assert by_name["beta"].skills == ["chat", "analysis"]
+        # beta had no plugin → placeholder card falls back to the generic
+        # defaults (no service-name table). Real deployments go through
+        # ``ServiceAdapter`` which supplies service-specific values;
+        # ``_FakeService`` only implements ``adapter_for_record``, so the
+        # ``role``/``skills`` resolution is the fallback path.
+        assert by_name["beta"].role == "hermes local agent"
+        assert by_name["beta"].skills == ["chat"]
     finally:
         _stop(server, thread)
 

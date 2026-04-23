@@ -7,31 +7,17 @@ from typing import Any
 DEFAULT_REGISTRY_PORT = 9100
 DEFAULT_BRIDGE_PORT = 19100
 
-# Review-1 §3: these per-service tables are now a fallback used only when
-# the caller cannot provide a ``ClawCUService`` (lightweight unit tests
-# that fake records without a full service instance). The authoritative
-# source of these values is each ``ServiceAdapter`` subclass — see
-# ``a2a_skills`` / ``a2a_role`` / ``a2a_plugin_port_offsets``. Adding a
-# third service should not require editing this module.
-_SERVICE_SKILLS: dict[str, list[str]] = {
-    "openclaw": ["chat", "tools"],
-    "hermes": ["chat", "analysis"],
-}
-
-_SERVICE_ROLES: dict[str, str] = {
-    "openclaw": "OpenClaw local assistant",
-    "hermes": "Hermes local analyst",
-}
-
-_SERVICE_DEFAULT_DISPLAY_PORT: dict[str, int] = {
-    "openclaw": 18819,
-    "hermes": 9129,
-}
-
-_SERVICE_PLUGIN_PORT_OFFSETS: dict[str, tuple[int, ...]] = {
-    "openclaw": (0, 1),
-    "hermes": (0,),
-}
+# Review-1 §3: card.py is the protocol layer — it must NOT hold
+# service-specific knowledge. The A2A defaults (``a2a_skills`` /
+# ``a2a_role`` / ``a2a_plugin_port_offsets`` / ``display_port``) live on
+# the ``ServiceAdapter`` subclass for each service. Callers in the
+# control plane (registry.py, cli.py, detect.py) always hand in a
+# ``ClawCUService``, so the adapter path covers every real code path.
+# The fallbacks below are generic defaults used only when a caller
+# (a unit-test fake record) cannot produce an adapter — they do not
+# branch on service name, so adding a third service never requires
+# editing this module.
+_FALLBACK_SKILLS: tuple[str, ...] = ("chat",)
 
 
 def _adapter_for(service: Any, service_name: str) -> Any | None:
@@ -116,24 +102,30 @@ def skills_for_service(service_name: str, *, service: Any = None) -> list[str]:
     """Return the A2A ``skills`` list advertised for this service type.
 
     Prefers ``adapter.a2a_skills`` when a ``ClawCUService`` handle is
-    provided; falls back to the module-level table otherwise.
+    provided; falls back to a single generic ``["chat"]`` otherwise.
+    No service-name branching — a new service advertises its skills by
+    setting ``a2a_skills`` on its ``ServiceAdapter`` subclass.
     """
     adapter = _adapter_for(service, service_name)
     if adapter is not None:
         skills = getattr(adapter, "a2a_skills", None)
         if skills:
             return list(skills)
-    return list(_SERVICE_SKILLS.get(service_name, ["chat"]))
+    return list(_FALLBACK_SKILLS)
 
 
 def role_for_service(service_name: str, *, service: Any = None) -> str:
-    """Return the A2A ``role`` string for this service type."""
+    """Return the A2A ``role`` string for this service type.
+
+    Prefers ``adapter.a2a_role`` when a ``ClawCUService`` handle is
+    provided; otherwise templates ``"{service_name} local agent"``.
+    """
     adapter = _adapter_for(service, service_name)
     if adapter is not None:
         role = getattr(adapter, "a2a_role", None)
         if role:
             return role
-    return _SERVICE_ROLES.get(service_name, f"{service_name} local agent")
+    return f"{service_name} local agent" if service_name else "local agent"
 
 
 def bridge_port_for(record: Any) -> int:
@@ -151,23 +143,20 @@ def display_port_for_record(record: Any, *, service: Any = None) -> int:
     """Resolve the port a plugin would expose on.
 
     Prefers ``service.adapter_for_record(record).display_port(service, record)``
-    when a ClawCUService is in hand; falls back to the service-type default
-    map and finally to ``record.port``. The fallback keeps unit tests that
-    pass lightweight fakes working without instantiating the full service.
+    when a ClawCUService is in hand; otherwise falls back to ``record.port``
+    (the port the instance itself listens on) and finally
+    ``DEFAULT_BRIDGE_PORT``. No service-name branching — each adapter owns
+    its port layout.
     """
     if service is not None:
         try:
             adapter = service.adapter_for_record(record)
             return int(adapter.display_port(service, record))
         except (ValueError, KeyError, AttributeError, TypeError):
-            # Best-effort: fall through to the static table. Narrower than
-            # bare ``Exception`` so real bugs (ImportError, etc.) still
-            # surface.
+            # Best-effort: fall through to the naive defaults. Narrower
+            # than bare ``Exception`` so real bugs (ImportError, etc.)
+            # still surface.
             pass
-    service_name = getattr(record, "service", "") or ""
-    default = _SERVICE_DEFAULT_DISPLAY_PORT.get(service_name)
-    if default is not None:
-        return default
     port = getattr(record, "port", None)
     if isinstance(port, int) and port > 0:
         return port
@@ -177,21 +166,22 @@ def display_port_for_record(record: Any, *, service: Any = None) -> int:
 def plugin_port_candidates(record: Any, *, service: Any = None) -> list[int]:
     """Ports to probe when discovering a plugin's self-reported AgentCard.
 
-    Callers should try these in order and take the first live card. OpenClaw
-    returns ``[display_port, display_port + 1]`` because the container itself
-    occupies display_port with its gateway UI and the Node sidecar binds the
-    neighbor port; Hermes returns just ``[display_port]``. Duplicates are
-    removed while preserving order so an adapter-reported port that already
-    matches the sidecar slot doesn't get probed twice.
+    Callers should try these in order and take the first live card. The
+    adapter's ``a2a_plugin_port_offsets`` drives the probe order: OpenClaw
+    uses ``(0, 1)`` because its gateway holds display_port and the Node
+    sidecar binds the neighbor slot; Hermes uses ``(0,)``. Without an
+    adapter we probe only the base port. Duplicates are removed while
+    preserving order so an adapter-reported port that already matches the
+    sidecar slot doesn't get probed twice.
     """
     base = display_port_for_record(record, service=service)
     service_name = getattr(record, "service", "") or ""
     adapter = _adapter_for(service, service_name)
-    offsets: tuple[int, ...]
-    if adapter is not None and getattr(adapter, "a2a_plugin_port_offsets", None):
-        offsets = tuple(adapter.a2a_plugin_port_offsets)
-    else:
-        offsets = _SERVICE_PLUGIN_PORT_OFFSETS.get(service_name, (0,))
+    offsets: tuple[int, ...] = (0,)
+    if adapter is not None:
+        adapter_offsets = getattr(adapter, "a2a_plugin_port_offsets", None)
+        if adapter_offsets:
+            offsets = tuple(adapter_offsets)
     ordered: list[int] = []
     for offset in offsets:
         port = base + offset
