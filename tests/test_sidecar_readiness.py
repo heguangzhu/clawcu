@@ -16,8 +16,13 @@ _SIDECAR = os.path.abspath(
         "sidecar",
     )
 )
-if _SIDECAR not in sys.path:
-    sys.path.insert(0, _SIDECAR)
+# readiness.py imports ``_common.readiness`` (the shared TTL-cache primitive),
+# so the tests need the sidecar_plugin/ dir on sys.path the same way server.py
+# arranges it at runtime.
+_SIDECAR_PLUGIN = os.path.abspath(os.path.join(_SIDECAR, "..", ".."))
+for _p in (_SIDECAR, _SIDECAR_PLUGIN):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 import readiness  # noqa: E402
 

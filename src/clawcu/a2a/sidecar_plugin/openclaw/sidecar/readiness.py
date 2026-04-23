@@ -3,6 +3,12 @@
 Caches a successful /healthz probe for READY_TTL_MS (5 minutes). On
 suspected gateway failure, callers should `invalidate_gateway_ready()` so
 the next request re-probes instead of waiting out the TTL.
+
+The TTL cache itself (positive-observation expiry + invalidate) lives in
+``_common.readiness.ReadinessCache`` and is shared with the hermes
+sidecar. This module owns the openclaw-specific wait-loop, the
+``/healthz`` probe, and the ``looks_like_gateway_down`` error classifier
+— all of which differ from hermes and stay local.
 """
 from __future__ import annotations
 
@@ -10,6 +16,8 @@ import http.client
 import re
 import time
 from typing import Callable, Optional
+
+from _common.readiness import ReadinessCache
 
 READY_TTL_MS = 5 * 60 * 1000
 
@@ -76,7 +84,7 @@ class Readiness:
         self.ttl_ms = ttl_ms
         self.now_fn = now_fn
         self.sleep_fn = sleep_fn if sleep_fn is not None else (lambda ms: time.sleep(ms / 1000.0))
-        self._ready_until = 0
+        self._cache = ReadinessCache()
 
     def wait_for_gateway_ready(
         self,
@@ -89,22 +97,22 @@ class Readiness:
         probe: Callable[..., bool] = probe_gateway_ready,
     ) -> bool:
         now = self.now_fn()
-        if now < self._ready_until:
+        if self._cache.is_fresh(now):
             return True
         end = now + deadline_ms
         while self.now_fn() < end:
             ok = probe(host=host, port=port, path=path, timeout_ms=probe_timeout_ms)
             if ok:
-                self._ready_until = self.now_fn() + self.ttl_ms
+                self._cache.mark_ready(self.now_fn(), self.ttl_ms)
                 return True
             self.sleep_fn(poll_interval_ms)
         return False
 
     def invalidate_gateway_ready(self) -> None:
-        self._ready_until = 0
+        self._cache.invalidate()
 
-    def _ready_until_value(self) -> int:
-        return self._ready_until
+    def _ready_until_value(self) -> float:
+        return self._cache.expires_at
 
 
 def create_readiness(
