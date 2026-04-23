@@ -105,6 +105,7 @@ from chat import (  # noqa: E402
     build_a2a_context,
     post_chat_completion,
 )
+from _common.payload import BadPayload, parse_optional_non_empty_string  # noqa: E402
 
 __all__ = [
     # Re-exported for tests and for any caller that used to import these
@@ -330,16 +331,11 @@ def _make_handler_class(ctx: Dict[str, Any]):
             if not isinstance(body.get("from"), str) or not body.get("from"):
                 return write_json_response(self, 400, {"error": "missing 'from' (string)", "request_id": request_id}, rid_headers)
 
-            thread_id = body.get("thread_id") if isinstance(body.get("thread_id"), str) and body.get("thread_id") else None
-            if "thread_id" in body and thread_id is None:
+            try:
+                thread_id = parse_optional_non_empty_string(body, "thread_id")
+            except BadPayload as exc:
                 return write_json_response(
-                    self,
-                    400,
-                    {
-                        "error": "'thread_id' must be a non-empty string when provided",
-                        "request_id": request_id,
-                    },
-                    rid_headers,
+                    self, 400, {"error": str(exc), "request_id": request_id}, rid_headers
                 )
 
             logger.info(
@@ -448,16 +444,11 @@ def _make_handler_class(ctx: Dict[str, Any]):
             if not isinstance(body.get("message"), str) or not body.get("message"):
                 return write_json_response(self, 400, {"error": "missing 'message' (string)", "request_id": request_id}, rid_headers)
 
-            out_thread_id = body.get("thread_id") if isinstance(body.get("thread_id"), str) and body.get("thread_id") else None
-            if "thread_id" in body and out_thread_id is None:
+            try:
+                out_thread_id = parse_optional_non_empty_string(body, "thread_id")
+            except BadPayload as exc:
                 return write_json_response(
-                    self,
-                    400,
-                    {
-                        "error": "'thread_id' must be a non-empty string when provided",
-                        "request_id": request_id,
-                    },
-                    rid_headers,
+                    self, 400, {"error": str(exc), "request_id": request_id}, rid_headers
                 )
 
             limit_key = outbound_limit_key(thread_id=out_thread_id, self_name=self_name)

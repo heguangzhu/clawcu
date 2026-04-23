@@ -26,6 +26,7 @@ import os
 from typing import Any
 
 from _common.http_response import write_json_response
+from _common.payload import BadPayload as _BadPayload, parse_optional_non_empty_string  # noqa: F401
 
 
 # Hop budget — see a2a-design-1.md §Loop protection. X-A2A-Hop increments
@@ -145,34 +146,8 @@ def read_inbound_json_body(
     return payload
 
 
-class _BadPayload(Exception):
-    """Raised when a parsed-body field has the wrong shape.
-
-    Distinct from ``_BadContentLength`` (which fires before the body is
-    read): this one fires on a validated dict whose field-level types
-    don't match the protocol. Callers translate the message into a
-    400 ``{error, request_id}`` response.
-    """
-
-
-def parse_optional_non_empty_string(
-    payload: dict[str, Any], field_name: str
-) -> str | None:
-    """Pull an optional protocol-level string field out of the parsed body.
-
-    Review-14 P1-C and its /a2a/outbound mirror: fields like ``thread_id``
-    are OPTIONAL (absent → ``None`` → downstream treats the turn as
-    stateless). Present-but-wrong-type is a client bug worth surfacing
-    as a 400 rather than silently dropping, so the peer learns their
-    payload shape is broken. Consolidates the 13-line parse block that
-    was duplicated byte-for-byte across ``/a2a/send`` and
-    ``/a2a/outbound``.
-    """
-    raw = payload.get(field_name, None)
-    if raw is None:
-        return None
-    if isinstance(raw, str) and raw:
-        return raw
-    raise _BadPayload(
-        f"'{field_name}' must be a non-empty string when provided"
-    )
+# parse_optional_non_empty_string + the BadPayload exception live in
+# _common/payload.py (re-imported above under the legacy _BadPayload name
+# so tests that reach mod._BadPayload keep working). Two sidecars and four
+# handlers all do the same thread_id-style optional-string check, so the
+# single source of truth lives in _common.
