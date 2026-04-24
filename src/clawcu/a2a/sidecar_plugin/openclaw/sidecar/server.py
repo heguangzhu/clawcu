@@ -154,8 +154,6 @@ __all__ = [
     "read_gateway_auth",
 ]
 
-READ_JSON_BODY_LIMIT = 64 * 1024
-
 # Hop budget read at module-scope so tests can import it without running main().
 # The parser + default live in _common.protocol so hermes and openclaw share one
 # implementation.
@@ -248,29 +246,6 @@ def _resolve_outbound_registry_url(
         _reject("'registry_url' must be a non-empty string when provided")
         return None
     return raw
-
-
-def read_json_body(rfile, content_length: int, limit: int = READ_JSON_BODY_LIMIT):
-    if content_length > limit:
-        raise RuntimeError("request body too large")
-    if content_length <= 0:
-        return {}
-    raw = b""
-    remaining = content_length
-    while remaining > 0:
-        chunk = rfile.read(remaining)
-        if not chunk:
-            break
-        raw += chunk
-        if len(raw) > limit:
-            raise RuntimeError("request body too large")
-        remaining -= len(chunk)
-    if not raw:
-        return {}
-    try:
-        return json.loads(raw.decode("utf-8"))
-    except Exception as exc:
-        raise RuntimeError(f"invalid json: {exc}")
 
 
 # ---- HTTP server ------------------------------------------------------------
