@@ -30,6 +30,7 @@ import json
 import os
 import threading
 import time as _time
+import urllib.parse
 from typing import Any, Callable, List, Mapping, Optional
 
 
@@ -70,6 +71,47 @@ def read_allow_client_registry_url(env: Optional[Mapping[str, str]] = None) -> b
     source = env if env is not None else os.environ
     raw = str(source.get("A2A_ALLOW_CLIENT_REGISTRY_URL") or "").strip().lower()
     return raw in ("1", "true", "yes", "on")
+
+
+class BadOutboundUrl(Exception):
+    """Raised when an outbound URL fails the scheme allow-list.
+
+    Review-17 P1-I1 / review-2 §3: SSRF surface on both sidecars. A
+    compromised peer card or ``registry_url`` body override could
+    smuggle non-http schemes (``file://``, ``ftp://``, ``gopher://``,
+    ``dict://``) that CPython's ``urlopen`` still honors. Hermes has
+    guarded against this since review-17; OpenClaw used to trust its
+    in-container peers. Moving the validator into ``_common`` and
+    calling it from both flavors closes the asymmetry so the SSRF
+    policy is a single source of truth, not a per-sidecar decision.
+    """
+
+
+_OUTBOUND_URL_ALLOWED_SCHEMES = frozenset({"http", "https"})
+
+
+def validate_outbound_url(url: str) -> str:
+    """Accept http/https URLs with a host; reject everything else.
+
+    Returns the URL unchanged when valid so call sites can inline it as
+    ``validate_outbound_url(url)`` without a dead one-line dance. Raises
+    :class:`BadOutboundUrl` with a short reason otherwise; callers
+    translate that into the protocol-appropriate error envelope (400
+    for ``/a2a/outbound`` client errors, 503 for a bad peer card).
+    """
+    if not isinstance(url, str) or not url:
+        raise BadOutboundUrl("empty url")
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError as exc:
+        raise BadOutboundUrl(f"malformed url: {exc}") from exc
+    if parsed.scheme.lower() not in _OUTBOUND_URL_ALLOWED_SCHEMES:
+        raise BadOutboundUrl(
+            f"scheme {parsed.scheme!r} not allowed (only http/https)"
+        )
+    if not parsed.hostname:
+        raise BadOutboundUrl("missing host")
+    return url
 
 
 def parse_peer_list_response(raw: str) -> Optional[List[dict]]:
@@ -163,10 +205,12 @@ def create_peer_cache(
 
 
 __all__ = [
+    "BadOutboundUrl",
     "DEFAULT_REGISTRY_URL",
     "PeerCache",
     "create_peer_cache",
     "default_registry_url",
     "parse_peer_list_response",
     "read_allow_client_registry_url",
+    "validate_outbound_url",
 ]

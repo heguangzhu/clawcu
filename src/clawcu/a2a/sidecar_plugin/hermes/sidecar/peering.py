@@ -26,10 +26,12 @@ from urllib.error import HTTPError, URLError
 
 from _common.mcp import UpstreamError
 from _common.peer_cache import (
+    BadOutboundUrl as _BadOutboundUrl,
     DEFAULT_REGISTRY_URL,
     create_peer_cache as _shared_peer_cache,
     default_registry_url as _default_registry_url,
     parse_peer_list_response,
+    validate_outbound_url as _validate_outbound_url,
 )
 from _common.protocol import REQUEST_ID_HEADER
 from _common import streams as _streams
@@ -60,33 +62,12 @@ class OutboundError(UpstreamError):
         super().__init__(message, http_status=http_status, peer_status=peer_status)
 
 
-class _BadOutboundUrl(Exception):
-    """Raised when an outbound URL fails the scheme allow-list.
-
-    Review-17 P1-I1: guards against SSRF via non-http schemes (file://,
-    ftp://, gopher://, dict://) smuggled into the client-supplied
-    registry_url body override or a compromised registry card's
-    endpoint field. Positive-allow-list of http/https only.
-    """
-
-
-_OUTBOUND_URL_ALLOWED_SCHEMES = frozenset({"http", "https"})
-
-
-def _validate_outbound_url(url: str) -> str:
-    if not isinstance(url, str) or not url:
-        raise _BadOutboundUrl("empty url")
-    try:
-        parsed = urllib.parse.urlsplit(url)
-    except ValueError as e:
-        raise _BadOutboundUrl(f"malformed url: {e}") from e
-    if parsed.scheme.lower() not in _OUTBOUND_URL_ALLOWED_SCHEMES:
-        raise _BadOutboundUrl(
-            f"scheme {parsed.scheme!r} not allowed (only http/https)"
-        )
-    if not parsed.hostname:
-        raise _BadOutboundUrl("missing host")
-    return url
+# ``_BadOutboundUrl`` / ``_validate_outbound_url`` are re-imported from
+# ``_common.peer_cache`` (where they live under their public names) so
+# both sidecars enforce the same http/https allow-list. Kept under the
+# leading-underscore alias so tests that reach ``peering._BadOutboundUrl``
+# / ``peering._validate_outbound_url`` continue to work.
+from _common.peer_cache import _OUTBOUND_URL_ALLOWED_SCHEMES  # noqa: F401,E402
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):

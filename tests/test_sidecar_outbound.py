@@ -353,7 +353,11 @@ def test_parse_http_url_explicit_port_wins():
 
 
 def test_parse_http_url_rejects_file_scheme():
-    with pytest.raises(RuntimeError, match="unsupported protocol"):
+    # Shared _common/peer_cache.validate_outbound_url is the source of
+    # truth for the scheme allow-list; parse_http_url surfaces its reason
+    # via RuntimeError. Match on the scheme-rejection phrase rather than
+    # the exact wrapper to tolerate future message tweaks upstream.
+    with pytest.raises(RuntimeError, match="scheme 'file' not allowed"):
         sidecar.parse_http_url("file:///etc/hosts")
 
 

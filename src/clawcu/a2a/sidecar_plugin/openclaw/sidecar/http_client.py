@@ -37,19 +37,29 @@ from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 from _common import streams as _streams
+from _common.peer_cache import BadOutboundUrl, validate_outbound_url
 
 A2A_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
 
 def parse_http_url(url: str) -> Dict[str, Any]:
+    """Split an outbound URL into a connect/request-friendly dict.
+
+    Scheme allow-list + host-required check come from the shared
+    :func:`_common.peer_cache.validate_outbound_url` (review-2 §3) so
+    the openclaw and hermes sidecars enforce the same SSRF policy. The
+    :class:`BadOutboundUrl` it raises is normalised back into
+    ``RuntimeError`` here so every call site in this module continues
+    to use the existing ``except RuntimeError`` arms unchanged.
+    """
+    try:
+        validate_outbound_url(url)
+    except BadOutboundUrl as exc:
+        raise RuntimeError(f"invalid url '{url}': {exc}")
     try:
         parsed = urlparse(url)
     except Exception as exc:
         raise RuntimeError(f"invalid url '{url}': {exc}")
-    if parsed.scheme not in ("http", "https"):
-        raise RuntimeError(f"unsupported protocol in '{url}'")
-    if not parsed.hostname:
-        raise RuntimeError(f"invalid url '{url}': missing host")
     port = parsed.port
     if port is None:
         port = 443 if parsed.scheme == "https" else 80
