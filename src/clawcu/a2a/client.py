@@ -14,7 +14,14 @@ from clawcu.a2a.card import AgentCard
 from clawcu.a2a.sidecar_plugin._common import streams as _streams
 
 DEFAULT_TIMEOUT = 5.0
+# Library default: generous cap for long agent turns (tool use + big LLM
+# responses can push past a minute). Integration callers that know their
+# workload should leave this alone.
 DEFAULT_SEND_TIMEOUT = 300.0
+# CLI default: review-1 §4 / review-2 §5 — an interactive `clawcu a2a send`
+# user with no progress spinner should not silently wait five minutes for a
+# peer that is already gone. Long-running turns are opt-in via ``--timeout``.
+DEFAULT_CLI_SEND_TIMEOUT = 60.0
 
 _log = logging.getLogger("clawcu.a2a.client")
 
@@ -196,6 +203,7 @@ def _http_json(
     method: str = "GET",
     body: Any = None,
     timeout: float = DEFAULT_TIMEOUT,
+    token: str | None = None,
 ) -> tuple[int, Any]:
     _validate_outbound_url(url)
     data: bytes | None = None
@@ -203,6 +211,8 @@ def _http_json(
     if body is not None:
         data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         with _OPENER.open(request, timeout=timeout) as response:
@@ -221,10 +231,28 @@ def _http_json(
         raise A2AClientError(f"invalid JSON from {url}: {exc}") from exc
 
 
-def lookup_agent(registry_url: str, name: str, *, timeout: float = DEFAULT_TIMEOUT) -> AgentCard:
+def _registry_token_from_env() -> str | None:
+    """Read the optional ``A2A_REGISTRY_TOKEN`` so client and registry pair
+    off the same env var. ``None`` means "no auth header" (default)."""
+    raw = os.environ.get("A2A_REGISTRY_TOKEN")
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    return stripped or None
+
+
+def lookup_agent(
+    registry_url: str,
+    name: str,
+    *,
+    timeout: float = DEFAULT_TIMEOUT,
+    token: str | None = None,
+) -> AgentCard:
     base = registry_url.rstrip("/")
     url = f"{base}/agents/{urllib.parse.quote(name, safe='')}"
-    status, payload = _http_json(url, timeout=timeout)
+    status, payload = _http_json(
+        url, timeout=timeout, token=token if token is not None else _registry_token_from_env()
+    )
     if status == 404:
         raise A2AClientError(f"agent '{name}' not found in registry {registry_url}")
     if status >= 400 or not isinstance(payload, dict):
@@ -232,10 +260,17 @@ def lookup_agent(registry_url: str, name: str, *, timeout: float = DEFAULT_TIMEO
     return AgentCard.from_dict(payload)
 
 
-def list_agents(registry_url: str, *, timeout: float = DEFAULT_TIMEOUT) -> list[AgentCard]:
+def list_agents(
+    registry_url: str,
+    *,
+    timeout: float = DEFAULT_TIMEOUT,
+    token: str | None = None,
+) -> list[AgentCard]:
     base = registry_url.rstrip("/")
     url = f"{base}/agents"
-    status, payload = _http_json(url, timeout=timeout)
+    status, payload = _http_json(
+        url, timeout=timeout, token=token if token is not None else _registry_token_from_env()
+    )
     if status >= 400 or not isinstance(payload, list):
         raise A2AClientError(f"registry list failed ({status}): {payload!r}")
     return [AgentCard.from_dict(item) for item in payload]

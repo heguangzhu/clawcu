@@ -19,7 +19,7 @@ from clawcu.a2a.card import (
     skills_for_service,
 )
 from clawcu.a2a.client import (
-    DEFAULT_SEND_TIMEOUT,
+    DEFAULT_CLI_SEND_TIMEOUT,
     DEFAULT_TIMEOUT,
     A2AClientError,
     send_via_registry,
@@ -356,10 +356,11 @@ def send_command(
             "--timeout",
             help=(
                 "Seconds to wait for the LLM reply (POST /a2a/send). "
-                "Does not affect the registry lookup; see --lookup-timeout."
+                "Does not affect the registry lookup; see --lookup-timeout. "
+                "Raise this for long agent turns (tool use, large outputs)."
             ),
         ),
-    ] = DEFAULT_SEND_TIMEOUT,
+    ] = DEFAULT_CLI_SEND_TIMEOUT,
     lookup_timeout: Annotated[
         float,
         typer.Option(
