@@ -1,16 +1,11 @@
-"""Shared embedded MCP (Model Context Protocol) server for A2A sidecars.
+"""JSON-RPC 2.0 dispatcher for the embedded MCP surface.
 
-Transport: streamable-http. Callers POST a JSON-RPC 2.0 request and get a
-single JSON-RPC response. Surface:
-
-  initialize → protocolVersion, serverInfo, capabilities.tools
-  tools/list → [a2a_call_peer]
-  tools/call → name=a2a_call_peer → forward_to_peer_fn(...)
-
-The dispatcher is dependency-injected: callers pass ``lookup_peer_fn``,
-``forward_to_peer_fn``, and (optionally) an outbound rate limiter. Both
-the Hermes and OpenClaw sidecars share this implementation; previously
-each owned a near-identical copy.
+Extracted from the monolithic ``_common.mcp`` (review-2 §10). This is
+the business-logic core of the MCP implementation: ``initialize``,
+``tools/list``, ``tools/call``. Isolated from the envelope/upstream/
+tool-desc modules so those smaller pieces can be imported alone (see
+``_common.inbound_limits`` — it only needs ``ERR_PARSE`` +
+``json_rpc_error``, not the dispatcher).
 
 Callback call convention is positional so any real-world ``lookup_peer``
 / ``forward_to_peer`` that keeps the documented parameter order works
@@ -24,197 +19,23 @@ unchanged regardless of whether its local parameter is named
 
 from __future__ import annotations
 
-import os
-from typing import Any, Callable, Dict, Mapping, Optional
+from typing import Any, Callable, Dict, Optional
 
-from _common.http_response import write_json_response
-
-MCP_PROTOCOL_VERSION = "2024-11-05"
-TOOL_NAME = "a2a_call_peer"
-MAX_PEERS_IN_DESCRIPTION = 16
-MAX_SKILLS_IN_PEER_LINE = 3
-
-# JSON-RPC 2.0 + MCP error codes.
-ERR_PARSE = -32700
-ERR_INVALID_REQUEST = -32600
-ERR_METHOD_NOT_FOUND = -32601
-ERR_INVALID_PARAMS = -32602
-ERR_INTERNAL = -32603
-ERR_A2A_UPSTREAM = -32001
-
-BASE_DESCRIPTION = (
-    "Call another agent in the A2A federation and return its reply. "
-    "Use when the current task needs data or work owned by a different "
-    "agent (e.g., an analyst for market data, a writer for prose)."
+from _common.mcp.envelope import (
+    ERR_A2A_UPSTREAM,
+    ERR_INTERNAL,
+    ERR_INVALID_PARAMS,
+    ERR_INVALID_REQUEST,
+    ERR_METHOD_NOT_FOUND,
+    json_rpc_error,
+    json_rpc_result,
 )
-
-
-class UpstreamError(Exception):
-    """Raised by ``lookup_peer_fn`` / ``forward_to_peer_fn`` for MCP errors.
-
-    Carries an HTTP-shaped status so the dispatcher can surface the
-    correct ``httpStatus`` / ``peerStatus`` in ``error.data``. Hermes
-    subclasses this as ``OutboundError`` with a legacy positional
-    ``(http_status, message)`` signature for its existing call sites.
-    """
-
-    def __init__(
-        self,
-        message: str,
-        http_status: Optional[int] = None,
-        peer_status: Optional[int] = None,
-    ) -> None:
-        super().__init__(message)
-        self.http_status = http_status
-        self.peer_status = peer_status
-
-
-def write_upstream_error_response(
-    handler: Any,
-    exc: UpstreamError,
-    *,
-    request_id: str,
-    rid_headers: Mapping[str, str],
-    default_status: int = 502,
-) -> None:
-    """Write the uniform ``{error, request_id[, peer_status]}`` envelope
-    both sidecars emit when lookup_peer / forward_to_peer raises.
-
-    ``default_status`` is the status used when ``exc.http_status`` is
-    missing/falsy — 503 for lookup-phase failures (registry unreachable),
-    502 for forward-phase failures (peer unreachable). ``peer_status``
-    is added to the body only when the exception carries one so the
-    envelope stays flat for simple upstream failures.
-    """
-    body: Dict[str, Any] = {"error": str(exc), "request_id": request_id}
-    if exc.peer_status is not None:
-        body["peer_status"] = exc.peer_status
-    write_json_response(
-        handler,
-        exc.http_status or default_status,
-        body,
-        extra_headers=rid_headers,
-    )
-
-
-def is_tool_desc_static(env: Optional[Mapping[str, str]] = None) -> bool:
-    """Return ``True`` when the operator has forced the static tool description.
-
-    ``A2A_TOOL_DESC_MODE=static`` opts out of the peer-list injection into
-    the MCP tool description (a2a-design-5.md §P1-H): tests or deployments
-    with a flaky registry prefer the baked-in description over a cache
-    miss stampede. Both sidecars gate ``list_peers_fn`` on this flag, so
-    one parser keeps the semantics aligned.
-    """
-    source = env if env is not None else os.environ
-    return source.get("A2A_TOOL_DESC_MODE") == "static"
-
-
-def tool_desc_include_role(env: Optional[Mapping[str, str]] = None) -> bool:
-    """Return ``True`` when peer lines in the tool description should
-    include ``role`` next to ``name``.
-
-    Opt-in via ``A2A_TOOL_DESC_INCLUDE_ROLE=true`` (case-insensitive, with
-    surrounding whitespace tolerated via the ``or ""`` guard). Default off
-    to keep the baseline description terse.
-    """
-    source = env if env is not None else os.environ
-    return str(source.get("A2A_TOOL_DESC_INCLUDE_ROLE") or "").strip().lower() == "true"
-
-
-def format_peer_line(peer: Dict[str, Any], *, include_role: bool = False) -> str:
-    skills_raw = peer.get("skills")
-    skills = skills_raw if isinstance(skills_raw, list) else []
-    head = ", ".join(str(s) for s in skills[:MAX_SKILLS_IN_PEER_LINE])
-    tail = ", ..." if len(skills) > MAX_SKILLS_IN_PEER_LINE else ""
-    role_raw = peer.get("role") if include_role else None
-    role = f" [{role_raw}]" if isinstance(role_raw, str) and role_raw else ""
-    name = peer.get("name", "")
-    if not head:
-        return f"  - {name}{role}"
-    return f"  - {name}{role} ({head}{tail})"
-
-
-def format_peer_summary(
-    peers: Any, self_name: Optional[str], *, include_role: bool = False
-) -> str:
-    """Multi-line summary injected into the tool description.
-
-    Excludes self and caps at ``MAX_PEERS_IN_DESCRIPTION``. Returns ``""``
-    when the list is empty or only contains self — callers then fall
-    back to the static description.
-    """
-    if not isinstance(peers, list) or not peers:
-        return ""
-    others = [
-        p for p in peers
-        if isinstance(p, dict)
-        and isinstance(p.get("name"), str)
-        and p.get("name") != self_name
-    ]
-    if not others:
-        return ""
-    shown = others[:MAX_PEERS_IN_DESCRIPTION]
-    hidden = len(others) - len(shown)
-    lines = ["", "Available peers:"] + [
-        format_peer_line(p, include_role=include_role) for p in shown
-    ]
-    if hidden > 0:
-        lines.append(f"  ...and {hidden} more")
-    return "\n".join(lines)
-
-
-def tool_descriptor(
-    peers: Any = None,
-    self_name: Optional[str] = None,
-    *,
-    include_role: bool = False,
-) -> Dict[str, Any]:
-    description = BASE_DESCRIPTION
-    summary = format_peer_summary(peers, self_name, include_role=include_role)
-    if summary:
-        description += summary
-        description += (
-            "\n\nThe `to` field must match one of the peers above "
-            "(case-sensitive)."
-        )
-    else:
-        description += " The target agent name must be registered in the A2A registry."
-    return {
-        "name": TOOL_NAME,
-        "description": description,
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "to": {
-                    "type": "string",
-                    "description": "Peer agent name as registered in the A2A registry.",
-                },
-                "message": {
-                    "type": "string",
-                    "description": "The question or task for the peer agent.",
-                },
-                "thread_id": {
-                    "type": "string",
-                    "description": "Optional. Reuse a prior conversation thread with the peer.",
-                },
-            },
-            "required": ["to", "message"],
-        },
-    }
-
-
-def json_rpc_result(rpc_id: Any, result: Any) -> Dict[str, Any]:
-    return {"jsonrpc": "2.0", "id": rpc_id, "result": result}
-
-
-def json_rpc_error(
-    rpc_id: Any, code: int, message: str, data: Any = None
-) -> Dict[str, Any]:
-    err: Dict[str, Any] = {"code": code, "message": message}
-    if data is not None:
-        err["data"] = data
-    return {"jsonrpc": "2.0", "id": rpc_id, "error": err}
+from _common.mcp.tool_desc import (
+    MCP_PROTOCOL_VERSION,
+    TOOL_NAME,
+    tool_descriptor,
+)
+from _common.mcp.upstream import UpstreamError
 
 
 def _default_outbound_key(**kwargs) -> str:
@@ -427,25 +248,4 @@ def _handle_tools_call(
     )
 
 
-__all__ = [
-    "MCP_PROTOCOL_VERSION",
-    "TOOL_NAME",
-    "MAX_PEERS_IN_DESCRIPTION",
-    "MAX_SKILLS_IN_PEER_LINE",
-    "BASE_DESCRIPTION",
-    "ERR_PARSE",
-    "ERR_INVALID_REQUEST",
-    "ERR_METHOD_NOT_FOUND",
-    "ERR_INVALID_PARAMS",
-    "ERR_INTERNAL",
-    "ERR_A2A_UPSTREAM",
-    "UpstreamError",
-    "format_peer_line",
-    "format_peer_summary",
-    "is_tool_desc_static",
-    "tool_descriptor",
-    "tool_desc_include_role",
-    "json_rpc_result",
-    "json_rpc_error",
-    "handle_mcp_request",
-]
+__all__ = ["handle_mcp_request"]
