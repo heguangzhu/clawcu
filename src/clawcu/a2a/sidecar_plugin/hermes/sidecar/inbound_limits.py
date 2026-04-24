@@ -29,6 +29,7 @@ import os
 from typing import Any
 
 from _common.http_response import write_json_response
+from _common.mcp import json_rpc_error
 from _common.payload import (  # noqa: F401
     BadPayload as _BadPayload,
     parse_optional_non_empty_string,
@@ -184,11 +185,7 @@ def read_inbound_mcp_body(
         write_json_response(
             handler,
             status,
-            {
-                "jsonrpc": "2.0",
-                "id": None,
-                "error": {"code": err_parse_code, "message": str(exc)},
-            },
+            json_rpc_error(None, err_parse_code, str(exc)),
             extra_headers=rid_headers,
         )
         return False, None
@@ -199,11 +196,7 @@ def read_inbound_mcp_body(
         write_json_response(
             handler,
             400,
-            {
-                "jsonrpc": "2.0",
-                "id": None,
-                "error": {"code": err_parse_code, "message": f"bad json: {exc}"},
-            },
+            json_rpc_error(None, err_parse_code, f"bad json: {exc}"),
             extra_headers=rid_headers,
         )
         return False, None

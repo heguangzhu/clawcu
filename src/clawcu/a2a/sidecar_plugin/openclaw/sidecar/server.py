@@ -60,7 +60,12 @@ from readiness import (  # noqa: E402
 )
 from _common.bootstrap import run_bootstrap as run_mcp_bootstrap  # noqa: E402
 from _common.http_response import write_json_response  # noqa: E402
-from _common.mcp import UpstreamError, handle_mcp_request  # noqa: E402
+from _common.mcp import (  # noqa: E402
+    ERR_PARSE as MCP_ERR_PARSE,
+    UpstreamError,
+    handle_mcp_request,
+    json_rpc_error,
+)
 from _common.outbound_limit import (  # noqa: E402
     create_outbound_limiter,
     create_sweep_timer,
@@ -593,7 +598,7 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 return write_json_response(
                     self,
                     400,
-                    {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": err}},
+                    json_rpc_error(None, MCP_ERR_PARSE, err),
                     rid_headers,
                 )
             registry_url = os.environ.get("A2A_REGISTRY_URL") or "http://host.docker.internal:9100"
