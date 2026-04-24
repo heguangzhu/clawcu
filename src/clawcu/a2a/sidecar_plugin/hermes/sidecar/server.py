@@ -246,18 +246,10 @@ from gateway import (  # noqa: E402
 )
 
 
-# Review-2 P1-D: request correlation.
-#
-# A single outbound-initiated hop chain (A→B→C) should share one stable ID
-# so operators can grep sidecar logs across containers for a single
-# federation call. We accept a caller-supplied X-A2A-Request-Id (so higher
-# layers can pre-tag) and synthesize uuid4 if absent. The ID is then:
-#   * logged at entry + exit on every sidecar that handles it,
-#   * forwarded to the next hop via X-A2A-Request-Id,
-#   * echoed back in the JSON body AND the response header so both
-#     JSON-parsing clients and curl-pipe-grep users can recover it.
-
-_REQUEST_ID_HEADER = REQUEST_ID_HEADER
+# Review-2 P1-D: request correlation — shared X-A2A-Request-Id that tags a
+# single outbound-initiated hop chain (A→B→C). The parser, minter, and
+# envelope-echo helpers all live in ``_common.protocol`` so hermes and
+# openclaw correlate the same way; the header name is imported above.
 
 
 # --- Outbound helpers ---
