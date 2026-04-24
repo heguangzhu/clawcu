@@ -101,6 +101,7 @@ from adapters import (  # noqa: E402
     make_local_adapter,
     read_gateway_auth,
 )
+from context import Context  # noqa: E402
 from http_client import (  # noqa: E402
     A2A_MAX_RESPONSE_BYTES,
     ResponseTooLarge,
@@ -258,19 +259,19 @@ class _ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     allow_reuse_address = True
 
 
-def _make_handler_class(ctx: Dict[str, Any]):
-    logger = ctx["logger"]
-    self_name = ctx["self_name"]
-    card = ctx["card"]
-    adapter = ctx["adapter"]
-    gateway_host = ctx["gateway_host"]
-    gateway_port = ctx["gateway_port"]
-    gateway_ready_path = ctx["gateway_ready_path"]
-    gateway_ready_deadline_ms = ctx["gateway_ready_deadline_ms"]
-    request_timeout_ms = ctx["request_timeout_ms"]
-    model = ctx["model"]
-    rate_limiter = ctx["rate_limiter"]
-    thread_store = ctx["thread_store"]
+def _make_handler_class(ctx: "Context"):
+    logger = ctx.logger
+    self_name = ctx.self_name
+    card = ctx.card
+    adapter = ctx.adapter
+    gateway_host = ctx.gateway_host
+    gateway_port = ctx.gateway_port
+    gateway_ready_path = ctx.gateway_ready_path
+    gateway_ready_deadline_ms = ctx.gateway_ready_deadline_ms
+    request_timeout_ms = ctx.request_timeout_ms
+    model = ctx.model
+    rate_limiter = ctx.rate_limiter
+    thread_store = ctx.thread_store
     # Shared, lazily-initialised peer cache.
     peer_cache_holder: Dict[str, Any] = {"cache": None, "lock": threading.Lock()}
 
@@ -685,20 +686,20 @@ def main() -> None:
 
     card = {"name": self_name, "role": role, "skills": skills, "endpoint": endpoint}
 
-    ctx = {
-        "logger": default_logger,
-        "self_name": self_name,
-        "card": card,
-        "adapter": adapter,
-        "gateway_host": gateway_host,
-        "gateway_port": gateway_port,
-        "gateway_ready_path": gateway_ready_path,
-        "gateway_ready_deadline_ms": gateway_ready_deadline_ms,
-        "request_timeout_ms": request_timeout_ms,
-        "model": model,
-        "rate_limiter": rate_limiter,
-        "thread_store": thread_store,
-    }
+    ctx = Context(
+        logger=default_logger,
+        self_name=self_name,
+        card=card,
+        adapter=adapter,
+        gateway_host=gateway_host,
+        gateway_port=gateway_port,
+        gateway_ready_path=gateway_ready_path,
+        gateway_ready_deadline_ms=gateway_ready_deadline_ms,
+        request_timeout_ms=request_timeout_ms,
+        model=model,
+        rate_limiter=rate_limiter,
+        thread_store=thread_store,
+    )
     handler_cls = _make_handler_class(ctx)
 
     try:
