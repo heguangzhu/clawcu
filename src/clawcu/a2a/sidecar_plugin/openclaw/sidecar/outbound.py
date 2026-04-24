@@ -39,7 +39,11 @@ from typing import Any, Callable, Dict, Optional
 from urllib.parse import quote as _quote
 
 from _common.mcp import UpstreamError
-from _common.peer_cache import create_peer_cache as _shared_peer_cache
+from _common.peer_cache import (
+    DEFAULT_REGISTRY_URL,
+    create_peer_cache as _shared_peer_cache,
+    default_registry_url,
+)
 from _common.protocol import REQUEST_ID_HEADER
 
 from http_client import http_request_raw, parse_http_url, post_json
@@ -182,16 +186,7 @@ def read_allow_client_registry_url(env: Optional[Dict[str, str]] = None) -> bool
     return raw in ("1", "true", "yes", "on")
 
 
-DEFAULT_REGISTRY_URL = "http://host.docker.internal:9100"
-
-
-def default_registry_url(env: Optional[Dict[str, str]] = None) -> str:
-    """Resolve the registry URL used when a peer doesn't override one.
-
-    Reads ``A2A_REGISTRY_URL`` and falls back to the baked-in default
-    ``host.docker.internal:9100`` (matches the adapter's default publish
-    port). Both /a2a/outbound and /mcp need this same fallback shape so
-    it lives here, next to ``read_allow_client_registry_url``.
-    """
-    e = env if env is not None else os.environ
-    return e.get("A2A_REGISTRY_URL") or DEFAULT_REGISTRY_URL
+# ``DEFAULT_REGISTRY_URL`` / ``default_registry_url`` now live in
+# ``_common.peer_cache`` so both sidecars share one fallback. Re-imported
+# at the top of this module so the public surface stays unchanged for
+# call sites that reach ``outbound.default_registry_url``.

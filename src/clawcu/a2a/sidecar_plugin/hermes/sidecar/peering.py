@@ -25,12 +25,19 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 
 from _common.mcp import UpstreamError
-from _common.peer_cache import create_peer_cache as _shared_peer_cache
+from _common.peer_cache import (
+    DEFAULT_REGISTRY_URL,
+    create_peer_cache as _shared_peer_cache,
+    default_registry_url as _default_registry_url,
+)
 from _common.protocol import REQUEST_ID_HEADER
 from _common import streams as _streams
 
 
-DEFAULT_REGISTRY_URL = "http://host.docker.internal:9100"
+# ``DEFAULT_REGISTRY_URL`` / ``_default_registry_url`` are re-imported from
+# ``_common.peer_cache`` at module top so tests/call sites that reach
+# ``peering.DEFAULT_REGISTRY_URL`` / ``peering._default_registry_url`` keep
+# working after the consolidation.
 
 # Per-call outbound cap (4 MiB) — registry and peer responses. The local-gateway
 # cap (64 MiB) is not used here: that one belongs to server.py because it
@@ -50,10 +57,6 @@ class OutboundError(UpstreamError):
 
     def __init__(self, http_status: int, message: str, peer_status: int | None = None) -> None:
         super().__init__(message, http_status=http_status, peer_status=peer_status)
-
-
-def _default_registry_url() -> str:
-    return (os.environ.get("A2A_REGISTRY_URL") or DEFAULT_REGISTRY_URL).strip() or DEFAULT_REGISTRY_URL
 
 
 class _BadOutboundUrl(Exception):

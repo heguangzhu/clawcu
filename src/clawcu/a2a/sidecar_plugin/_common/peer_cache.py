@@ -26,9 +26,35 @@ Contract:
 
 from __future__ import annotations
 
+import os
 import threading
 import time as _time
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, Mapping, Optional
+
+
+# Shared default for the A2A registry URL. Both sidecars publish via the
+# ``host.docker.internal:9100`` adapter by convention; the constant lives
+# here next to :func:`default_registry_url` so the two sidecars can't drift
+# on the fallback.
+DEFAULT_REGISTRY_URL = "http://host.docker.internal:9100"
+
+
+def default_registry_url(env: Optional[Mapping[str, str]] = None) -> str:
+    """Resolve the A2A registry URL used when no caller-supplied override
+    is in scope.
+
+    Reads ``A2A_REGISTRY_URL`` from ``env`` (or ``os.environ``) and falls
+    back to :data:`DEFAULT_REGISTRY_URL` when the value is missing, not a
+    string, empty, or whitespace-only. Accepting either ``env=`` (openclaw
+    call style) or no args (hermes call style) keeps one helper in charge
+    of the fallback shape.
+    """
+    source = env if env is not None else os.environ
+    raw = source.get("A2A_REGISTRY_URL")
+    if not isinstance(raw, str):
+        return DEFAULT_REGISTRY_URL
+    stripped = raw.strip()
+    return stripped or DEFAULT_REGISTRY_URL
 
 
 class PeerCache:
@@ -99,4 +125,9 @@ def create_peer_cache(
     return PeerCache(get)
 
 
-__all__ = ["PeerCache", "create_peer_cache"]
+__all__ = [
+    "DEFAULT_REGISTRY_URL",
+    "PeerCache",
+    "create_peer_cache",
+    "default_registry_url",
+]
