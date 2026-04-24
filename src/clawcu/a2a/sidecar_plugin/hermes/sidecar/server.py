@@ -161,7 +161,10 @@ from _common.mcp import (  # noqa: E402
     handle_mcp_request as _shared_handle_mcp_request,
     tool_descriptor as mcp_tool_descriptor,
 )
-from _common.ratelimit import RateLimiter as PeerRateLimiter  # noqa: E402
+from _common.ratelimit import (  # noqa: E402
+    RateLimiter as PeerRateLimiter,
+    write_peer_rate_limit_response,
+)
 from _common import streams as _streams  # noqa: E402
 from _common.thread import ThreadStore, safe_id  # noqa: E402
 
@@ -566,18 +569,12 @@ def build_handler(
                     rl_peer,
                     rl.reset_ms,
                 )
-                write_json_response(
+                write_peer_rate_limit_response(
                     self,
-                    429,
-                    {
-                        "error": f"rate limit exceeded for peer '{rl_peer}'",
-                        "resetMs": rl.reset_ms,
-                        "request_id": request_id,
-                    },
-                    extra_headers={
-                        **rid_headers,
-                        "Retry-After": str((rl.reset_ms + 999) // 1000),
-                    },
+                    rl,
+                    peer=rl_peer,
+                    request_id=request_id,
+                    rid_headers=rid_headers,
                 )
                 return
 

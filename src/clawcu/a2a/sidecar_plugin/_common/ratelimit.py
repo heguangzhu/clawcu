@@ -15,7 +15,9 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Callable, Deque, Dict
+from typing import Any, Callable, Deque, Dict, Mapping
+
+from _common.http_response import write_json_response
 
 
 def _default_now_ms() -> int:
@@ -91,4 +93,35 @@ def create_rate_limiter(
         window_ms=window_ms,
         now_fn=now_fn,
         max_peers=max_peers,
+    )
+
+
+def write_peer_rate_limit_response(
+    handler: Any,
+    decision: RateDecision,
+    *,
+    peer: str,
+    request_id: str,
+    rid_headers: Mapping[str, str],
+) -> None:
+    """Write the uniform peer-origin 429 envelope both sidecars emit when
+    :meth:`RateLimiter.allow` rejects.
+
+    ``Retry-After`` is the ceiling of ``reset_ms / 1000``, clamped to a
+    minimum of 1 — ceiling (from hermes) matches HTTP semantics so a
+    client retrying at the advertised time isn't rejected again for
+    sub-second jitter, and the ``max(1, ...)`` floor (from openclaw)
+    guarantees ``Retry-After: 0`` never appears when ``reset_ms`` is
+    legitimately tiny.
+    """
+    retry_after_s = max(1, (decision.reset_ms + 999) // 1000)
+    write_json_response(
+        handler,
+        429,
+        {
+            "error": f"rate limit exceeded for peer '{peer}'",
+            "resetMs": decision.reset_ms,
+            "request_id": request_id,
+        },
+        extra_headers={**rid_headers, "Retry-After": str(retry_after_s)},
     )

@@ -80,7 +80,10 @@ from _common.protocol import (  # noqa: E402
     read_hop_header,
     read_or_mint_request_id,
 )
-from _common.ratelimit import create_rate_limiter  # noqa: E402
+from _common.ratelimit import (  # noqa: E402
+    create_rate_limiter,
+    write_peer_rate_limit_response,
+)
 from _common.thread import create_thread_store  # noqa: E402
 from adapters import (  # noqa: E402
     HostAdapter,
@@ -470,17 +473,12 @@ def _make_handler_class(ctx: Dict[str, Any]):
 
             rl = rate_limiter.allow(peer_from)
             if not rl.ok:
-                headers_out = dict(rid_headers)
-                headers_out["Retry-After"] = str(max(1, int(rl.reset_ms / 1000 + 0.5)))
-                return write_json_response(
+                return write_peer_rate_limit_response(
                     self,
-                    429,
-                    {
-                        "error": f"rate limit exceeded for peer '{peer_from}'",
-                        "resetMs": rl.reset_ms,
-                        "request_id": request_id,
-                    },
-                    headers_out,
+                    rl,
+                    peer=peer_from,
+                    request_id=request_id,
+                    rid_headers=rid_headers,
                 )
 
             try:
