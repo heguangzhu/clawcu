@@ -15,6 +15,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from _common.peer_cache import read_allow_client_registry_url
+
 
 def _envs(name: str, default: str) -> str:
     v = os.environ.get(name)
@@ -98,13 +100,10 @@ class Config:
         # Review-17 P1-I1: gate the /a2a/outbound body `registry_url`
         # override. Default off — a client cannot pick the registry
         # (SSRF) unless the operator explicitly opts in. Tests that
-        # want per-request registry overrides set this flag.
-        self.allow_client_registry_url = (
-            (os.environ.get("A2A_ALLOW_CLIENT_REGISTRY_URL") or "")
-            .strip()
-            .lower()
-            in ("1", "true", "yes", "on")
-        )
+        # want per-request registry overrides set this flag. Shared
+        # parser lives in ``_common.peer_cache`` so both sidecars honor
+        # the same truthy vocabulary.
+        self.allow_client_registry_url = read_allow_client_registry_url()
 
     def agent_card(self) -> dict[str, Any]:
         return {

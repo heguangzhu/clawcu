@@ -43,6 +43,7 @@ from _common.peer_cache import (
     DEFAULT_REGISTRY_URL,
     create_peer_cache as _shared_peer_cache,
     default_registry_url,
+    read_allow_client_registry_url,
 )
 from _common.protocol import REQUEST_ID_HEADER
 
@@ -180,13 +181,9 @@ def forward_to_peer(
     raise UpstreamError(f"peer HTTP {status}: {body[:200]}", http_status=502, peer_status=status)
 
 
-def read_allow_client_registry_url(env: Optional[Dict[str, str]] = None) -> bool:
-    e = env if env is not None else os.environ
-    raw = str(e.get("A2A_ALLOW_CLIENT_REGISTRY_URL") or "").strip().lower()
-    return raw in ("1", "true", "yes", "on")
-
-
-# ``DEFAULT_REGISTRY_URL`` / ``default_registry_url`` now live in
-# ``_common.peer_cache`` so both sidecars share one fallback. Re-imported
-# at the top of this module so the public surface stays unchanged for
-# call sites that reach ``outbound.default_registry_url``.
+# ``DEFAULT_REGISTRY_URL`` / ``default_registry_url`` /
+# ``read_allow_client_registry_url`` now live in ``_common.peer_cache`` so
+# both sidecars share one fallback + one SSRF opt-in parser. Re-imported at
+# the top of this module so the public surface stays unchanged for call
+# sites that reach ``outbound.default_registry_url`` /
+# ``outbound.read_allow_client_registry_url``.

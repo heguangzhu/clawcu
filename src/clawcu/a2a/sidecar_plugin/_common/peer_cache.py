@@ -57,6 +57,20 @@ def default_registry_url(env: Optional[Mapping[str, str]] = None) -> str:
     return stripped or DEFAULT_REGISTRY_URL
 
 
+def read_allow_client_registry_url(env: Optional[Mapping[str, str]] = None) -> bool:
+    """Resolve the ``A2A_ALLOW_CLIENT_REGISTRY_URL`` SSRF opt-in flag.
+
+    Review-17 P1-I1: by default a client cannot pick the registry URL
+    through an ``/a2a/outbound`` body override (SSRF surface); operators
+    must opt in. The truthy set — ``1``, ``true``, ``yes``, ``on`` —
+    matches the conventional boolean-env vocabulary both runtimes have
+    used, case-insensitive and whitespace-tolerant.
+    """
+    source = env if env is not None else os.environ
+    raw = str(source.get("A2A_ALLOW_CLIENT_REGISTRY_URL") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 class PeerCache:
     """Return type for :func:`create_peer_cache`. Only ``get()`` is public."""
 
@@ -130,4 +144,5 @@ __all__ = [
     "PeerCache",
     "create_peer_cache",
     "default_registry_url",
+    "read_allow_client_registry_url",
 ]
