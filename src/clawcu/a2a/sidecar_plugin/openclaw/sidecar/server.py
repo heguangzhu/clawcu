@@ -213,6 +213,30 @@ def _int_from_sources(*sources: Any, default: int) -> int:
     return default
 
 
+def _ms_from_seconds_env(seconds_env_name: str) -> Optional[int]:
+    """Read a ``*_SECONDS`` env var and return it as an integer millisecond
+    count. Returns ``None`` when the env var is unset/empty/malformed so
+    the caller can fall through to its legacy ``*_MS`` fallback.
+
+    Review-2 §2: operator-facing timeout vocabulary is being unified on
+    float seconds (matching Hermes); the millisecond variants stay as
+    deprecated aliases for one release before removal so existing
+    ``A2A_REQUEST_TIMEOUT_MS=...`` in compose files keep working.
+    Internal plumbing continues in milliseconds — only the env surface
+    is being bridged.
+    """
+    raw = os.environ.get(seconds_env_name)
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        return None
+    if seconds < 0:
+        return None
+    return int(seconds * 1000)
+
+
 # HTTP helpers live in http_client.py. Re-imported above.
 
 
@@ -645,14 +669,19 @@ def main() -> None:
         default=18789,
     )
 
+    # Timeouts accept both the canonical ``*_SECONDS`` env (matches
+    # Hermes' vocabulary) and the legacy ``*_MS`` env (kept for back-compat
+    # with existing compose files). ``*_SECONDS`` wins when both are set.
     request_timeout_ms = _int_from_sources(
         args.get("request-timeout-ms"),
+        _ms_from_seconds_env("A2A_REQUEST_TIMEOUT_SECONDS"),
         os.environ.get("A2A_REQUEST_TIMEOUT_MS"),
         default=300000,
     )
 
     gateway_ready_deadline_ms = _int_from_sources(
         args.get("gateway-ready-deadline-ms"),
+        _ms_from_seconds_env("A2A_GATEWAY_READY_DEADLINE_S"),
         os.environ.get("A2A_GATEWAY_READY_DEADLINE_MS"),
         default=30000,
     )
