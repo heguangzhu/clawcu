@@ -26,6 +26,7 @@ Contract:
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time as _time
@@ -69,6 +70,28 @@ def read_allow_client_registry_url(env: Optional[Mapping[str, str]] = None) -> b
     source = env if env is not None else os.environ
     raw = str(source.get("A2A_ALLOW_CLIENT_REGISTRY_URL") or "").strip().lower()
     return raw in ("1", "true", "yes", "on")
+
+
+def parse_peer_list_response(raw: str) -> Optional[List[dict]]:
+    """Parse a registry ``GET /agents`` body into a filtered peer-card list.
+
+    Both sidecars apply the same tail to a 2xx registry response: parse
+    JSON, require a list, keep only dicts whose ``name`` is a string.
+    Centralising it keeps the two runtimes from drifting on what counts
+    as a well-formed peer card — if one tightens the shape check and the
+    other doesn't, peer visibility silently diverges between flavors.
+
+    Returns ``None`` on non-JSON body or a non-list top-level value; the
+    TTL cache treats that as a transient failure and serves the previous
+    value if still inside the stale window.
+    """
+    try:
+        parsed = json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(parsed, list):
+        return None
+    return [p for p in parsed if isinstance(p, dict) and isinstance(p.get("name"), str)]
 
 
 class PeerCache:
@@ -144,5 +167,6 @@ __all__ = [
     "PeerCache",
     "create_peer_cache",
     "default_registry_url",
+    "parse_peer_list_response",
     "read_allow_client_registry_url",
 ]

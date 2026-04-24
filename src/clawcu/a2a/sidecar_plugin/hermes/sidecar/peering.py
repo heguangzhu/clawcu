@@ -29,6 +29,7 @@ from _common.peer_cache import (
     DEFAULT_REGISTRY_URL,
     create_peer_cache as _shared_peer_cache,
     default_registry_url as _default_registry_url,
+    parse_peer_list_response,
 )
 from _common.protocol import REQUEST_ID_HEADER
 from _common import streams as _streams
@@ -169,13 +170,7 @@ def fetch_peer_list(registry_url: str, timeout: float) -> list[dict[str, Any]] |
         return None
     if status < 200 or status >= 300:
         return None
-    try:
-        parsed = json.loads(raw)
-    except Exception:  # noqa: BLE001
-        return None
-    if not isinstance(parsed, list):
-        return None
-    return [p for p in parsed if isinstance(p, dict) and isinstance(p.get("name"), str)]
+    return parse_peer_list_response(raw)
 
 
 def create_peer_cache(

@@ -43,6 +43,7 @@ from _common.peer_cache import (
     DEFAULT_REGISTRY_URL,
     create_peer_cache as _shared_peer_cache,
     default_registry_url,
+    parse_peer_list_response,
     read_allow_client_registry_url,
 )
 from _common.protocol import REQUEST_ID_HEADER
@@ -68,13 +69,7 @@ def fetch_peer_list(registry_url: str, timeout_ms: int) -> Optional[list]:
         return None
     if resp["status"] < 200 or resp["status"] >= 300:
         return None
-    try:
-        parsed_body = json.loads(resp["body"])
-    except Exception:
-        return None
-    if not isinstance(parsed_body, list):
-        return None
-    return [p for p in parsed_body if isinstance(p, dict) and isinstance(p.get("name"), str)]
+    return parse_peer_list_response(resp["body"])
 
 
 def _default_now_ms() -> int:
