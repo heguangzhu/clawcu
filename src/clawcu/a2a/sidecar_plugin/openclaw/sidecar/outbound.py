@@ -180,3 +180,18 @@ def read_allow_client_registry_url(env: Optional[Dict[str, str]] = None) -> bool
     e = env if env is not None else os.environ
     raw = str(e.get("A2A_ALLOW_CLIENT_REGISTRY_URL") or "").strip().lower()
     return raw in ("1", "true", "yes", "on")
+
+
+DEFAULT_REGISTRY_URL = "http://host.docker.internal:9100"
+
+
+def default_registry_url(env: Optional[Dict[str, str]] = None) -> str:
+    """Resolve the registry URL used when a peer doesn't override one.
+
+    Reads ``A2A_REGISTRY_URL`` and falls back to the baked-in default
+    ``host.docker.internal:9100`` (matches the adapter's default publish
+    port). Both /a2a/outbound and /mcp need this same fallback shape so
+    it lives here, next to ``read_allow_client_registry_url``.
+    """
+    e = env if env is not None else os.environ
+    return e.get("A2A_REGISTRY_URL") or DEFAULT_REGISTRY_URL

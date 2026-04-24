@@ -101,6 +101,7 @@ from http_client import (  # noqa: E402
 from outbound import (  # noqa: E402
     _default_now_ms,
     create_peer_cache,
+    default_registry_url,
     fetch_peer_list,
     forward_to_peer,
     lookup_peer,
@@ -202,6 +203,45 @@ def _int_from_sources(*sources: Any, default: int) -> int:
 
 
 # HTTP helpers live in http_client.py. Re-imported above.
+
+
+def _resolve_outbound_registry_url(
+    handler: Any,
+    *,
+    payload: Dict[str, Any],
+    request_id: str,
+    rid_headers: Dict[str, str],
+) -> Optional[str]:
+    """Pick the registry URL for ``/a2a/outbound``, enforcing operator policy.
+
+    When the peer omits ``registry_url`` the sidecar falls back to the
+    env-driven default. When the peer supplies one, the operator must
+    have opted in via ``A2A_ALLOW_CLIENT_REGISTRY_URL`` and the value
+    must be a non-empty string. On any policy/shape failure this writes
+    the uniform 400 response itself and returns ``None`` so the caller's
+    next line is just ``return``. Mirrors hermes's
+    ``_resolve_outbound_registry_url`` (minus SSRF scheme validation,
+    which is hermes-local — openclaw's peers are trusted containers).
+    """
+    if "registry_url" not in payload:
+        return default_registry_url(os.environ)
+
+    def _reject(msg: str) -> None:
+        write_json_response(
+            handler,
+            400,
+            {"error": msg, "request_id": request_id},
+            rid_headers,
+        )
+
+    if not read_allow_client_registry_url(os.environ):
+        _reject("client-supplied 'registry_url' is disabled by server policy")
+        return None
+    raw = payload.get("registry_url")
+    if not isinstance(raw, str) or not raw:
+        _reject("'registry_url' must be a non-empty string when provided")
+        return None
+    return raw
 
 
 def read_json_body(rfile, content_length: int, limit: int = READ_JSON_BODY_LIMIT):
@@ -492,30 +532,11 @@ def _make_handler_class(ctx: Dict[str, Any]):
                     rid_headers,
                 )
 
-            if "registry_url" in body:
-                if not read_allow_client_registry_url(os.environ):
-                    return write_json_response(
-                        self,
-                        400,
-                        {
-                            "error": "client-supplied 'registry_url' is disabled by server policy",
-                            "request_id": request_id,
-                        },
-                        rid_headers,
-                    )
-                if not isinstance(body.get("registry_url"), str) or not body.get("registry_url"):
-                    return write_json_response(
-                        self,
-                        400,
-                        {
-                            "error": "'registry_url' must be a non-empty string when provided",
-                            "request_id": request_id,
-                        },
-                        rid_headers,
-                    )
-                registry_url = body["registry_url"]
-            else:
-                registry_url = os.environ.get("A2A_REGISTRY_URL") or "http://host.docker.internal:9100"
+            registry_url = _resolve_outbound_registry_url(
+                self, payload=body, request_id=request_id, rid_headers=rid_headers
+            )
+            if registry_url is None:
+                return
 
             try:
                 timeout_ms_num = float(body.get("timeout_ms"))
@@ -601,7 +622,7 @@ def _make_handler_class(ctx: Dict[str, Any]):
                     json_rpc_error(None, MCP_ERR_PARSE, err),
                     rid_headers,
                 )
-            registry_url = os.environ.get("A2A_REGISTRY_URL") or "http://host.docker.internal:9100"
+            registry_url = default_registry_url(os.environ)
             method = body.get("method") if isinstance(body, dict) else None
             logger.info(f"[sidecar:{self_name}] mcp.request request_id={request_id} method={method}")
             cache = _ensure_peer_cache(registry_url)
