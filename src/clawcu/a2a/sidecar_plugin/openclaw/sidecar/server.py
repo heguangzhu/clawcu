@@ -244,6 +244,77 @@ def _resolve_outbound_registry_url(
     return raw
 
 
+def _read_inbound_json_or_400(
+    handler: Any,
+    *,
+    request_id: str,
+    rid_headers: Dict[str, str],
+) -> Optional[Dict[str, Any]]:
+    """Read+parse the inbound body, writing a ``{error, request_id}`` 400
+    on any failure. Returns the parsed dict on success, ``None`` after an
+    error response has been written.
+
+    Companion to :func:`read_json_body` for the /a2a endpoints. Mirrors
+    hermes's ``read_inbound_json_body`` so ``/a2a/send`` and
+    ``/a2a/outbound`` read linearly: ``body = _read_...(); if body is None: return``.
+    """
+    try:
+        content_length = int(handler.headers.get("content-length") or "0")
+    except (TypeError, ValueError):
+        write_json_response(
+            handler,
+            400,
+            {"error": "invalid content-length", "request_id": request_id},
+            rid_headers,
+        )
+        return None
+    try:
+        return read_json_body(handler.rfile, content_length)
+    except RuntimeError as exc:
+        write_json_response(
+            handler,
+            400,
+            {"error": str(exc), "request_id": request_id},
+            rid_headers,
+        )
+        return None
+
+
+def _read_inbound_mcp_or_parse_error(
+    handler: Any,
+    *,
+    rid_headers: Dict[str, str],
+) -> Tuple[bool, Any]:
+    """Read+parse the inbound body, writing a JSON-RPC parse-error on
+    failure. Returns ``(True, body)`` on success, ``(False, None)`` after
+    an error has been written.
+
+    Counterpart to :func:`_read_inbound_json_or_400` for the /mcp
+    endpoint. Note ``body`` on success may be any JSON-decoded value —
+    ``handle_mcp_request`` does its own shape check.
+    """
+    try:
+        content_length = int(handler.headers.get("content-length") or "0")
+    except (TypeError, ValueError):
+        write_json_response(
+            handler,
+            400,
+            json_rpc_error(None, MCP_ERR_PARSE, "invalid content-length"),
+            rid_headers,
+        )
+        return False, None
+    try:
+        return True, read_json_body(handler.rfile, content_length)
+    except RuntimeError as exc:
+        write_json_response(
+            handler,
+            400,
+            json_rpc_error(None, MCP_ERR_PARSE, str(exc)),
+            rid_headers,
+        )
+        return False, None
+
+
 def read_json_body(rfile, content_length: int, limit: int = READ_JSON_BODY_LIMIT):
     if content_length > limit:
         raise RuntimeError("request body too large")
@@ -289,16 +360,6 @@ def _make_handler_class(ctx: Dict[str, Any]):
     thread_store = ctx["thread_store"]
     # Shared, lazily-initialised peer cache.
     peer_cache_holder: Dict[str, Any] = {"cache": None, "lock": threading.Lock()}
-
-    def _read_request_json(handler) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-        try:
-            content_length = int(handler.headers.get("content-length") or "0")
-        except (TypeError, ValueError):
-            return None, "invalid content-length"
-        try:
-            return read_json_body(handler.rfile, content_length), None
-        except RuntimeError as exc:
-            return None, str(exc)
 
     def _ensure_peer_cache(registry_url: str):
         with peer_cache_holder["lock"]:
@@ -393,9 +454,11 @@ def _make_handler_class(ctx: Dict[str, Any]):
             incoming_hop, request_id, rid_headers, refused = _hop_prelude(self, route="a2a.send")
             if refused:
                 return
-            body, err = _read_request_json(self)
-            if err is not None:
-                return write_json_response(self, 400, {"error": err, "request_id": request_id}, rid_headers)
+            body = _read_inbound_json_or_400(
+                self, request_id=request_id, rid_headers=rid_headers
+            )
+            if body is None:
+                return
             try:
                 message = require_non_empty_string(body, "message")
                 peer_from = require_non_empty_string(body, "from")
@@ -500,9 +563,11 @@ def _make_handler_class(ctx: Dict[str, Any]):
             incoming_hop, request_id, rid_headers, refused = _hop_prelude(self, route="a2a.outbound")
             if refused:
                 return
-            body, err = _read_request_json(self)
-            if err is not None:
-                return write_json_response(self, 400, {"error": err, "request_id": request_id}, rid_headers)
+            body = _read_inbound_json_or_400(
+                self, request_id=request_id, rid_headers=rid_headers
+            )
+            if body is None:
+                return
             try:
                 to = require_non_empty_string(body, "to")
                 message = require_non_empty_string(body, "message")
@@ -611,14 +676,9 @@ def _make_handler_class(ctx: Dict[str, Any]):
         def _handle_mcp(self) -> None:
             request_id = read_or_mint_request_id(self.headers)
             rid_headers = {REQUEST_ID_HEADER: request_id}
-            body, err = _read_request_json(self)
-            if err is not None:
-                return write_json_response(
-                    self,
-                    400,
-                    json_rpc_error(None, MCP_ERR_PARSE, err),
-                    rid_headers,
-                )
+            ok, body = _read_inbound_mcp_or_parse_error(self, rid_headers=rid_headers)
+            if not ok:
+                return
             registry_url = default_registry_url(os.environ)
             method = body.get("method") if isinstance(body, dict) else None
             logger.info(f"[sidecar:{self_name}] mcp.request request_id={request_id} method={method}")
