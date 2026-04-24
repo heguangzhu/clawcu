@@ -81,6 +81,7 @@ from _common.protocol import (  # noqa: E402
     hop_prelude as _shared_hop_prelude,
     read_hop_header,
     read_or_mint_request_id,
+    write_outbound_reply_response,
 )
 from _common.ratelimit import (  # noqa: E402
     create_rate_limiter,
@@ -544,19 +545,14 @@ def _make_handler_class(ctx: Dict[str, Any]):
             logger.info(
                 f"[sidecar:{self_name}] a2a.outbound done request_id={request_id} to={to}"
             )
-            return write_json_response(
+            return write_outbound_reply_response(
                 self,
-                200,
-                {
-                    "from": self_name,
-                    "to": to,
-                    "reply": peer_resp.get("reply") if isinstance(peer_resp.get("reply"), str) else "",
-                    "thread_id": peer_resp.get("thread_id")
-                    if isinstance(peer_resp.get("thread_id"), str)
-                    else out_thread_id,
-                    "request_id": request_id,
-                },
-                rid_headers,
+                self_name=self_name,
+                to=to,
+                peer_resp=peer_resp,
+                fallback_thread_id=out_thread_id,
+                request_id=request_id,
+                rid_headers=rid_headers,
             )
 
         # ---- /mcp ------------------------------------------------------------

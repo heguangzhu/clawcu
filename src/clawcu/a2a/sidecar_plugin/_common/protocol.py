@@ -165,6 +165,43 @@ def hop_prelude(
     return incoming_hop, request_id, rid_headers, False
 
 
+def write_outbound_reply_response(
+    handler: Any,
+    *,
+    self_name: str,
+    to: str,
+    peer_resp: Any,
+    fallback_thread_id: Optional[str],
+    request_id: str,
+    rid_headers: dict[str, str],
+) -> None:
+    """Write the ``/a2a/outbound`` success envelope.
+
+    Both sidecars return the same 5-field shape after a successful peer
+    forward — ``{from, to, reply, thread_id, request_id}`` — with the
+    reply coerced to ``""`` if the peer's payload is malformed and the
+    thread ID falling back to the caller-supplied one if the peer
+    didn't echo a string. Centralising the defensive ``isinstance``
+    checks keeps the two handlers from drifting on what counts as a
+    "well-formed peer reply".
+    """
+    is_dict = isinstance(peer_resp, dict)
+    reply = peer_resp.get("reply") if is_dict else None
+    resp_thread = peer_resp.get("thread_id") if is_dict else None
+    write_json_response(
+        handler,
+        200,
+        {
+            "from": self_name,
+            "to": to,
+            "reply": reply if isinstance(reply, str) else "",
+            "thread_id": resp_thread if isinstance(resp_thread, str) else fallback_thread_id,
+            "request_id": request_id,
+        },
+        extra_headers=rid_headers,
+    )
+
+
 __all__ = [
     "REQUEST_ID_HEADER",
     "HOP_HEADER",
@@ -174,4 +211,5 @@ __all__ = [
     "looks_like_request_id",
     "read_or_mint_request_id",
     "read_hop_header",
+    "write_outbound_reply_response",
 ]
