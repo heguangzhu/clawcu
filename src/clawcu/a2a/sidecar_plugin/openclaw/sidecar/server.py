@@ -85,6 +85,7 @@ from _common.protocol import (  # noqa: E402
     read_or_mint_request_id,
     write_error_envelope,
     write_outbound_reply_response,
+    write_send_reply_response,
 )
 from _common.ratelimit import (  # noqa: E402
     create_rate_limiter,
@@ -429,16 +430,13 @@ def _make_handler_class(ctx: Dict[str, Any]):
             logger.info(
                 f"[sidecar:{self_name}] a2a.send replied request_id={request_id} from={peer_from}"
             )
-            return write_json_response(
+            return write_send_reply_response(
                 self,
-                200,
-                {
-                    "from": self_name,
-                    "reply": reply,
-                    "thread_id": thread_id,
-                    "request_id": request_id,
-                },
-                rid_headers,
+                self_name=self_name,
+                reply=reply,
+                thread_id=thread_id,
+                request_id=request_id,
+                rid_headers=rid_headers,
             )
 
         # ---- /a2a/outbound ---------------------------------------------------

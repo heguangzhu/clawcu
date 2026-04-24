@@ -191,6 +191,36 @@ def write_error_envelope(
     write_json_response(handler, status, body, extra_headers=rid_headers)
 
 
+def write_send_reply_response(
+    handler: Any,
+    *,
+    self_name: str,
+    reply: str,
+    thread_id: Optional[str],
+    request_id: str,
+    rid_headers: Mapping[str, str],
+) -> None:
+    """Write the ``/a2a/send`` success envelope.
+
+    Both sidecars return ``{from, reply, thread_id, request_id}`` on a
+    successful native-agent turn. Centralising the shape keeps the
+    wire response identical between the two runtimes — a federation peer
+    shouldn't be able to tell whether it's talking to hermes or openclaw
+    from the reply shape alone.
+    """
+    write_json_response(
+        handler,
+        200,
+        {
+            "from": self_name,
+            "reply": reply,
+            "thread_id": thread_id,
+            "request_id": request_id,
+        },
+        extra_headers=rid_headers,
+    )
+
+
 def write_outbound_reply_response(
     handler: Any,
     *,
@@ -239,4 +269,5 @@ __all__ = [
     "read_hop_header",
     "write_error_envelope",
     "write_outbound_reply_response",
+    "write_send_reply_response",
 ]

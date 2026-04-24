@@ -151,6 +151,7 @@ from _common.protocol import (  # noqa: E402
     read_or_mint_request_id,
     write_error_envelope,
     write_outbound_reply_response,
+    write_send_reply_response,
 )
 from _common.mcp import (  # noqa: E402
     ERR_A2A_UPSTREAM as MCP_ERR_A2A_UPSTREAM,
@@ -636,16 +637,13 @@ def build_handler(
             thread_store.append_turn(peer_from, thread_id, message, reply)
 
             log.info("a2a.send replied request_id=%s from=%s", request_id, peer_from or "?")
-            write_json_response(
+            write_send_reply_response(
                 self,
-                200,
-                {
-                    "from": cfg.self_name,
-                    "reply": reply,
-                    "thread_id": thread_id,
-                    "request_id": request_id,
-                },
-                extra_headers=rid_headers,
+                self_name=cfg.self_name,
+                reply=reply,
+                thread_id=thread_id,
+                request_id=request_id,
+                rid_headers=rid_headers,
             )
 
         def _handle_mcp(self) -> None:
