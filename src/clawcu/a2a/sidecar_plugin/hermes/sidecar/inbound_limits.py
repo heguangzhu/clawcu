@@ -11,6 +11,7 @@ from _common.inbound_limits import (  # noqa: F401
     _hop_budget,
     _max_body_bytes,
     _parse_content_length,
+    mcp_prelude,
     parse_optional_non_empty_string,
     read_inbound_json_body,
     read_inbound_mcp_body,

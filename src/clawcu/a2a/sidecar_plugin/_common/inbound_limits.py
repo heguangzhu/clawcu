@@ -30,13 +30,17 @@ import os
 from typing import Any
 
 from _common.http_response import write_json_response
-from _common.mcp import json_rpc_error
+from _common.mcp import ERR_PARSE as _MCP_ERR_PARSE, json_rpc_error
 from _common.payload import (  # noqa: F401
     BadPayload as _BadPayload,
     parse_optional_non_empty_string,
     require_non_empty_string,
 )
-from _common.protocol import hop_budget_from_env
+from _common.protocol import (
+    REQUEST_ID_HEADER,
+    hop_budget_from_env,
+    read_or_mint_request_id,
+)
 
 
 # Hop budget — see a2a-design-1.md §Loop protection. X-A2A-Hop increments
@@ -199,6 +203,35 @@ def read_inbound_mcp_body(
         )
         return False, None
     return True, payload
+
+
+def mcp_prelude(
+    handler: Any, *, cap: int
+) -> tuple[str, dict[str, str], Any, bool]:
+    """Shared ``/mcp`` entry-point prelude: mint the request ID, build the
+    rid-headers dict, and read the JSON-RPC body with the MCP parse-error
+    code baked in.
+
+    Returns ``(request_id, rid_headers, payload, ok)``. When ``ok`` is
+    ``False`` the parse-error envelope has already been written (via
+    :func:`read_inbound_mcp_body`, which emits the JSON-RPC 2.0 shape
+    ``/mcp`` requires) and the caller's next line is just ``return``.
+
+    The pairing — request-id mint, rid-headers dict, and the
+    ``err_parse_code=ERR_PARSE`` call into ``read_inbound_mcp_body`` — is
+    identical in both sidecar flavors. Centralising it keeps the
+    request-ID echo and the JSON-RPC parse envelope from drifting if
+    either sidecar grows a new MCP entry point.
+    """
+    request_id = read_or_mint_request_id(handler.headers)
+    rid_headers = {REQUEST_ID_HEADER: request_id}
+    ok, payload = read_inbound_mcp_body(
+        handler,
+        cap=cap,
+        err_parse_code=_MCP_ERR_PARSE,
+        rid_headers=rid_headers,
+    )
+    return request_id, rid_headers, payload, ok
 
 
 # parse_optional_non_empty_string + the BadPayload exception live in

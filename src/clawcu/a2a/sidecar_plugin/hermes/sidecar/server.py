@@ -297,6 +297,7 @@ from inbound_limits import (  # noqa: E402
     _hop_budget,
     _max_body_bytes,
     _parse_content_length,
+    mcp_prelude,
     parse_optional_non_empty_string,
     read_inbound_json_body,
     read_inbound_mcp_body,
@@ -654,13 +655,8 @@ def build_handler(
             transaction. Dispatches to handle_mcp_request, which calls
             forward_to_peer in-process (no second HTTP hop).
             """
-            request_id = read_or_mint_request_id(self.headers)
-            rid_headers = {_REQUEST_ID_HEADER: request_id}
-            ok, payload = read_inbound_mcp_body(
-                self,
-                cap=_max_body_bytes(),
-                err_parse_code=MCP_ERR_PARSE,
-                rid_headers=rid_headers,
+            request_id, rid_headers, payload, ok = mcp_prelude(
+                self, cap=_max_body_bytes()
             )
             if not ok:
                 return

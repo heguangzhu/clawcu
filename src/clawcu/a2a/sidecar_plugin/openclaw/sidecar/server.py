@@ -125,6 +125,7 @@ from chat import (  # noqa: E402
 )
 from _common.inbound_limits import (  # noqa: E402
     _max_body_bytes,
+    mcp_prelude,
     read_inbound_json_body,
     read_inbound_mcp_body,
 )
@@ -552,13 +553,8 @@ def _make_handler_class(ctx: Dict[str, Any]):
         # ---- /mcp ------------------------------------------------------------
 
         def _handle_mcp(self) -> None:
-            request_id = read_or_mint_request_id(self.headers)
-            rid_headers = {REQUEST_ID_HEADER: request_id}
-            ok, body = read_inbound_mcp_body(
-                self,
-                cap=_max_body_bytes(),
-                err_parse_code=MCP_ERR_PARSE,
-                rid_headers=rid_headers,
+            request_id, rid_headers, body, ok = mcp_prelude(
+                self, cap=_max_body_bytes()
             )
             if not ok:
                 return
