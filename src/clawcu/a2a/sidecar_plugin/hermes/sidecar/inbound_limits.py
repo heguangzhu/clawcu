@@ -35,17 +35,16 @@ from _common.payload import (  # noqa: F401
     parse_optional_non_empty_string,
     require_non_empty_string,
 )
+from _common.protocol import hop_budget_from_env
 
 
 # Hop budget — see a2a-design-1.md §Loop protection. X-A2A-Hop increments
 # on every mesh hop; an inbound /a2a/send that sees hop>=budget is refused
-# with 508 before any gateway work happens.
+# with 508 before any gateway work happens. Thin wrapper so existing test
+# stubs that reach ``mod._hop_budget`` keep working; the implementation
+# lives in ``_common.protocol`` so both sidecars read it the same way.
 def _hop_budget() -> int:
-    try:
-        v = int(os.environ.get("A2A_HOP_BUDGET") or "8")
-    except ValueError:
-        return 8
-    return v if v >= 1 else 8
+    return hop_budget_from_env()
 
 
 # Review-14 P1-F1: cap inbound POST body size. Without this, an attacker

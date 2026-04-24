@@ -75,6 +75,7 @@ from _common.outbound_limit import (  # noqa: E402
 )
 from _common.protocol import (  # noqa: E402
     REQUEST_ID_HEADER,
+    hop_budget_from_env,
     read_hop_header,
     read_or_mint_request_id,
 )
@@ -145,15 +146,9 @@ __all__ = [
 READ_JSON_BODY_LIMIT = 64 * 1024
 
 # Hop budget read at module-scope so tests can import it without running main().
-A2A_HOP_BUDGET = 8
-try:
-    _raw_hop = os.environ.get("A2A_HOP_BUDGET")
-    if _raw_hop is not None and str(_raw_hop).strip() != "":
-        _parsed_hop = int(_raw_hop)
-        if _parsed_hop > 0:
-            A2A_HOP_BUDGET = _parsed_hop
-except (TypeError, ValueError):
-    pass
+# The parser + default live in _common.protocol so hermes and openclaw share one
+# implementation.
+A2A_HOP_BUDGET = hop_budget_from_env()
 
 # Module-level outbound limiter — handlers close over it.
 OUTBOUND_LIMITER = create_outbound_limiter(rpm=read_outbound_rpm(os.environ))

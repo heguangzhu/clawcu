@@ -18,13 +18,35 @@ already honours.
 
 from __future__ import annotations
 
+import os
 import uuid
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 REQUEST_ID_HEADER = "X-A2A-Request-Id"
 HOP_HEADER = "X-A2A-Hop"
 
+DEFAULT_HOP_BUDGET = 8
+
 _REQUEST_ID_MAX_LEN = 128
+
+
+def hop_budget_from_env(env: Optional[Mapping[str, str]] = None) -> int:
+    """Resolve ``A2A_HOP_BUDGET`` with default ``8``, rejecting bad values.
+
+    Both sidecars read the same env var with the same semantics — an
+    absent/empty value, a non-integer, or a non-positive value all fall
+    back to the default. Kept here next to :func:`read_hop_header` so
+    the hop-counter read and the hop-budget read share one home.
+    """
+    source = env if env is not None else os.environ
+    raw = source.get("A2A_HOP_BUDGET")
+    if raw is None or str(raw).strip() == "":
+        return DEFAULT_HOP_BUDGET
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_HOP_BUDGET
+    return v if v > 0 else DEFAULT_HOP_BUDGET
 
 
 def _header_get(headers: Any, name: str) -> Optional[str]:
@@ -95,6 +117,8 @@ def read_hop_header(headers: Any) -> int:
 __all__ = [
     "REQUEST_ID_HEADER",
     "HOP_HEADER",
+    "DEFAULT_HOP_BUDGET",
+    "hop_budget_from_env",
     "looks_like_request_id",
     "read_or_mint_request_id",
     "read_hop_header",
