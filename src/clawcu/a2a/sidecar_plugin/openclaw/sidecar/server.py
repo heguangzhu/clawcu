@@ -81,6 +81,7 @@ from _common.protocol import (  # noqa: E402
     hop_prelude as _shared_hop_prelude,
     read_hop_header,
     read_or_mint_request_id,
+    write_error_envelope,
     write_outbound_reply_response,
 )
 from _common.ratelimit import (  # noqa: E402
@@ -232,11 +233,8 @@ def _resolve_outbound_registry_url(
         return default_registry_url(os.environ)
 
     def _reject(msg: str) -> None:
-        write_json_response(
-            handler,
-            400,
-            {"error": msg, "request_id": request_id},
-            rid_headers,
+        write_error_envelope(
+            handler, 400, msg, request_id=request_id, rid_headers=rid_headers
         )
 
     if not read_allow_client_registry_url(os.environ):
@@ -382,11 +380,9 @@ def _make_handler_class(ctx: Dict[str, Any]):
             try:
                 auth = read_gateway_auth(adapter)
             except Exception as exc:
-                return write_json_response(
-                    self,
-                    503,
-                    {"error": f"instance not ready: {exc}", "request_id": request_id},
-                    rid_headers,
+                return write_error_envelope(
+                    self, 503, f"instance not ready: {exc}",
+                    request_id=request_id, rid_headers=rid_headers,
                 )
 
             ready = wait_for_gateway_ready(
@@ -396,14 +392,10 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 deadline_ms=gateway_ready_deadline_ms,
             )
             if not ready:
-                return write_json_response(
-                    self,
-                    503,
-                    {
-                        "error": f"gateway not ready after {gateway_ready_deadline_ms}ms",
-                        "request_id": request_id,
-                    },
-                    rid_headers,
+                return write_error_envelope(
+                    self, 503,
+                    f"gateway not ready after {gateway_ready_deadline_ms}ms",
+                    request_id=request_id, rid_headers=rid_headers,
                 )
 
             history = thread_store.load_history(peer_from, thread_id)
@@ -425,11 +417,9 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 )
                 if looks_like_gateway_down(exc):
                     invalidate_gateway_ready()
-                return write_json_response(
-                    self,
-                    502,
-                    {"error": f"upstream agent failed: {exc}", "request_id": request_id},
-                    rid_headers,
+                return write_error_envelope(
+                    self, 502, f"upstream agent failed: {exc}",
+                    request_id=request_id, rid_headers=rid_headers,
                 )
 
             thread_store.append_turn(peer_from, thread_id, message, reply)
@@ -514,7 +504,9 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 logger.warn(
                     f"[sidecar:{self_name}] a2a.outbound lookup-failed request_id={request_id} to={to} status=503"
                 )
-                return write_json_response(self, 503, {"error": str(exc), "request_id": request_id}, rid_headers)
+                return write_error_envelope(
+                    self, 503, str(exc), request_id=request_id, rid_headers=rid_headers
+                )
 
             try:
                 peer_resp = forward_to_peer(
@@ -540,7 +532,9 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 logger.warn(
                     f"[sidecar:{self_name}] a2a.outbound forward-failed request_id={request_id} to={to} status=502"
                 )
-                return write_json_response(self, 502, {"error": str(exc), "request_id": request_id}, rid_headers)
+                return write_error_envelope(
+                    self, 502, str(exc), request_id=request_id, rid_headers=rid_headers
+                )
 
             logger.info(
                 f"[sidecar:{self_name}] a2a.outbound done request_id={request_id} to={to}"

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Dict, Mapping, Optional
 
 from _common.http_response import write_json_response
 
@@ -165,6 +165,32 @@ def hop_prelude(
     return incoming_hop, request_id, rid_headers, False
 
 
+def write_error_envelope(
+    handler: Any,
+    status: int,
+    error: str,
+    *,
+    request_id: str,
+    rid_headers: Mapping[str, str],
+    **extra: Any,
+) -> None:
+    """Write the uniform ``{"error": msg, "request_id": rid, ...}`` envelope.
+
+    Every sidecar error surface — 400 shape, 413 body-cap, 503 gateway
+    not ready, 502/504 upstream, 500 internal — emits this shape with the
+    caller's ``X-A2A-Request-Id`` echoed in both the header and the body.
+    One helper keeps the pairing in lockstep so no error path drifts on
+    "did I remember the request_id?".
+
+    Extra body fields (``detail``, ``peer_status``, ``retry_after_ms``,
+    etc.) merge in as kwargs — this is how the gateway HTTPError path
+    attaches a truncated upstream body without inflating the signature.
+    """
+    body: Dict[str, Any] = {"error": error, "request_id": request_id}
+    body.update(extra)
+    write_json_response(handler, status, body, extra_headers=rid_headers)
+
+
 def write_outbound_reply_response(
     handler: Any,
     *,
@@ -211,5 +237,6 @@ __all__ = [
     "looks_like_request_id",
     "read_or_mint_request_id",
     "read_hop_header",
+    "write_error_envelope",
     "write_outbound_reply_response",
 ]

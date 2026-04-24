@@ -149,6 +149,7 @@ from _common.protocol import (  # noqa: E402
     hop_prelude as _shared_hop_prelude,
     read_hop_header,
     read_or_mint_request_id,
+    write_error_envelope,
     write_outbound_reply_response,
 )
 from _common.mcp import (  # noqa: E402
@@ -351,11 +352,8 @@ def _resolve_outbound_registry_url(
         return _default_registry_url()
 
     def _reject(msg: str) -> None:
-        write_json_response(
-            handler,
-            400,
-            {"error": msg, "request_id": request_id},
-            extra_headers=rid_headers,
+        write_error_envelope(
+            handler, 400, msg, request_id=request_id, rid_headers=rid_headers
         )
 
     if not allow_client_override:
@@ -576,11 +574,9 @@ def build_handler(
                 )
 
             if not wait_for_gateway_ready(cfg):
-                write_json_response(
-                    self,
-                    503,
-                    {"error": f"gateway not ready after {cfg.ready_deadline}s", "request_id": request_id},
-                    extra_headers=rid_headers,
+                write_error_envelope(
+                    self, 503, f"gateway not ready after {cfg.ready_deadline}s",
+                    request_id=request_id, rid_headers=rid_headers,
                 )
                 return
 
@@ -592,11 +588,9 @@ def build_handler(
                 reply = call_hermes(cfg, message, peer_from, history=history)
             except _ResponseTooLarge as e:
                 log.error("Hermes response too large request_id=%s: %s", request_id, e)
-                write_json_response(
-                    self,
-                    502,
-                    {"error": f"upstream response too large: {e}", "request_id": request_id},
-                    extra_headers=rid_headers,
+                write_error_envelope(
+                    self, 502, f"upstream response too large: {e}",
+                    request_id=request_id, rid_headers=rid_headers,
                 )
                 return
             except HTTPError as e:
@@ -609,11 +603,10 @@ def build_handler(
                     # 5xx suggests gateway is sick; drop the ready-cache so the
                     # next request re-probes instead of blindly retrying.
                     invalidate_gateway_ready_cache()
-                write_json_response(
-                    self,
-                    502,
-                    {"error": f"upstream Hermes HTTP {e.code}", "detail": body[:500], "request_id": request_id},
-                    extra_headers=rid_headers,
+                write_error_envelope(
+                    self, 502, f"upstream Hermes HTTP {e.code}",
+                    request_id=request_id, rid_headers=rid_headers,
+                    detail=body[:500],
                 )
                 return
             except URLError as e:
@@ -625,18 +618,16 @@ def build_handler(
                 # Review-2 P1-C (iter 3): network-layer (URLError) → 504,
                 # distinct from peer HTTP errors above (502). Unifies with
                 # /a2a/outbound's forward_to_peer.
-                write_json_response(
-                    self, 504, {"error": f"upstream Hermes unreachable: {e.reason}", "request_id": request_id},
-                    extra_headers=rid_headers,
+                write_error_envelope(
+                    self, 504, f"upstream Hermes unreachable: {e.reason}",
+                    request_id=request_id, rid_headers=rid_headers,
                 )
                 return
             except Exception as e:  # noqa: BLE001 — we want to surface anything
                 log.exception("unexpected error while calling Hermes request_id=%s", request_id)
-                write_json_response(
-                    self,
-                    500,
-                    {"error": f"internal: {e}", "request_id": request_id},
-                    extra_headers=rid_headers,
+                write_error_envelope(
+                    self, 500, f"internal: {e}",
+                    request_id=request_id, rid_headers=rid_headers,
                 )
                 return
 
