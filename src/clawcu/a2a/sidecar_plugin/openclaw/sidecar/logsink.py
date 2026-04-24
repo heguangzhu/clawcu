@@ -3,6 +3,15 @@
 Mirrors the Node module: opt-in via A2A_SIDECAR_LOG_DIR. Tees INFO/ERROR
 messages to <logDir>/a2a-sidecar.log while always writing to stderr so
 `docker logs` and test harnesses keep working. Append-only, best-effort.
+
+Review-2 §14: every line (stdout, stderr, file) is now prefixed with
+``<ISO8601-UTC> <LEVEL> a2a-sidecar: `` so both sidecars produce logs
+that share one regex/logfmt parser. Hermes uses stdlib ``logging`` with
+``"%(asctime)s %(levelname)s a2a-sidecar: %(message)s"``; openclaw keeps
+its variadic ``info(*args)`` API (21 call sites) and reaches the same
+shape via a manual prefix. The common regex is::
+
+    ^(?P<ts>\\S+)\\s+(?P<level>INFO|WARN|ERROR)\\s+a2a-sidecar:\\s+(?P<msg>.*)$
 """
 from __future__ import annotations
 
@@ -71,21 +80,28 @@ class Logger:
                     self._file = None
                     self._file_path = None
 
-    def _tee(self, level: str, args) -> None:
+    @staticmethod
+    def _iso_ts() -> str:
+        now = datetime.now(timezone.utc)
+        return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+
+    def _format_line(self, level: str, args) -> str:
+        msg = " ".join(_format_arg(a) for a in args)
+        return f"{self._iso_ts()} {level} a2a-sidecar: {msg}"
+
+    def _tee(self, line: str) -> None:
         if self._file is None:
             return
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{datetime.now(timezone.utc).microsecond // 1000:03d}Z"
-        msg = " ".join(_format_arg(a) for a in args)
         try:
             with self._lock:
                 if self._file is not None:
-                    self._file.write(f"{ts} {level} {msg}\n")
+                    self._file.write(line + "\n")
         except Exception:
             pass
 
     def info(self, *args) -> None:
-        self._tee("INFO", args)
-        line = " ".join(_format_arg(a) for a in args)
+        line = self._format_line("INFO", args)
+        self._tee(line)
         sys.stdout.write(line + "\n")
         sys.stdout.flush()
 
@@ -93,14 +109,14 @@ class Logger:
     log = info
 
     def warn(self, *args) -> None:
-        self._tee("WARN", args)
-        line = " ".join(_format_arg(a) for a in args)
+        line = self._format_line("WARN", args)
+        self._tee(line)
         sys.stderr.write(line + "\n")
         sys.stderr.flush()
 
     def error(self, *args) -> None:
-        self._tee("ERROR", args)
-        line = " ".join(_format_arg(a) for a in args)
+        line = self._format_line("ERROR", args)
+        self._tee(line)
         sys.stderr.write(line + "\n")
         sys.stderr.flush()
 

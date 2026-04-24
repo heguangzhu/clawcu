@@ -49,8 +49,9 @@ def test_setup_file_log_writes_info_and_error_lines(tmp_path):
 
     log_path = tmp_path / "a2a-sidecar.log"
     body = log_path.read_text(encoding="utf-8")
-    assert re.search(r'INFO hello \{"peer": "a"\}', body), "INFO line must be teed"
-    assert re.search(r"ERROR .*boom", body), "ERROR line must include the exception message"
+    # Review-2 §14: both sidecars now emit "<ts> <LEVEL> a2a-sidecar: <msg>".
+    assert re.search(r'INFO a2a-sidecar: hello \{"peer": "a"\}', body), "INFO line must be teed"
+    assert re.search(r"ERROR a2a-sidecar: .*boom", body), "ERROR line must include the exception message"
     first_line = body.splitlines()[0]
     assert re.match(r"^\d{4}-\d{2}-\d{2}T", first_line), "ISO timestamp prefix"
 
