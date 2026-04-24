@@ -598,9 +598,9 @@ def build_handler(
                 )
                 return
 
-            history: list[dict[str, str]] = []
-            if thread_id and thread_store.enabled:
-                history = thread_store.load_history(peer_from, thread_id)
+            history: list[dict[str, str]] = thread_store.load_history(
+                peer_from, thread_id
+            )
 
             try:
                 reply = call_hermes(cfg, message, peer_from, history=history)
@@ -654,8 +654,7 @@ def build_handler(
                 )
                 return
 
-            if thread_id and thread_store.enabled:
-                thread_store.append_turn(peer_from, thread_id, message, reply)
+            thread_store.append_turn(peer_from, thread_id, message, reply)
 
             log.info("a2a.send replied request_id=%s from=%s", request_id, peer_from or "?")
             write_json_response(

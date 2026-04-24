@@ -451,9 +451,7 @@ def _make_handler_class(ctx: Dict[str, Any]):
                     rid_headers,
                 )
 
-            history = []
-            if thread_id and thread_store.enabled:
-                history = thread_store.load_history(peer_from, thread_id)
+            history = thread_store.load_history(peer_from, thread_id)
 
             try:
                 reply = post_chat_completion(
@@ -479,8 +477,7 @@ def _make_handler_class(ctx: Dict[str, Any]):
                     rid_headers,
                 )
 
-            if thread_id and thread_store.enabled:
-                thread_store.append_turn(peer_from, thread_id, message, reply)
+            thread_store.append_turn(peer_from, thread_id, message, reply)
 
             logger.info(
                 f"[sidecar:{self_name}] a2a.send replied request_id={request_id} from={peer_from}"

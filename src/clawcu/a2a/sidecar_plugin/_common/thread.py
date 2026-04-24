@@ -42,7 +42,7 @@ class ThreadStore:
         self.now_fn = now_fn
         self.enabled = bool(self.storage_dir)
 
-    def _thread_paths(self, peer: str, thread_id: str):
+    def _thread_paths(self, peer: Optional[str], thread_id: Optional[str]):
         p = safe_id(peer)
         t = safe_id(thread_id)
         if not p or not t:
@@ -50,7 +50,17 @@ class ThreadStore:
         directory = os.path.join(self.storage_dir, p)
         return directory, os.path.join(directory, f"{t}.jsonl")
 
-    def load_history(self, peer: str, thread_id: str) -> List[dict]:
+    def load_history(
+        self, peer: Optional[str], thread_id: Optional[str]
+    ) -> List[dict]:
+        """Return prior turns for ``<peer>/<thread_id>``, or ``[]``.
+
+        Callers pass the raw protocol-level ``thread_id`` (which is
+        ``None`` for stateless turns) without guarding — an empty
+        return from a disabled store, a missing ``thread_id``, a bad
+        ``peer``/``thread_id`` that fails :func:`safe_id`, or a missing
+        file all fall out as ``[]``.
+        """
         if not self.enabled:
             return []
         paths = self._thread_paths(peer, thread_id)
@@ -89,8 +99,19 @@ class ThreadStore:
         return out
 
     def append_turn(
-        self, peer: str, thread_id: str, user_msg: str, assistant_msg: str
+        self,
+        peer: Optional[str],
+        thread_id: Optional[str],
+        user_msg: str,
+        assistant_msg: str,
     ) -> bool:
+        """Append ``(user, assistant)`` to ``<peer>/<thread_id>.jsonl``.
+
+        Returns ``True`` on write, ``False`` when the store is disabled,
+        ``thread_id`` is ``None``/unsafe, or the file can't be written.
+        Callers pass the raw protocol-level ``thread_id`` without
+        guarding; the disabled/missing path returns ``False`` silently.
+        """
         if not self.enabled:
             return False
         paths = self._thread_paths(peer, thread_id)
