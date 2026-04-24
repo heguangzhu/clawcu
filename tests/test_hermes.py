@@ -410,6 +410,47 @@ def test_apply_provider_updates_hermes_config_and_env(temp_clawcu_home, tmp_path
     assert "default: openai/gpt-5" in config_yaml
 
 
+def test_collect_and_apply_hermes_codex_auth_json(temp_clawcu_home, tmp_path) -> None:
+    """Collect carries hermes auth.json into the bundle; apply restores it.
+
+    Hermes Codex providers need `auth.json` next to `config.yaml` — without it
+    the gateway 500s with "No Codex credentials stored". Prior to this fix the
+    bundle only captured config.yaml/.env, so a fresh instance had to re-auth.
+    """
+    service, _, _, _ = make_service(temp_clawcu_home)
+    hermes_adapter = service.adapters["hermes"]
+    hermes_adapter._dashboard_ready = lambda _record: True  # type: ignore[method-assign]
+
+    source_root = tmp_path / ".hermes-codex-source"
+    source_root.mkdir(parents=True)
+    (source_root / "config.yaml").write_text(
+        "model:\n  provider: openai-codex\n  default: gpt-5.4\n",
+        encoding="utf-8",
+    )
+    (source_root / ".env").write_text("OPENAI_API_KEY=sk-codex\n", encoding="utf-8")
+    auth_blob = '{"tokens": {"access_token": "tok-abc", "refresh_token": "ref-xyz"}}\n'
+    (source_root / "auth.json").write_text(auth_blob, encoding="utf-8")
+
+    service.collect_providers(path=str(source_root))
+
+    bundle = service.store.load_provider_bundle("hermes", "openai-codex")
+    assert bundle.get("auth_json") == auth_blob
+
+    target_root = tmp_path / "hermes-codex-target"
+    service.create_hermes(
+        name="codex-scribe",
+        version="2026.4.8",
+        datadir=str(target_root),
+        port=8643,
+        cpu="1",
+        memory="2g",
+    )
+
+    service.apply_provider("openai-codex", "codex-scribe")
+
+    assert (target_root / "auth.json").read_text(encoding="utf-8") == auth_blob
+
+
 def test_default_hermes_image_repo_constant() -> None:
     assert DEFAULT_HERMES_IMAGE_REPO == "clawcu/hermes-agent"
 

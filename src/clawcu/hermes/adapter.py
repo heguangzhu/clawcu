@@ -613,22 +613,28 @@ class HermesAdapter(ServiceAdapter):
         for key in ("model", "fallback_model", "smart_model_routing", "custom_providers"):
             if key in config:
                 relevant_config[key] = config[key]
-        return [
-            {
+        bundle: dict[str, object] = {
+            "service": self.service_name,
+            "name": provider,
+            "metadata": {
                 "service": self.service_name,
-                "name": provider,
-                "metadata": {
-                    "service": self.service_name,
-                    "kind": "hermes-model-config",
-                    "provider": provider,
-                    "api_style": "openai",
-                    "endpoint": env_values.get("OPENAI_BASE_URL")
-                    or env_values.get(f"{provider.upper().replace('-', '_')}_BASE_URL"),
-                },
-                "config_yaml": yaml.safe_dump(relevant_config, sort_keys=False),
-                "env": service._dump_env_file(relevant_env),
-            }
-        ]
+                "kind": "hermes-model-config",
+                "provider": provider,
+                "api_style": "openai",
+                "endpoint": env_values.get("OPENAI_BASE_URL")
+                or env_values.get(f"{provider.upper().replace('-', '_')}_BASE_URL"),
+            },
+            "config_yaml": yaml.safe_dump(relevant_config, sort_keys=False),
+            "env": service._dump_env_file(relevant_env),
+        }
+        # Hermes Codex-style providers require an `auth.json` alongside the
+        # config/env (OAuth tokens refreshed by `hermes auth`). Carry it in the
+        # bundle so `provider apply` can reproduce the credentials on a fresh
+        # instance instead of forcing a re-auth.
+        auth_json_path = root / "auth.json"
+        if auth_json_path.exists():
+            bundle["auth_json"] = auth_json_path.read_text(encoding="utf-8")
+        return [bundle]
 
     def apply_provider(self, service, bundle: dict[str, object], instance: str, *, agent: str = "main", primary: str | None = None, fallbacks: list[str] | None = None, persist: bool = False) -> dict[str, str]:
         record = service.store.load_record(instance)
@@ -665,6 +671,15 @@ class HermesAdapter(ServiceAdapter):
         incoming_env = service._load_env_text(str(bundle.get("env") or ""))
         target_env.update(incoming_env)
         env_path.write_text(service._dump_env_file(target_env), encoding="utf-8")
+
+        # Restore Codex auth.json when present in the bundle — without this the
+        # target instance's hermes gateway would 500 with "No Codex credentials
+        # stored" until the operator runs `hermes auth` inside it.
+        incoming_auth_json = bundle.get("auth_json")
+        if isinstance(incoming_auth_json, str) and incoming_auth_json:
+            auth_json_path = Path(record.datadir) / "auth.json"
+            auth_json_path.parent.mkdir(parents=True, exist_ok=True)
+            auth_json_path.write_text(incoming_auth_json, encoding="utf-8")
         service.store.append_log(
             "provider apply "
             f"provider={bundle['name']} instance={record.name} agent=main "

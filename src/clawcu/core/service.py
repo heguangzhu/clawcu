@@ -2900,7 +2900,7 @@ class ClawCUService:
             suffix += 1
 
     def _provider_bundle_equals(self, existing: dict[str, object], incoming: dict[str, object]) -> bool:
-        keys = ("metadata", "auth_profiles", "models", "config_yaml", "env")
+        keys = ("metadata", "auth_profiles", "models", "config_yaml", "env", "auth_json")
         return {key: existing.get(key) for key in keys} == {key: incoming.get(key) for key in keys}
 
     def _provider_signature(self, bundle: dict[str, object]) -> tuple[str, str, str | None, str | None]:
