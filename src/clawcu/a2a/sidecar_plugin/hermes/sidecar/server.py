@@ -141,6 +141,7 @@ from _common.outbound_limit import (  # noqa: E402
     key_for as outbound_limit_key,
     read_rpm as read_outbound_rpm,
     read_sweep_interval_ms as read_outbound_sweep_interval_ms,
+    write_outbound_rate_limit_response,
 )
 from _common.http_response import write_json_response  # noqa: E402
 from _common.protocol import (  # noqa: E402
@@ -774,15 +775,11 @@ def build_handler(
                         limit_key,
                         decision.limit,
                     )
-                    write_json_response(
+                    write_outbound_rate_limit_response(
                         self,
-                        429,
-                        {
-                            "error": f"self-origin rate limit exceeded ({decision.limit}/min)",
-                            "request_id": request_id,
-                            "retry_after_ms": decision.retry_after_ms,
-                        },
-                        extra_headers=rid_headers,
+                        decision,
+                        request_id=request_id,
+                        rid_headers=rid_headers,
                     )
                     return
 

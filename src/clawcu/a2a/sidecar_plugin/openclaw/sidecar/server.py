@@ -72,6 +72,7 @@ from _common.outbound_limit import (  # noqa: E402
     key_for as outbound_limit_key,
     read_rpm as read_outbound_rpm,
     read_sweep_interval_ms as read_outbound_sweep_interval_ms,
+    write_outbound_rate_limit_response,
 )
 from _common.protocol import (  # noqa: E402
     REQUEST_ID_HEADER,
@@ -578,15 +579,8 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 logger.warn(
                     f"[sidecar:{self_name}] a2a.outbound self-rate-limited request_id={request_id} key={limit_key} limit={limit.limit}"
                 )
-                return write_json_response(
-                    self,
-                    429,
-                    {
-                        "error": f"self-origin rate limit exceeded ({limit.limit}/min)",
-                        "request_id": request_id,
-                        "retry_after_ms": limit.retry_after_ms,
-                    },
-                    rid_headers,
+                return write_outbound_rate_limit_response(
+                    self, limit, request_id=request_id, rid_headers=rid_headers
                 )
 
             registry_url = _resolve_outbound_registry_url(

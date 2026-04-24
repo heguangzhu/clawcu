@@ -18,7 +18,9 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Callable, Deque, Dict, Mapping, Optional
+from typing import Any, Callable, Deque, Dict, Mapping, Optional
+
+from _common.http_response import write_json_response
 
 _log = logging.getLogger("clawcu.a2a.outbound_limit")
 
@@ -141,6 +143,29 @@ def create_outbound_limiter(
     now_fn: Callable[[], int] = _default_now_ms,
 ) -> OutboundLimiter:
     return OutboundLimiter(rpm=rpm, now_fn=now_fn)
+
+
+def write_outbound_rate_limit_response(
+    handler: Any,
+    decision: OutboundDecision,
+    *,
+    request_id: str,
+    rid_headers: Mapping[str, str],
+) -> None:
+    """Write the uniform self-origin 429 envelope both sidecars emit when
+    ``OutboundLimiter.check`` rejects. Kept next to the limiter so the
+    response shape stays locked to the decision it's derived from.
+    """
+    write_json_response(
+        handler,
+        429,
+        {
+            "error": f"self-origin rate limit exceeded ({decision.limit}/min)",
+            "request_id": request_id,
+            "retry_after_ms": decision.retry_after_ms,
+        },
+        extra_headers=rid_headers,
+    )
 
 
 class SweepTimer:
