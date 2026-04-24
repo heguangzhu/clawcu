@@ -59,14 +59,18 @@ def test_build_mcp_url_renders_127_0_0_1_form():
 def test_plan_bootstrap_merges_when_enabled_and_absent():
     plan = plan_bootstrap(True, {"other": 1}, "http://127.0.0.1:18790/mcp")
     assert plan["action"] == "merge"
-    assert plan["config"]["mcp"]["servers"][MCP_ENTRY_NAME] == {"url": "http://127.0.0.1:18790/mcp"}
+    # Default fmt is json (OpenClaw) → nested path with streamable-http hint.
+    assert plan["config"]["mcp"]["servers"][MCP_ENTRY_NAME] == {
+        "url": "http://127.0.0.1:18790/mcp",
+        "transport": "streamable-http",
+    }
     assert plan["config"]["other"] == 1
 
 
 def test_plan_bootstrap_noops_when_already_desired():
     plan = plan_bootstrap(
         True,
-        {"mcp": {"servers": {"a2a": {"url": "http://127.0.0.1:18790/mcp"}}}},
+        {"mcp": {"servers": {"a2a": {"url": "http://127.0.0.1:18790/mcp", "transport": "streamable-http"}}}},
         "http://127.0.0.1:18790/mcp",
     )
     assert plan["action"] == "noop"
@@ -75,11 +79,23 @@ def test_plan_bootstrap_noops_when_already_desired():
 def test_plan_bootstrap_rewrites_when_url_differs():
     plan = plan_bootstrap(
         True,
-        {"mcp": {"servers": {"a2a": {"url": "http://127.0.0.1:1111/mcp"}}}},
+        {"mcp": {"servers": {"a2a": {"url": "http://127.0.0.1:1111/mcp", "transport": "streamable-http"}}}},
         "http://127.0.0.1:2222/mcp",
     )
     assert plan["action"] == "merge"
     assert plan["config"]["mcp"]["servers"]["a2a"]["url"] == "http://127.0.0.1:2222/mcp"
+    assert plan["config"]["mcp"]["servers"]["a2a"]["transport"] == "streamable-http"
+
+
+def test_plan_bootstrap_rewrites_when_transport_hint_missing():
+    """Legacy shape (pre-fix) had no transport field — must be rewritten."""
+    plan = plan_bootstrap(
+        True,
+        {"mcp": {"servers": {"a2a": {"url": "http://127.0.0.1:18790/mcp"}}}},
+        "http://127.0.0.1:18790/mcp",
+    )
+    assert plan["action"] == "merge"
+    assert plan["config"]["mcp"]["servers"]["a2a"]["transport"] == "streamable-http"
 
 
 def test_plan_bootstrap_removes_stale_when_disabled():
@@ -106,12 +122,72 @@ def test_plan_bootstrap_preserves_sibling_keys():
     )
     assert plan["config"]["mcp"]["servers"]["context7"]["command"] == "uvx"
     assert plan["config"]["mcp"]["servers"]["a2a"]["url"] == "http://127.0.0.1:18790/mcp"
+    assert plan["config"]["mcp"]["servers"]["a2a"]["transport"] == "streamable-http"
 
 
 def test_plan_bootstrap_tolerates_missing_mcp_block():
     plan = plan_bootstrap(True, {}, "http://127.0.0.1:18790/mcp")
     assert plan["action"] == "merge"
-    assert plan["config"]["mcp"]["servers"]["a2a"] == {"url": "http://127.0.0.1:18790/mcp"}
+    assert plan["config"]["mcp"]["servers"]["a2a"] == {
+        "url": "http://127.0.0.1:18790/mcp",
+        "transport": "streamable-http",
+    }
+
+
+def test_plan_bootstrap_yaml_writes_flat_mcp_servers_key():
+    """Hermes reads top-level ``mcp_servers`` — nested ``mcp.servers`` is ignored."""
+    plan = plan_bootstrap(
+        True,
+        {"model": {"provider": "openrouter"}},
+        "http://127.0.0.1:9119/mcp",
+        fmt="yaml",
+    )
+    assert plan["action"] == "merge"
+    assert plan["config"]["mcp_servers"]["a2a"] == {"url": "http://127.0.0.1:9119/mcp"}
+    # Hermes's MCP client picks streamable-http from the URL — no hint needed.
+    assert "transport" not in plan["config"]["mcp_servers"]["a2a"]
+    # Unrelated sections survive untouched.
+    assert plan["config"]["model"] == {"provider": "openrouter"}
+
+
+def test_plan_bootstrap_yaml_migrates_stale_nested_entry():
+    """Pre-fix hermes configs had the wrong key path — clean it up on next boot."""
+    plan = plan_bootstrap(
+        True,
+        {"mcp": {"servers": {"a2a": {"url": "http://127.0.0.1:9999/mcp"}}}},
+        "http://127.0.0.1:9119/mcp",
+        fmt="yaml",
+    )
+    assert plan["action"] == "merge"
+    assert plan["config"]["mcp_servers"]["a2a"]["url"] == "http://127.0.0.1:9119/mcp"
+    # Stale entry removed so hermes doesn't keep a dead pointer around.
+    assert "a2a" not in plan["config"].get("mcp", {}).get("servers", {})
+
+
+def test_plan_bootstrap_yaml_noops_when_already_flat_and_no_stale():
+    plan = plan_bootstrap(
+        True,
+        {"mcp_servers": {"a2a": {"url": "http://127.0.0.1:9119/mcp"}}},
+        "http://127.0.0.1:9119/mcp",
+        fmt="yaml",
+    )
+    assert plan["action"] == "noop"
+
+
+def test_plan_bootstrap_yaml_remove_cleans_both_paths():
+    plan = plan_bootstrap(
+        False,
+        {
+            "mcp_servers": {"a2a": {"url": "x"}, "keep": {"url": "y"}},
+            "mcp": {"servers": {"a2a": {"url": "legacy"}}},
+        },
+        None,
+        fmt="yaml",
+    )
+    assert plan["action"] == "remove"
+    assert "a2a" not in plan["config"]["mcp_servers"]
+    assert plan["config"]["mcp_servers"]["keep"] == {"url": "y"}
+    assert "a2a" not in plan["config"]["mcp"]["servers"]
 
 
 def test_run_bootstrap_skips_when_config_path_unset():
@@ -158,7 +234,10 @@ def test_run_bootstrap_creates_file_when_enabled_and_absent(tmp_path):
     assert r["ok"] is True
     assert r["action"] == "create"
     written = json.loads(config_path.read_text(encoding="utf-8"))
-    assert written["mcp"]["servers"]["a2a"]["url"] == "http://127.0.0.1:18790/mcp"
+    assert written["mcp"]["servers"]["a2a"] == {
+        "url": "http://127.0.0.1:18790/mcp",
+        "transport": "streamable-http",
+    }
 
 
 def test_run_bootstrap_noops_on_absent_file_when_disabled(tmp_path):
@@ -198,6 +277,7 @@ def test_run_bootstrap_merges_into_existing_config(tmp_path):
     assert written["gateway"]["port"] == 18789
     assert written["mcp"]["servers"]["context7"]["command"] == "uvx"
     assert written["mcp"]["servers"]["a2a"]["url"] == "http://127.0.0.1:18790/mcp"
+    assert written["mcp"]["servers"]["a2a"]["transport"] == "streamable-http"
 
 
 def test_run_bootstrap_removes_stale_entry_when_disabled(tmp_path):
@@ -256,6 +336,60 @@ def test_run_bootstrap_bails_when_port_missing(tmp_path):
     assert r["action"] == "skip"
     assert r["reason"] == "no-port"
     assert config_path.read_text(encoding="utf-8") == "{}"
+
+
+def test_run_bootstrap_yaml_writes_flat_mcp_servers(tmp_path):
+    """Hermes path: top-level ``mcp_servers`` is what the gateway reads."""
+    pytest.importorskip("yaml")
+    import yaml
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("model:\n  provider: openrouter\n", encoding="utf-8")
+    logger = CapturingLogger()
+    r = run_bootstrap(
+        env={
+            "A2A_SERVICE_MCP_CONFIG_PATH": str(config_path),
+            "A2A_SERVICE_MCP_CONFIG_FORMAT": "yaml",
+            "A2A_ENABLED": "true",
+            "A2A_SIDECAR_PORT": "9119",
+        },
+        logger=logger,
+    )
+    assert r["ok"] is True
+    assert r["action"] == "merge"
+    merged = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert merged["mcp_servers"]["a2a"]["url"] == "http://127.0.0.1:9119/mcp"
+    assert "transport" not in merged["mcp_servers"]["a2a"]
+    assert merged["model"] == {"provider": "openrouter"}
+
+
+def test_run_bootstrap_yaml_migrates_stale_nested(tmp_path):
+    """A pre-fix hermes config has ``mcp.servers.a2a`` — wipe it on next boot."""
+    pytest.importorskip("yaml")
+    import yaml
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump({
+            "model": {"provider": "openrouter"},
+            "mcp": {"servers": {"a2a": {"url": "http://127.0.0.1:9999/mcp"}}},
+        }),
+        encoding="utf-8",
+    )
+    logger = CapturingLogger()
+    r = run_bootstrap(
+        env={
+            "A2A_SERVICE_MCP_CONFIG_PATH": str(config_path),
+            "A2A_SERVICE_MCP_CONFIG_FORMAT": "yaml",
+            "A2A_ENABLED": "true",
+            "A2A_SIDECAR_PORT": "9119",
+        },
+        logger=logger,
+    )
+    assert r["ok"] is True
+    merged = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert merged["mcp_servers"]["a2a"]["url"] == "http://127.0.0.1:9119/mcp"
+    assert "a2a" not in merged.get("mcp", {}).get("servers", {})
 
 
 def test_run_bootstrap_is_idempotent(tmp_path):

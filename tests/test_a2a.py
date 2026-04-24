@@ -1856,8 +1856,11 @@ def test_hermes_adapter_extra_env_drives_bootstrap_merge_into_yaml(tmp_path):
     assert result["action"] in {"create", "merge"}
 
     merged = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    assert merged["mcp"]["servers"]["a2a"]["url"].startswith("http://127.0.0.1:")
-    assert merged["mcp"]["servers"]["a2a"]["url"].endswith("/mcp")
+    # Hermes reads top-level ``mcp_servers`` (``tools/mcp_tool.py::_load_mcp_config``).
+    # A nested ``mcp.servers`` block is silently ignored, so the bootstrap must
+    # write the flat key here — otherwise the writer-h LLM never sees a2a_call_peer.
+    assert merged["mcp_servers"]["a2a"]["url"].startswith("http://127.0.0.1:")
+    assert merged["mcp_servers"]["a2a"]["url"].endswith("/mcp")
     # Unrelated sections must survive the merge.
     assert merged["model"] == {"provider": "openrouter"}
     assert merged["api_server"] == {"host": "0.0.0.0"}
@@ -1905,6 +1908,9 @@ def test_openclaw_adapter_extra_env_drives_bootstrap_merge_into_json(tmp_path):
     merged = json.loads(config_path.read_text(encoding="utf-8"))
     assert merged["mcp"]["servers"]["a2a"]["url"].startswith("http://127.0.0.1:")
     assert merged["mcp"]["servers"]["a2a"]["url"].endswith("/mcp")
+    # OpenClaw defaults to SSE when ``transport`` is omitted; we serve
+    # streamable-http only, so the hint must be present (see bundles.md).
+    assert merged["mcp"]["servers"]["a2a"]["transport"] == "streamable-http"
     # Sibling sections untouched.
     assert merged["gateway"] == {"mode": "local"}
     assert merged["llm"] == {"provider": "openrouter"}
@@ -3914,10 +3920,14 @@ def test_hermes_bootstrap_build_mcp_url_shape():
 def test_hermes_bootstrap_plan_merges_when_enabled_and_absent():
     mod = _load_hermes_bootstrap_module()
     plan = mod.plan_bootstrap(
-        enabled=True, config={"model": {"provider": "openrouter"}}, url="http://127.0.0.1:9119/mcp"
+        enabled=True,
+        config={"model": {"provider": "openrouter"}},
+        url="http://127.0.0.1:9119/mcp",
+        fmt="yaml",
     )
     assert plan["action"] == "merge"
-    assert plan["config"]["mcp"]["servers"]["a2a"] == {"url": "http://127.0.0.1:9119/mcp"}
+    # Hermes uses the flat ``mcp_servers`` top-level key.
+    assert plan["config"]["mcp_servers"]["a2a"] == {"url": "http://127.0.0.1:9119/mcp"}
     assert plan["config"]["model"] == {"provider": "openrouter"}
 
 
@@ -3925,8 +3935,9 @@ def test_hermes_bootstrap_plan_noops_when_already_present():
     mod = _load_hermes_bootstrap_module()
     plan = mod.plan_bootstrap(
         enabled=True,
-        config={"mcp": {"servers": {"a2a": {"url": "http://127.0.0.1:9119/mcp"}}}},
+        config={"mcp_servers": {"a2a": {"url": "http://127.0.0.1:9119/mcp"}}},
         url="http://127.0.0.1:9119/mcp",
+        fmt="yaml",
     )
     assert plan["action"] == "noop"
 
@@ -3935,29 +3946,34 @@ def test_hermes_bootstrap_plan_rewrites_when_url_differs():
     mod = _load_hermes_bootstrap_module()
     plan = mod.plan_bootstrap(
         enabled=True,
-        config={"mcp": {"servers": {"a2a": {"url": "http://127.0.0.1:1/mcp"}}}},
+        config={"mcp_servers": {"a2a": {"url": "http://127.0.0.1:1/mcp"}}},
         url="http://127.0.0.1:9119/mcp",
+        fmt="yaml",
     )
     assert plan["action"] == "merge"
-    assert plan["config"]["mcp"]["servers"]["a2a"]["url"] == "http://127.0.0.1:9119/mcp"
+    assert plan["config"]["mcp_servers"]["a2a"]["url"] == "http://127.0.0.1:9119/mcp"
 
 
 def test_hermes_bootstrap_plan_removes_stale_entry_when_disabled():
     mod = _load_hermes_bootstrap_module()
     plan = mod.plan_bootstrap(
         enabled=False,
-        config={"mcp": {"servers": {"a2a": {"url": "x"}, "keep": {"url": "y"}}}},
+        config={"mcp_servers": {"a2a": {"url": "x"}, "keep": {"url": "y"}}},
         url=None,
+        fmt="yaml",
     )
     assert plan["action"] == "remove"
-    assert "a2a" not in plan["config"]["mcp"]["servers"]
-    assert plan["config"]["mcp"]["servers"]["keep"] == {"url": "y"}
+    assert "a2a" not in plan["config"]["mcp_servers"]
+    assert plan["config"]["mcp_servers"]["keep"] == {"url": "y"}
 
 
 def test_hermes_bootstrap_plan_noop_disabled_and_absent():
     mod = _load_hermes_bootstrap_module()
     plan = mod.plan_bootstrap(
-        enabled=False, config={"model": {"provider": "x"}}, url=None
+        enabled=False,
+        config={"model": {"provider": "x"}},
+        url=None,
+        fmt="yaml",
     )
     assert plan["action"] == "noop"
 
@@ -3979,7 +3995,7 @@ def test_hermes_bootstrap_runs_against_yaml_file(tmp_path):
 
     data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert data["model"]["provider"] == "openrouter"
-    assert data["mcp"]["servers"]["a2a"]["url"] == "http://127.0.0.1:9119/mcp"
+    assert data["mcp_servers"]["a2a"]["url"] == "http://127.0.0.1:9119/mcp"
 
 
 def test_hermes_bootstrap_creates_yaml_when_absent_and_enabled(tmp_path):

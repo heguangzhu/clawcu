@@ -4,6 +4,24 @@ Mirror of ``bootstrap.js`` on the Node side (a2a-design-4.md §P0-A). Shared
 between the Hermes and OpenClaw sidecars — supports both YAML (Hermes
 ``config.yaml``) and JSON (OpenClaw ``openclaw.json``).
 
+The two hosts disagree on the MCP config schema, so the entry shape is
+format-specific. Earlier revisions wrote the OpenClaw shape for both and
+the Hermes LLM therefore never saw ``a2a_call_peer`` as a tool. The gap is
+documented in review-3 §二-新 and fixed here:
+
+- **JSON / OpenClaw** — nested at ``mcp.servers.a2a`` with an explicit
+  ``"transport": "streamable-http"`` hint. OpenClaw's MCP bundle client
+  defaults to SSE when the field is omitted (``docs/cli/mcp.md``) and the
+  sidecar only serves streamable-http; without the hint the gateway logs
+  ``[bundle-mcp] SSE error: Non-200 status code (404)``.
+- **YAML / Hermes** — flat top-level ``mcp_servers.a2a``. Hermes reads
+  ``config.get("mcp_servers")`` (``tools/mcp_tool.py::_load_mcp_config``);
+  a nested ``mcp.servers`` block is simply ignored, so the LLM never sees
+  the tool.
+
+When migrating a config that still has the old, wrong-shape entry, we pop
+it on the next bootstrap so the operator doesn't need to hand-edit.
+
 Safe by construction: any parse / read / write failure logs a warning and
 returns without touching the file so the sidecar can still come up.
 
@@ -55,45 +73,94 @@ def _deep_get(obj: Any, keys) -> Any:
     return cur
 
 
-def _ensure_dict(parent: dict, key: str) -> dict:
-    val = parent.get(key)
-    if not isinstance(val, dict):
-        parent[key] = {}
-    return parent[key]
+def _set_at_path(obj: dict, keys, value) -> None:
+    cur = obj
+    for k in keys[:-1]:
+        nxt = cur.get(k)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[k] = nxt
+        cur = nxt
+    cur[keys[-1]] = value
 
 
-def plan_bootstrap(enabled: bool, config: Any, url: Optional[str]) -> dict:
+def _pop_at_path(obj: dict, keys) -> bool:
+    """Remove ``obj[keys[0]][keys[1]]...[keys[-1]]`` if it exists. Returns ``True`` when it did."""
+    cur = obj
+    for k in keys[:-1]:
+        if not isinstance(cur, dict):
+            return False
+        cur = cur.get(k)
+    if isinstance(cur, dict) and keys[-1] in cur:
+        cur.pop(keys[-1], None)
+        return True
+    return False
+
+
+def _primary_path(fmt: str) -> list[str]:
+    """Where this format wants the ``a2a`` MCP entry."""
+    if fmt == "yaml":
+        # Hermes reads flat top-level ``mcp_servers``.
+        return ["mcp_servers", MCP_ENTRY_NAME]
+    # OpenClaw reads nested ``mcp.servers``.
+    return ["mcp", "servers", MCP_ENTRY_NAME]
+
+
+def _legacy_paths(fmt: str) -> list[list[str]]:
+    """Alternate paths to clean up on the next write.
+
+    Early releases wrote the OpenClaw shape into Hermes YAML too, leaving a
+    dead ``mcp.servers.a2a`` block that Hermes ignores. Migrate silently.
+    """
+    if fmt == "yaml":
+        return [["mcp", "servers", MCP_ENTRY_NAME]]
+    return []
+
+
+def _desired_entry(fmt: str, url: Optional[str]) -> dict:
+    if fmt == "yaml":
+        # Hermes's MCP client auto-selects streamable-http from a bare ``url``.
+        return {"url": url}
+    # OpenClaw defaults to SSE when ``transport`` is omitted; be explicit.
+    return {"url": url, "transport": "streamable-http"}
+
+
+def plan_bootstrap(
+    enabled: bool,
+    config: Any,
+    url: Optional[str],
+    fmt: str = "json",
+) -> dict:
     """Pure function: compute the next config and an action label.
 
     Returns ``{action, config, reason?}`` where ``action`` is one of
-    ``merge`` / ``remove`` / ``noop``. Accepts positional or keyword args so
-    both the Hermes and OpenClaw test suites (which use different calling
-    styles) keep working.
+    ``merge`` / ``remove`` / ``noop``. ``fmt`` selects the target schema —
+    ``"yaml"`` for Hermes config.yaml, ``"json"`` (default) for OpenClaw
+    openclaw.json.
     """
     safe_config = config if isinstance(config, dict) else {}
-    current = _deep_get(safe_config, ["mcp", "servers", MCP_ENTRY_NAME])
+    primary = _primary_path(fmt)
+    legacy = _legacy_paths(fmt)
+    current = _deep_get(safe_config, primary)
+    has_legacy = any(_deep_get(safe_config, p) is not None for p in legacy)
 
     if enabled:
-        desired = {"url": url}
-        same = (
-            isinstance(current, dict)
-            and current.get("url") == desired["url"]
-            and len(current) == 1
-        )
-        if same:
+        desired = _desired_entry(fmt, url)
+        already_exact = isinstance(current, dict) and current == desired
+        if already_exact and not has_legacy:
             return {"action": "noop", "reason": "already-present", "config": safe_config}
         nxt = copy.deepcopy(safe_config)
-        mcp = _ensure_dict(nxt, "mcp")
-        servers = _ensure_dict(mcp, "servers")
-        servers[MCP_ENTRY_NAME] = desired
+        _set_at_path(nxt, primary, desired)
+        for p in legacy:
+            _pop_at_path(nxt, p)
         return {"action": "merge", "config": nxt}
 
-    if current is None:
+    if current is None and not has_legacy:
         return {"action": "noop", "reason": "absent", "config": safe_config}
     nxt = copy.deepcopy(safe_config)
-    servers = _deep_get(nxt, ["mcp", "servers"])
-    if isinstance(servers, dict):
-        servers.pop(MCP_ENTRY_NAME, None)
+    _pop_at_path(nxt, primary)
+    for p in legacy:
+        _pop_at_path(nxt, p)
     return {"action": "remove", "config": nxt}
 
 
@@ -217,7 +284,8 @@ def run_bootstrap(env: Optional[Mapping[str, str]] = None, logger=None) -> dict:
         return {"ok": False, "action": "error"}
 
     if not config_path.exists() and enabled:
-        nxt = {"mcp": {"servers": {MCP_ENTRY_NAME: {"url": url}}}}
+        nxt: dict = {}
+        _set_at_path(nxt, _primary_path(fmt), _desired_entry(fmt, url))
         try:
             _atomic_write(config_path, nxt, fmt)
             _log_info(
@@ -229,7 +297,7 @@ def run_bootstrap(env: Optional[Mapping[str, str]] = None, logger=None) -> dict:
             _log_warn(log, f"[sidecar:bootstrap] failed to create {config_path}: {exc}")
             return {"ok": False, "action": "error", "error": str(exc)}
 
-    plan = plan_bootstrap(enabled, config, url)
+    plan = plan_bootstrap(enabled, config, url, fmt=fmt)
     if plan["action"] == "noop":
         _log_info(
             log,
