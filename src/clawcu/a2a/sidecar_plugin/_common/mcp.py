@@ -24,7 +24,9 @@ unchanged regardless of whether its local parameter is named
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Mapping, Optional
+
+from _common.http_response import write_json_response
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
 TOOL_NAME = "a2a_call_peer"
@@ -64,6 +66,34 @@ class UpstreamError(Exception):
         super().__init__(message)
         self.http_status = http_status
         self.peer_status = peer_status
+
+
+def write_upstream_error_response(
+    handler: Any,
+    exc: UpstreamError,
+    *,
+    request_id: str,
+    rid_headers: Mapping[str, str],
+    default_status: int = 502,
+) -> None:
+    """Write the uniform ``{error, request_id[, peer_status]}`` envelope
+    both sidecars emit when lookup_peer / forward_to_peer raises.
+
+    ``default_status`` is the status used when ``exc.http_status`` is
+    missing/falsy — 503 for lookup-phase failures (registry unreachable),
+    502 for forward-phase failures (peer unreachable). ``peer_status``
+    is added to the body only when the exception carries one so the
+    envelope stays flat for simple upstream failures.
+    """
+    body: Dict[str, Any] = {"error": str(exc), "request_id": request_id}
+    if exc.peer_status is not None:
+        body["peer_status"] = exc.peer_status
+    write_json_response(
+        handler,
+        exc.http_status or default_status,
+        body,
+        extra_headers=rid_headers,
+    )
 
 
 def format_peer_line(peer: Dict[str, Any], *, include_role: bool = False) -> str:

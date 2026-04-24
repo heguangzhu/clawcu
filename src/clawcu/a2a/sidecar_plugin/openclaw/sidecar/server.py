@@ -65,6 +65,7 @@ from _common.mcp import (  # noqa: E402
     UpstreamError,
     handle_mcp_request,
     json_rpc_error,
+    write_upstream_error_response,
 )
 from _common.outbound_limit import (  # noqa: E402
     create_outbound_limiter,
@@ -530,7 +531,9 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 logger.warn(
                     f"[sidecar:{self_name}] a2a.outbound lookup-failed request_id={request_id} to={to} status={status}"
                 )
-                return write_json_response(self, status, {"error": str(exc), "request_id": request_id}, rid_headers)
+                return write_upstream_error_response(
+                    self, exc, request_id=request_id, rid_headers=rid_headers, default_status=503
+                )
             except Exception as exc:
                 logger.warn(
                     f"[sidecar:{self_name}] a2a.outbound lookup-failed request_id={request_id} to={to} status=503"
@@ -554,10 +557,9 @@ def _make_handler_class(ctx: Dict[str, Any]):
                     f"[sidecar:{self_name}] a2a.outbound forward-failed request_id={request_id} to={to} "
                     f"status={status} peer_status={exc.peer_status if exc.peer_status is not None else '-'}"
                 )
-                payload: Dict[str, Any] = {"error": str(exc), "request_id": request_id}
-                if exc.peer_status is not None:
-                    payload["peer_status"] = exc.peer_status
-                return write_json_response(self, status, payload, rid_headers)
+                return write_upstream_error_response(
+                    self, exc, request_id=request_id, rid_headers=rid_headers, default_status=502
+                )
             except Exception as exc:
                 logger.warn(
                     f"[sidecar:{self_name}] a2a.outbound forward-failed request_id={request_id} to={to} status=502"

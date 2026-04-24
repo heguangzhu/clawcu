@@ -161,6 +161,7 @@ from _common.mcp import (  # noqa: E402
     TOOL_NAME as MCP_TOOL_NAME,
     handle_mcp_request as _shared_handle_mcp_request,
     tool_descriptor as mcp_tool_descriptor,
+    write_upstream_error_response,
 )
 from _common.ratelimit import (  # noqa: E402
     RateLimiter as PeerRateLimiter,
@@ -781,11 +782,8 @@ def build_handler(
                     to,
                     e.http_status,
                 )
-                write_json_response(
-                    self,
-                    e.http_status,
-                    {"error": str(e), "request_id": request_id},
-                    extra_headers=rid_headers,
+                write_upstream_error_response(
+                    self, e, request_id=request_id, rid_headers=rid_headers, default_status=503
                 )
                 return
             try:
@@ -807,10 +805,9 @@ def build_handler(
                     e.http_status,
                     e.peer_status,
                 )
-                body: dict[str, Any] = {"error": str(e), "request_id": request_id}
-                if e.peer_status is not None:
-                    body["peer_status"] = e.peer_status
-                write_json_response(self, e.http_status, body, extra_headers=rid_headers)
+                write_upstream_error_response(
+                    self, e, request_id=request_id, rid_headers=rid_headers, default_status=502
+                )
                 return
 
             reply = peer_resp.get("reply") if isinstance(peer_resp, dict) else None
