@@ -77,6 +77,7 @@ from _common.outbound_limit import (  # noqa: E402
 from _common.protocol import (  # noqa: E402
     REQUEST_ID_HEADER,
     hop_budget_from_env,
+    hop_prelude as _shared_hop_prelude,
     read_hop_header,
     read_or_mint_request_id,
 )
@@ -366,35 +367,18 @@ def _make_handler_class(ctx: Dict[str, Any]):
                 peer_cache_holder["cache"] = create_peer_cache(registry_url=registry_url, timeout_ms=5000)
             return peer_cache_holder["cache"]
 
-    def _hop_prelude(handler, *, route: str) -> Tuple[int, str, Dict[str, str], bool]:
-        """Request-ID mint + hop-budget check shared by /a2a/send and /a2a/outbound.
-
-        Returns ``(incoming_hop, request_id, rid_headers, refused)``. When
-        ``refused`` is True the 508 response has already been written and
-        the caller's next line is just ``return``. The incoming hop count
-        comes back too because /a2a/outbound forwards ``hop+1`` on the
-        outgoing peer POST and both handlers include it in their accepted/
-        begin log lines. Pulled out because the prelude was a 12-line copy
-        at the top of each handler — only the ``route`` tag differed.
-        """
-        incoming_hop = read_hop_header(handler.headers)
-        request_id = read_or_mint_request_id(handler.headers)
-        rid_headers = {REQUEST_ID_HEADER: request_id}
-        if incoming_hop < A2A_HOP_BUDGET:
-            return incoming_hop, request_id, rid_headers, False
+    def _on_hop_refused(route: str, request_id: str, hop: int, budget: int) -> None:
         logger.warn(
-            f"[sidecar:{self_name}] {route} refused request_id={request_id} hop={incoming_hop} budget={A2A_HOP_BUDGET}"
+            f"[sidecar:{self_name}] {route} refused request_id={request_id} hop={hop} budget={budget}"
         )
-        write_json_response(
+
+    def _hop_prelude(handler, *, route: str) -> Tuple[int, str, Dict[str, str], bool]:
+        return _shared_hop_prelude(
             handler,
-            508,
-            {
-                "error": f"hop budget exceeded (hop={incoming_hop}, budget={A2A_HOP_BUDGET})",
-                "request_id": request_id,
-            },
-            rid_headers,
+            route=route,
+            budget=A2A_HOP_BUDGET,
+            on_refused=_on_hop_refused,
         )
-        return incoming_hop, request_id, rid_headers, True
 
     class Handler(http.server.BaseHTTPRequestHandler):
         # Silence BaseHTTPRequestHandler's stderr default — we log ourselves.

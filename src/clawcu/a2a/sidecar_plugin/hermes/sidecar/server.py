@@ -146,6 +146,7 @@ from _common.outbound_limit import (  # noqa: E402
 from _common.http_response import write_json_response  # noqa: E402
 from _common.protocol import (  # noqa: E402
     REQUEST_ID_HEADER,
+    hop_prelude as _shared_hop_prelude,
     read_hop_header,
     read_or_mint_request_id,
 )
@@ -298,6 +299,16 @@ from inbound_limits import (  # noqa: E402
 from _common.payload import write_bad_payload_response  # noqa: E402
 
 
+def _on_hop_refused(route: str, request_id: str, hop: int, budget: int) -> None:
+    log.warning(
+        "%s refused request_id=%s hop=%s budget=%s",
+        route,
+        request_id,
+        hop,
+        budget,
+    )
+
+
 def _hop_prelude(
     handler: BaseHTTPRequestHandler,
     *,
@@ -305,39 +316,14 @@ def _hop_prelude(
 ) -> tuple[int, str, dict[str, str], bool]:
     """Parse hop + request_id headers; refuse with 508 if the hop budget is spent.
 
-    Shared prelude for ``/a2a/send`` and ``/a2a/outbound``. On refusal, writes
-    the 508 response itself (with the caller's ``X-A2A-Request-Id`` echoed
-    back) and returns ``refused=True`` so the caller just ``return``s.
-
-    ``route`` is the dot-notation label that appears in the refusal log line
-    (``a2a.send``, ``a2a.outbound``) — matches the cadence of the rest of the
-    sidecar's log messages so operators can grep uniformly.
+    Thin wrapper around :func:`_common.protocol.hop_prelude` that injects
+    Hermes' stdlib-format log line on refusal. Kept as a named function so
+    call sites stay short (``_hop_prelude(self, route="a2a.send")``) and
+    tests that stub ``mod._hop_prelude`` keep working.
     """
-    incoming_hop = read_hop_header(handler.headers)
-    budget = _hop_budget()
-    request_id = read_or_mint_request_id(handler.headers)
-    rid_headers = {_REQUEST_ID_HEADER: request_id}
-    if incoming_hop >= budget:
-        log.warning(
-            "%s refused request_id=%s hop=%s budget=%s",
-            route,
-            request_id,
-            incoming_hop,
-            budget,
-        )
-        write_json_response(
-            handler,
-            508,
-            {
-                "error": (
-                    f"hop budget exceeded (hop={incoming_hop}, budget={budget})"
-                ),
-                "request_id": request_id,
-            },
-            extra_headers=rid_headers,
-        )
-        return incoming_hop, request_id, rid_headers, True
-    return incoming_hop, request_id, rid_headers, False
+    return _shared_hop_prelude(
+        handler, route=route, budget=_hop_budget(), on_refused=_on_hop_refused
+    )
 
 
 def _resolve_outbound_registry_url(

@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import os
 import uuid
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
+
+from _common.http_response import write_json_response
 
 REQUEST_ID_HEADER = "X-A2A-Request-Id"
 HOP_HEADER = "X-A2A-Hop"
@@ -114,11 +116,61 @@ def read_hop_header(headers: Any) -> int:
     return int(n)
 
 
+HopRefusedLogger = Callable[[str, str, int, int], None]
+
+
+def hop_prelude(
+    handler: Any,
+    *,
+    route: str,
+    budget: Optional[int] = None,
+    on_refused: Optional[HopRefusedLogger] = None,
+) -> tuple[int, str, dict[str, str], bool]:
+    """Shared ``/a2a/send`` + ``/a2a/outbound`` prelude: mint the request
+    ID, read the hop counter, and refuse with 508 when the hop budget is
+    spent.
+
+    Returns ``(incoming_hop, request_id, rid_headers, refused)``. When
+    ``refused`` is ``True`` the 508 envelope has already been written
+    (with the caller's ``X-A2A-Request-Id`` echoed back) and the caller's
+    next line is just ``return``. The incoming hop count is returned in
+    both paths because ``/a2a/outbound`` forwards ``hop+1`` on the
+    outgoing POST and both handlers log it.
+
+    ``budget`` defaults to :func:`hop_budget_from_env`, so tests that
+    monkey-patch ``A2A_HOP_BUDGET`` are honored per-call without the
+    caller having to re-resolve it. ``on_refused`` lets the two sidecars
+    keep their distinct log formats (``[sidecar:<name>] …`` vs stdlib
+    ``%-format``) without the prelude having to know about either.
+    """
+    budget_v = hop_budget_from_env() if budget is None else budget
+    incoming_hop = read_hop_header(handler.headers)
+    request_id = read_or_mint_request_id(handler.headers)
+    rid_headers = {REQUEST_ID_HEADER: request_id}
+    if incoming_hop >= budget_v:
+        if on_refused is not None:
+            on_refused(route, request_id, incoming_hop, budget_v)
+        write_json_response(
+            handler,
+            508,
+            {
+                "error": (
+                    f"hop budget exceeded (hop={incoming_hop}, budget={budget_v})"
+                ),
+                "request_id": request_id,
+            },
+            extra_headers=rid_headers,
+        )
+        return incoming_hop, request_id, rid_headers, True
+    return incoming_hop, request_id, rid_headers, False
+
+
 __all__ = [
     "REQUEST_ID_HEADER",
     "HOP_HEADER",
     "DEFAULT_HOP_BUDGET",
     "hop_budget_from_env",
+    "hop_prelude",
     "looks_like_request_id",
     "read_or_mint_request_id",
     "read_hop_header",
