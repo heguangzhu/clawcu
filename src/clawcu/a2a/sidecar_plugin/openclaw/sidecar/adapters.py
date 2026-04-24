@@ -28,17 +28,50 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
+import time
 from typing import Any, Dict
 
 OPENCLAW_CONFIG_PATH = "/home/node/.openclaw/openclaw.json"
 OPENCLAW_AUTH_PATH = "/home/node/.openclaw/auth.json"
 
+# Review-1 §10 / review-2 §7: ``read_gateway_auth`` runs on every inbound
+# ``/a2a/send``. Without a cache the host adapter forks ``docker exec
+# <container> cat openclaw.json`` for each peer message — tens of
+# milliseconds of subprocess setup in the latency path, and the kind of
+# thing that rots into a bottleneck if a peer pushes chat traffic.
+# A small TTL cache (default 60s, tunable via ``A2A_HOST_ADAPTER_TTL_S``)
+# drops the subprocess out of steady-state while keeping config-rotation
+# cheap — the operator just waits one TTL after editing ``openclaw.json``.
+_DEFAULT_HOST_ADAPTER_TTL_S = 60.0
+
+
+def _host_adapter_ttl_s() -> float:
+    raw = os.environ.get("A2A_HOST_ADAPTER_TTL_S")
+    if raw is None or raw.strip() == "":
+        return _DEFAULT_HOST_ADAPTER_TTL_S
+    try:
+        v = float(raw)
+    except ValueError:
+        return _DEFAULT_HOST_ADAPTER_TTL_S
+    return v if v >= 0 else _DEFAULT_HOST_ADAPTER_TTL_S
+
 
 class HostAdapter:
     mode = "host"
 
-    def __init__(self, container: str) -> None:
+    def __init__(
+        self,
+        container: str,
+        *,
+        ttl_s: float | None = None,
+        now: Any = time.monotonic,
+    ) -> None:
         self.container = container
+        self._ttl_s = _host_adapter_ttl_s() if ttl_s is None else ttl_s
+        self._now = now
+        self._cache: Dict[tuple, tuple[float, Any]] = {}
+        self._lock = threading.Lock()
 
     def _exec(self, args):
         try:
@@ -54,11 +87,30 @@ class HostAdapter:
         except Exception:
             return None
 
+    def _cached_exec(self, key: tuple, args: list[str]):
+        if self._ttl_s <= 0:
+            return self._exec(args)
+        with self._lock:
+            entry = self._cache.get(key)
+            if entry is not None and self._now() < entry[0]:
+                return entry[1]
+        value = self._exec(args)
+        with self._lock:
+            self._cache[key] = (self._now() + self._ttl_s, value)
+        return value
+
+    def invalidate_cache(self) -> None:
+        """Drop the ``read_file``/``get_env`` cache. Useful for tests and for
+        an operator-triggered config reload — subsequent reads pay the
+        subprocess cost once to refresh."""
+        with self._lock:
+            self._cache.clear()
+
     def read_file(self, path: str):
-        return self._exec(["cat", path])
+        return self._cached_exec(("file", path), ["cat", path])
 
     def get_env(self, name: str):
-        v = self._exec(["printenv", name])
+        v = self._cached_exec(("env", name), ["printenv", name])
         if v is None:
             return None
         v = v.strip()
