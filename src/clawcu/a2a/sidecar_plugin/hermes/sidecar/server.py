@@ -520,9 +520,14 @@ def build_handler(
             if payload is None:
                 return
 
-            peer_from = str(payload.get("from") or "")
             peer_to = str(payload.get("to") or "")
+            # Review-2 §4: ``from`` is the peer identity used for rate-limit
+            # keying, log correlation, and thread-store sharding. Hermes
+            # used to fall back to ``""`` when missing (and openclaw always
+            # rejected); the two sidecars now enforce the same wire-level
+            # contract — ``from`` is required, non-empty, string.
             try:
+                peer_from = require_non_empty_string(payload, "from")
                 message = require_non_empty_string(payload, "message")
                 thread_id = parse_optional_non_empty_string(payload, "thread_id")
             except _BadPayload as exc:
