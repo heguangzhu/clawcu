@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hmac
 import json
 import logging
+import os
 import threading
 import time
 import urllib.error
@@ -218,12 +220,50 @@ def make_cards_provider(
     return provider
 
 
-def make_registry_handler(provider: CardProvider) -> type[BaseHTTPRequestHandler]:
+def _read_registry_token(env_override: str | None = None) -> str | None:
+    """Optional bearer token for ``/agents*`` reads.
+
+    Review-1 §5 / review-2 §6: the registry's ``GET /agents`` list is
+    open by default. ``A2A_REGISTRY_TOKEN`` is the opt-in Bearer-token
+    gate — unset keeps the pre-existing open behavior, set enforces
+    ``Authorization: Bearer <token>`` on every request. Deliberately
+    not defaulted on: migrating local dev-box setups should be the
+    operator's call, not a silent bump.
+    """
+    raw = env_override if env_override is not None else os.environ.get("A2A_REGISTRY_TOKEN")
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    return stripped or None
+
+
+def _check_bearer(headers: Any, expected: str) -> bool:
+    raw = headers.get("Authorization") if hasattr(headers, "get") else None
+    if not isinstance(raw, str):
+        return False
+    prefix = "Bearer "
+    if not raw.startswith(prefix):
+        return False
+    return hmac.compare_digest(raw[len(prefix):].strip(), expected)
+
+
+def make_registry_handler(
+    provider: CardProvider,
+    *,
+    token: str | None = None,
+) -> type[BaseHTTPRequestHandler]:
+    required_token = token if token is not None else _read_registry_token()
+
     class RegistryHandler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args) -> None:  # noqa: A002
             return
 
         def do_GET(self) -> None:  # noqa: N802
+            if required_token is not None and not _check_bearer(
+                self.headers, required_token
+            ):
+                _write_json(self, 401, {"error": "unauthorized"})
+                return
             path = self.path.split("?", 1)[0].rstrip("/") or "/"
             if path == "/agents":
                 cards = [c.to_dict() for c in provider()]
@@ -247,8 +287,9 @@ def build_registry_server(
     *,
     host: str = "127.0.0.1",
     port: int = 9100,
+    token: str | None = None,
 ) -> ThreadingHTTPServer:
-    handler = make_registry_handler(provider)
+    handler = make_registry_handler(provider, token=token)
     return ThreadingHTTPServer((host, port), handler)
 
 
@@ -257,9 +298,10 @@ def serve_registry_forever(
     *,
     host: str = "127.0.0.1",
     port: int = 9100,
+    token: str | None = None,
     on_ready: Callable[[ThreadingHTTPServer], None] | None = None,
 ) -> None:
-    server = build_registry_server(provider, host=host, port=port)
+    server = build_registry_server(provider, host=host, port=port, token=token)
     if on_ready is not None:
         on_ready(server)
     try:
@@ -273,8 +315,9 @@ def run_registry_in_thread(
     *,
     host: str = "127.0.0.1",
     port: int = 0,
+    token: str | None = None,
 ) -> tuple[ThreadingHTTPServer, threading.Thread]:
-    server = build_registry_server(provider, host=host, port=port)
+    server = build_registry_server(provider, host=host, port=port, token=token)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server, thread
