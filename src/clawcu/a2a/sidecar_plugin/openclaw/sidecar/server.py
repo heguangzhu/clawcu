@@ -64,7 +64,9 @@ from _common.mcp import (  # noqa: E402
     ERR_PARSE as MCP_ERR_PARSE,
     UpstreamError,
     handle_mcp_request,
+    is_tool_desc_static,
     json_rpc_error,
+    tool_desc_include_role,
     write_upstream_error_response,
 )
 from _common.outbound_limit import (  # noqa: E402
@@ -565,13 +567,8 @@ def _make_handler_class(ctx: Dict[str, Any]):
             registry_url = default_registry_url(os.environ)
             method = body.get("method") if isinstance(body, dict) else None
             logger.info(f"[sidecar:{self_name}] mcp.request request_id={request_id} method={method}")
-            cache = _ensure_peer_cache(registry_url)
-
-            list_peers = None
-            if os.environ.get("A2A_TOOL_DESC_MODE") != "static":
-                list_peers = cache.get
-
-            include_role = str(os.environ.get("A2A_TOOL_DESC_INCLUDE_ROLE") or "").lower() == "true"
+            list_peers = None if is_tool_desc_static() else _ensure_peer_cache(registry_url).get
+            include_role = tool_desc_include_role()
 
             response = handle_mcp_request(
                 body,

@@ -161,6 +161,8 @@ from _common.mcp import (  # noqa: E402
     ERR_PARSE as MCP_ERR_PARSE,
     MCP_PROTOCOL_VERSION,
     TOOL_NAME as MCP_TOOL_NAME,
+    is_tool_desc_static,
+    tool_desc_include_role,
     handle_mcp_request as _shared_handle_mcp_request,
     tool_descriptor as mcp_tool_descriptor,
     write_upstream_error_response,
@@ -669,12 +671,9 @@ def build_handler(
                 request_id,
                 (payload or {}).get("method") if isinstance(payload, dict) else None,
             )
-            _list_peers_fn: Any = None
-            if (
-                peer_cache is not None
-                and os.environ.get("A2A_TOOL_DESC_MODE") != "static"
-            ):
-                _list_peers_fn = peer_cache.get
+            _list_peers_fn: Any = (
+                peer_cache.get if peer_cache is not None and not is_tool_desc_static() else None
+            )
             response = handle_mcp_request(
                 payload,
                 self_name=cfg.self_name,
@@ -684,9 +683,7 @@ def build_handler(
                 plugin_version=os.environ.get("CLAWCU_PLUGIN_VERSION", "unknown"),
                 outbound_limiter=outbound_limiter,
                 list_peers_fn=_list_peers_fn,
-                include_role=(
-                    os.environ.get("A2A_TOOL_DESC_INCLUDE_ROLE", "").lower() == "true"
-                ),
+                include_role=tool_desc_include_role(),
             )
             write_json_response(self, 200, response, extra_headers=rid_headers)
 

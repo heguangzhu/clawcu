@@ -24,6 +24,7 @@ unchanged regardless of whether its local parameter is named
 
 from __future__ import annotations
 
+import os
 from typing import Any, Callable, Dict, Mapping, Optional
 
 from _common.http_response import write_json_response
@@ -94,6 +95,31 @@ def write_upstream_error_response(
         body,
         extra_headers=rid_headers,
     )
+
+
+def is_tool_desc_static(env: Optional[Mapping[str, str]] = None) -> bool:
+    """Return ``True`` when the operator has forced the static tool description.
+
+    ``A2A_TOOL_DESC_MODE=static`` opts out of the peer-list injection into
+    the MCP tool description (a2a-design-5.md §P1-H): tests or deployments
+    with a flaky registry prefer the baked-in description over a cache
+    miss stampede. Both sidecars gate ``list_peers_fn`` on this flag, so
+    one parser keeps the semantics aligned.
+    """
+    source = env if env is not None else os.environ
+    return source.get("A2A_TOOL_DESC_MODE") == "static"
+
+
+def tool_desc_include_role(env: Optional[Mapping[str, str]] = None) -> bool:
+    """Return ``True`` when peer lines in the tool description should
+    include ``role`` next to ``name``.
+
+    Opt-in via ``A2A_TOOL_DESC_INCLUDE_ROLE=true`` (case-insensitive, with
+    surrounding whitespace tolerated via the ``or ""`` guard). Default off
+    to keep the baseline description terse.
+    """
+    source = env if env is not None else os.environ
+    return str(source.get("A2A_TOOL_DESC_INCLUDE_ROLE") or "").strip().lower() == "true"
 
 
 def format_peer_line(peer: Dict[str, Any], *, include_role: bool = False) -> str:
@@ -416,7 +442,9 @@ __all__ = [
     "UpstreamError",
     "format_peer_line",
     "format_peer_summary",
+    "is_tool_desc_static",
     "tool_descriptor",
+    "tool_desc_include_role",
     "json_rpc_result",
     "json_rpc_error",
     "handle_mcp_request",
