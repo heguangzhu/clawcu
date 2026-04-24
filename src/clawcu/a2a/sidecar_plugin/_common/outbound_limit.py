@@ -144,17 +144,25 @@ def create_outbound_limiter(
 
 
 class SweepTimer:
-    """Best-effort periodic sweep. Daemon thread; dies with the process."""
+    """Best-effort periodic sweep. Daemon thread; dies with the process.
+
+    ``stop_event`` lets callers wire in an externally-owned
+    :class:`threading.Event` (hermes needs this so a caller that only
+    keeps the underlying ``Thread`` can still halt the loop via
+    ``event.set()``). When absent a fresh internal event is used and
+    :meth:`stop` is the only shutdown path.
+    """
 
     def __init__(
         self,
         limiter: OutboundLimiter,
         interval_ms: int,
         logger=None,
+        stop_event: Optional[threading.Event] = None,
     ) -> None:
         self.limiter = limiter
         self.interval_s = interval_ms / 1000.0
-        self._stop = threading.Event()
+        self._stop = stop_event if stop_event is not None else threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._logger = logger
 
@@ -211,22 +219,14 @@ def create_sweep_thread(
     stop_event: Optional[threading.Event] = None,
 ) -> Optional[threading.Thread]:
     """Legacy entry point for the Hermes sidecar that wanted a bare Thread
-    with a caller-supplied stop_event. Implemented on top of SweepTimer for
-    the common path; returns the underlying Thread when interval > 0 so
-    hermes tests that inspect ``Thread.is_alive()`` still work.
+    with a caller-supplied stop_event. Delegates to :class:`SweepTimer` and
+    surfaces its underlying Thread so callers that inspect
+    ``Thread.is_alive()`` still work.
     """
     if interval_ms <= 0 or limiter is None or not hasattr(limiter, "sweep"):
         return None
-    event = stop_event if stop_event is not None else threading.Event()
-    interval_s = interval_ms / 1000.0
-
-    def _loop() -> None:
-        while not event.wait(interval_s):
-            try:
-                limiter.sweep()
-            except Exception as exc:
-                _log.warning("outbound-sweep failed: %s", exc)
-
-    t = threading.Thread(target=_loop, name="a2a-outbound-sweep", daemon=True)
-    t.start()
-    return t
+    timer = SweepTimer(
+        limiter=limiter, interval_ms=interval_ms, stop_event=stop_event
+    )
+    timer.start()
+    return timer._thread
