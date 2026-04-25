@@ -101,3 +101,51 @@ def test_apply_overrides_returns_new_instance_when_changed() -> None:
     out = apply_overrides(p, primary="m2", fallbacks=None)
     assert out is not p
     assert p.default_model_id == "m1"  # original unchanged
+
+
+# -- hermes provider registry -------------------------------------------
+
+from clawcu.hermes.providers import (  # noqa: E402  (test-grouping)
+    HermesProviderInfo,
+    PROVIDER_REGISTRY,
+    info_for,
+)
+
+
+def test_registry_kimi_coding_curated_entry() -> None:
+    info = info_for("kimi-coding")
+    assert isinstance(info, HermesProviderInfo)
+    assert info.name == "kimi-coding"
+    assert info.auth_type == "api_key"
+    assert info.api_key_env_var == "KIMI_API_KEY"
+    assert info.inference_base_url == "https://api.moonshot.ai/v1"
+    assert info.base_url_env_var == "KIMI_BASE_URL"
+
+
+def test_registry_openai_codex_is_oauth() -> None:
+    info = info_for("openai-codex")
+    assert info.auth_type == "oauth_external"
+    assert info.api_key_env_var is None
+    assert info.inference_base_url == "https://chatgpt.com/backend-api/codex"
+
+
+def test_registry_unknown_provider_derives_env_var() -> None:
+    info = info_for("my-custom")
+    assert info.auth_type == "api_key"
+    assert info.api_key_env_var == "MY_CUSTOM_API_KEY"
+    assert info.inference_base_url is None
+
+
+def test_registry_unknown_with_only_punctuation_raises() -> None:
+    with pytest.raises(UnknownProviderError):
+        info_for("---")
+
+
+def test_registry_includes_full_known_set() -> None:
+    expected = {
+        "nous", "openai-codex", "qwen-oauth", "copilot", "copilot-acp",
+        "gemini", "zai", "kimi-coding", "minimax", "anthropic", "alibaba",
+        "minimax-cn", "deepseek", "ai-gateway", "opencode-zen",
+        "opencode-go", "kilocode", "huggingface",
+    }
+    assert expected.issubset(set(PROVIDER_REGISTRY))
