@@ -391,58 +391,26 @@ class ClawCUService:
     ) -> dict[str, object]:
         """Compute an apply_provider plan without touching disk.
 
-        Returns the provider/instance/agent, the runtime dir the adapter
-        would write under, the file list that would be rewritten, and the
-        projected env key + env file path when ``persist`` is requested.
-        Pure read — no files are modified.
+        Mirrors apply_provider's flow but with dry_run=True on the
+        destination adapter, so the plan reflects what *will* be written
+        — including the cross-service translation case.
         """
+        from clawcu.core.provider_models import apply_overrides
+
         record = self.store.load_record(instance)
-        service_name, provider_name = self._resolve_provider_ref(
-            provider, target_service=record.service
+        src_service, provider_name = self._resolve_provider_ref(
+            provider, target_service=record.service,
         )
-        bundle = self.store.load_provider_bundle(service_name, provider_name)
-        adapter = self.adapter_for_record(record)
-        agent_name = (agent or "main").strip() or "main"
-
-        if service_name == "openclaw":
-            runtime_dir = Path(record.datadir) / "agents" / agent_name / "agent"
-            writes = [
-                str(runtime_dir / "auth-profiles.json"),
-                str(runtime_dir / "models.json"),
-                str(Path(record.datadir) / "openclaw.json"),
-            ]
-        else:
-            # Hermes writes per-agent profile files under the instance home.
-            runtime_dir = Path(record.datadir)
-            writes = [str(runtime_dir / f"profiles-{agent_name}.yaml")]
-
-        env_key = None
-        env_path = None
-        if persist:
-            try:
-                api_key = self._provider_bundle_api_key(bundle)
-                if isinstance(api_key, str) and api_key.strip():
-                    env_key = self._provider_env_key(provider_name)
-            except Exception:
-                env_key = None
-            try:
-                env_path = str(adapter.env_path(self, record))
-            except Exception:
-                env_path = None
-
-        return {
-            "provider": provider_name,
-            "service": service_name,
-            "instance": record.name,
-            "agent": agent_name,
-            "runtime_dir": str(runtime_dir),
-            "writes": writes,
-            "persist": bool(persist),
-            "env_key": env_key or "-",
-            "env_path": env_path or "-",
-            "primary": primary or "-",
-            "fallbacks": ", ".join(fallbacks) if fallbacks else "-",
-        }
+        bundle = self.store.load_provider_bundle(src_service, provider_name)
+        src_adapter = self.adapter_for_service(src_service)
+        canonical = src_adapter.bundle_to_canonical(self, bundle)
+        canonical = apply_overrides(canonical, primary=primary, fallbacks=fallbacks)
+        dst_adapter = self.adapter_for_record(record)
+        return dst_adapter.write_canonical(
+            self, canonical, record,
+            agent=(agent or "main").strip() or "main",
+            persist=persist, dry_run=True,
+        )
 
     def list_provider_models(self, name: str) -> list[str]:
         service_name, provider_name = self._resolve_provider_ref(name)

@@ -602,3 +602,39 @@ def test_openclaw_write_canonical_dry_run_writes_nothing(temp_clawcu_home, tmp_p
     assert any("auth-profiles.json" in path for path in result["writes"])
     assert any("models.json" in path for path in result["writes"])
     assert any("openclaw.json" in path for path in result["writes"])
+
+
+# -- plan_apply_provider through canonical --------------------------------
+
+def test_plan_apply_provider_returns_dst_planned_writes(temp_clawcu_home, tmp_path) -> None:
+    """plan_apply_provider must dispatch to dst_adapter.write_canonical
+    with dry_run=True so it works for cross-service plans too."""
+    # smoke: build a service with a real store, save a hermes record, save
+    # an openclaw bundle for kimi-coding, then plan_apply_provider should
+    # return a hermes-shaped plan (config_path/env_path), not openclaw.
+    from clawcu.core.storage import StateStore
+    from clawcu.core.docker import DockerManager
+    from clawcu.core.models import InstanceRecord
+    service = ClawCUService(store=StateStore(), docker=DockerManager())
+    # save a hermes target instance record
+    target = tmp_path / "scribe"
+    target.mkdir()
+    service.store.save_record(InstanceRecord(
+        service="hermes", name="scribe", version="2026.4.8",
+        upstream_ref="v2026.4.8", image_tag="clawcu/hermes:test",
+        container_name="clawcu-hermes-scribe", datadir=str(target),
+        port=8642, cpu="1", memory="2g", auth_mode="native", status="running",
+        created_at="2026-04-25T00:00:00+00:00",
+        updated_at="2026-04-25T00:00:00+00:00", history=[],
+    ))
+    # save an openclaw bundle for kimi-coding
+    service.store.save_provider_bundle("openclaw", "kimi-coding", _openclaw_bundle())
+
+    plan = service.plan_apply_provider("kimi-coding", "scribe")
+    assert plan["service"] == "hermes"
+    assert plan["instance"] == "scribe"
+    assert plan["config_path"].endswith("/config.yaml")
+    assert plan["env_path"].endswith("/.env")
+    # nothing on disk
+    assert not (target / "config.yaml").exists()
+    assert not (target / ".env").exists()
