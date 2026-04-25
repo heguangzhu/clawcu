@@ -260,3 +260,150 @@ def test_hermes_to_canonical_fallback_model_translated(temp_clawcu_home) -> None
     bundle["name"] = "kimi-coding"
     canonical = adapter.bundle_to_canonical(service, bundle)
     assert canonical.fallback_model_ids == ("minimax/MiniMax-M2",)
+
+
+# -- HermesAdapter.write_canonical ---------------------------------------
+
+import json
+from pathlib import Path
+from clawcu.core.models import InstanceRecord
+
+
+def _hermes_record(datadir: Path, name: str = "scribe") -> InstanceRecord:
+    return InstanceRecord(
+        service="hermes",
+        name=name,
+        version="2026.4.8",
+        upstream_ref="v2026.4.8",
+        image_tag="clawcu/hermes-agent:2026.4.8",
+        container_name=f"clawcu-hermes-{name}",
+        datadir=str(datadir),
+        port=8642,
+        cpu="1",
+        memory="2g",
+        auth_mode="native",
+        status="running",
+        created_at="2026-04-25T00:00:00+00:00",
+        updated_at="2026-04-25T00:00:00+00:00",
+        history=[],
+    )
+
+
+def test_hermes_write_canonical_api_key_writes_config_and_env(temp_clawcu_home, tmp_path) -> None:
+    service = ClawCUService()
+    adapter = service.adapters["hermes"]
+    datadir = tmp_path / "scribe"
+    datadir.mkdir()
+    # pre-existing siblings that must be preserved
+    (datadir / "config.yaml").write_text(
+        "model:\n  provider: openrouter\n  default: claude-sonnet-4.6\n"
+        "smart_model_routing:\n  enabled: false\n"
+        "mcp_servers:\n  a2a:\n    url: http://127.0.0.1:9119/mcp\n",
+        encoding="utf-8",
+    )
+    (datadir / ".env").write_text("API_SERVER_KEY=existing-secret\n", encoding="utf-8")
+
+    canonical = CanonicalProvider(
+        name="kimi-coding",
+        base_url="https://api.moonshot.ai/v1",
+        api_key="sk-kimi-xyz",
+        api_key_env_var="KIMI_API_KEY",
+        default_model_id="k2p5",
+        models=(CanonicalModel(id="k2p5"),),
+    )
+
+    result = adapter.write_canonical(service, canonical, _hermes_record(datadir))
+
+    config = yaml.safe_load((datadir / "config.yaml").read_text(encoding="utf-8"))
+    assert config["model"] == {
+        "provider": "kimi-coding",
+        "default": "k2p5",
+        "base_url": "https://api.moonshot.ai/v1",
+    }
+    # siblings preserved
+    assert config["smart_model_routing"] == {"enabled": False}
+    assert config["mcp_servers"] == {"a2a": {"url": "http://127.0.0.1:9119/mcp"}}
+
+    env = (datadir / ".env").read_text(encoding="utf-8")
+    assert "KIMI_API_KEY=sk-kimi-xyz" in env
+    assert "API_SERVER_KEY=existing-secret" in env  # preserved
+
+    assert result["service"] == "hermes"
+    assert result["instance"] == "scribe"
+    assert result["env_key"] == "KIMI_API_KEY"
+
+
+def test_hermes_write_canonical_oauth_writes_auth_json_not_env(temp_clawcu_home, tmp_path) -> None:
+    service = ClawCUService()
+    adapter = service.adapters["hermes"]
+    datadir = tmp_path / "codex"
+    datadir.mkdir()
+    (datadir / ".env").write_text("API_SERVER_KEY=existing\n", encoding="utf-8")
+    canonical = CanonicalProvider(
+        name="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        auth_type="oauth",
+        oauth_blob='{"tokens": {"access_token": "tok"}}',
+        default_model_id="gpt-5.4",
+        models=(CanonicalModel(id="gpt-5.4"),),
+    )
+    adapter.write_canonical(service, canonical, _hermes_record(datadir, "codex"))
+    assert (datadir / "auth.json").read_text(encoding="utf-8").startswith('{"tokens"')
+    env = (datadir / ".env").read_text(encoding="utf-8")
+    assert "API_SERVER_KEY=existing" in env
+    assert "OPENAI_API_KEY" not in env
+
+
+def test_hermes_write_canonical_drops_base_url_when_none(temp_clawcu_home, tmp_path) -> None:
+    service = ClawCUService()
+    adapter = service.adapters["hermes"]
+    datadir = tmp_path / "scribe"
+    datadir.mkdir()
+    canonical = CanonicalProvider(
+        name="my-custom",
+        api_key="sk-test",
+        api_key_env_var="MY_CUSTOM_API_KEY",
+        default_model_id="m1",
+        models=(CanonicalModel(id="m1"),),
+    )
+    adapter.write_canonical(service, canonical, _hermes_record(datadir))
+    config = yaml.safe_load((datadir / "config.yaml").read_text(encoding="utf-8"))
+    assert "base_url" not in config["model"]
+
+
+def test_hermes_write_canonical_dry_run_writes_nothing(temp_clawcu_home, tmp_path) -> None:
+    service = ClawCUService()
+    adapter = service.adapters["hermes"]
+    datadir = tmp_path / "scribe"
+    datadir.mkdir()
+    (datadir / "config.yaml").write_text("model:\n  provider: openrouter\n", encoding="utf-8")
+    before_config = (datadir / "config.yaml").read_text(encoding="utf-8")
+
+    canonical = CanonicalProvider(
+        name="kimi-coding", api_key="sk-kimi", api_key_env_var="KIMI_API_KEY",
+        default_model_id="k2p5", models=(CanonicalModel(id="k2p5"),),
+    )
+    result = adapter.write_canonical(
+        service, canonical, _hermes_record(datadir), dry_run=True,
+    )
+    after_config = (datadir / "config.yaml").read_text(encoding="utf-8")
+    assert before_config == after_config  # untouched
+    assert not (datadir / ".env").exists()
+    assert result["config_path"].endswith("/config.yaml")
+    assert result["env_path"].endswith("/.env")
+
+
+def test_hermes_write_canonical_with_fallback_model(temp_clawcu_home, tmp_path) -> None:
+    service = ClawCUService()
+    adapter = service.adapters["hermes"]
+    datadir = tmp_path / "scribe"
+    datadir.mkdir()
+    canonical = CanonicalProvider(
+        name="kimi-coding", api_key="sk-kimi", api_key_env_var="KIMI_API_KEY",
+        default_model_id="k2p5",
+        fallback_model_ids=("minimax/MiniMax-M2",),
+        models=(CanonicalModel(id="k2p5"),),
+    )
+    adapter.write_canonical(service, canonical, _hermes_record(datadir))
+    config = yaml.safe_load((datadir / "config.yaml").read_text(encoding="utf-8"))
+    assert config["fallback_model"] == {"provider": "minimax", "model": "MiniMax-M2"}

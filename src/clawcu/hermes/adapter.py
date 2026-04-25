@@ -792,7 +792,80 @@ class HermesAdapter(ServiceAdapter):
         )
 
     def write_canonical(self, service, canonical, record, *, agent="main", persist=False, dry_run=False):
-        raise NotImplementedError("HermesAdapter.write_canonical (Task 5)")
+        from clawcu.hermes.providers import info_for
+
+        datadir = Path(record.datadir)
+        config_path = datadir / "config.yaml"
+        env_path = self.env_path(service, record)
+        auth_path = datadir / "auth.json"
+
+        # ── 1. Build the new config.yaml content ───────────────────────
+        existing_config: dict = {}
+        if config_path.exists():
+            loaded = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            if isinstance(loaded, dict):
+                existing_config = loaded
+        new_config = dict(existing_config)  # preserve all sibling keys
+
+        model_block: dict = {
+            "provider": canonical.name,
+            "default": canonical.default_model_id,
+        }
+        if canonical.base_url:
+            model_block["base_url"] = canonical.base_url
+        new_config["model"] = model_block
+
+        if canonical.fallback_model_ids:
+            first = canonical.fallback_model_ids[0]
+            if "/" in first:
+                fp, fm = first.split("/", 1)
+                new_config["fallback_model"] = {"provider": fp, "model": fm}
+            else:
+                new_config["fallback_model"] = {"provider": canonical.name, "model": first}
+
+        # ── 2. Build env / auth.json updates ───────────────────────────
+        env_writes: dict[str, str] = {}
+        env_key: str | None = None
+        if canonical.auth_type == "api_key":
+            env_key = canonical.api_key_env_var or info_for(canonical.name).api_key_env_var
+            if env_key and canonical.api_key:
+                env_writes[env_key] = canonical.api_key
+        # auth_type == "oauth": env left alone, auth.json written below
+
+        # ── 3. Apply writes (skip when dry_run) ────────────────────────
+        if not dry_run:
+            datadir.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(yaml.safe_dump(new_config, sort_keys=False), encoding="utf-8")
+
+            if env_writes:
+                env_path.parent.mkdir(parents=True, exist_ok=True)
+                env_values = service._load_env_file(env_path)
+                env_values.update(env_writes)
+                env_path.write_text(service._dump_env_file(env_values), encoding="utf-8")
+
+            if canonical.auth_type == "oauth" and canonical.oauth_blob:
+                auth_path.write_text(canonical.oauth_blob, encoding="utf-8")
+
+            service.store.append_log(
+                f"provider apply (canonical) provider={canonical.name} "
+                f"instance={record.name} agent={agent} primary={canonical.default_model_id or '-'} "
+                f"fallbacks={','.join(canonical.fallback_model_ids) or '-'} "
+                f"config_path={config_path}"
+            )
+
+        return {
+            "provider": canonical.name,
+            "service": self.service_name,
+            "instance": record.name,
+            "agent": agent,
+            "config_path": str(config_path),
+            "env_path": str(env_path),
+            "auth_path": str(auth_path) if canonical.auth_type == "oauth" else "-",
+            "env_key": env_key or "-",
+            "persist": "yes" if persist else "no",
+            "primary": canonical.default_model_id or "-",
+            "fallbacks": ", ".join(canonical.fallback_model_ids) if canonical.fallback_model_ids else "-",
+        }
 
     def _load_config(self, record: InstanceRecord) -> dict:
         config_path = Path(record.datadir) / "config.yaml"
