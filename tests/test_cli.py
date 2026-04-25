@@ -601,6 +601,7 @@ class FakeService:
         timeout: int | None = None,
         version: str | None = None,
         a2a: bool | None = None,
+        prepare_artifact: bool = True,
     ) -> InstanceRecord:
         self._record(
             "recreate_instance",
@@ -609,6 +610,7 @@ class FakeService:
             timeout=timeout,
             version=version,
             a2a=a2a,
+            prepare_artifact=prepare_artifact,
         )
         if self.reporter:
             self.reporter("Recreating instance")
@@ -1814,7 +1816,7 @@ def test_setenv_command_can_recreate_instance_immediately(monkeypatch) -> None:
             "assignments": ["OPENAI_API_KEY=sk-test"],
         },
     )
-    assert service.calls[1] == ("recreate_instance", (), {"name": "writer", "fresh": False, "timeout": None, "version": None, "a2a": None})
+    assert service.calls[1] == ("recreate_instance", (), {"name": "writer", "fresh": False, "timeout": None, "version": None, "a2a": None, "prepare_artifact": True})
 
 
 def test_getenv_command_lists_instance_environment(monkeypatch) -> None:
@@ -1874,7 +1876,7 @@ def test_unsetenv_command_can_recreate_instance_immediately(monkeypatch) -> None
         (),
         {"name": "writer", "keys": ["OPENAI_API_KEY"]},
     )
-    assert service.calls[1] == ("recreate_instance", (), {"name": "writer", "fresh": False, "timeout": None, "version": None, "a2a": None})
+    assert service.calls[1] == ("recreate_instance", (), {"name": "writer", "fresh": False, "timeout": None, "version": None, "a2a": None, "prepare_artifact": True})
 
 
 def test_setenv_command_from_file_loads_assignments(monkeypatch, tmp_path) -> None:
@@ -2598,7 +2600,7 @@ def test_recreate_command_forwards_timeout_and_skips_retry(monkeypatch) -> None:
     method_names = [call[0] for call in service.calls]
     assert "retry_instance" not in method_names
     recreate_call = next(call for call in service.calls if call[0] == "recreate_instance")
-    assert recreate_call[2] == {"name": "writer", "fresh": False, "timeout": 30, "version": None, "a2a": None}
+    assert recreate_call[2] == {"name": "writer", "fresh": False, "timeout": 30, "version": None, "a2a": None, "prepare_artifact": True}
 
 
 def test_recreate_command_can_recover_removed_instance_with_version(monkeypatch) -> None:
@@ -2612,7 +2614,7 @@ def test_recreate_command_can_recover_removed_instance_with_version(monkeypatch)
     assert result.exit_code == 0
     assert "Recreated instance:" in result.stdout
     assert service.calls == [
-        ("recreate_instance", (), {"name": "writer-old", "fresh": False, "timeout": None, "version": "2026.4.8", "a2a": None}),
+        ("recreate_instance", (), {"name": "writer-old", "fresh": False, "timeout": None, "version": "2026.4.8", "a2a": None, "prepare_artifact": True}),
         ("dashboard_url", (), {"name": "writer-old"}),
     ]
 
@@ -2635,7 +2637,7 @@ def test_recreate_command_fresh_with_yes_wipes_datadir(monkeypatch) -> None:
 
     assert result.exit_code == 0
     recreate_call = next(call for call in service.calls if call[0] == "recreate_instance")
-    assert recreate_call[2] == {"name": "writer", "fresh": True, "timeout": None, "version": None, "a2a": None}
+    assert recreate_call[2] == {"name": "writer", "fresh": True, "timeout": None, "version": None, "a2a": None, "prepare_artifact": True}
 
 
 def test_recreate_command_fresh_validates_instance_exists_before_confirm(monkeypatch) -> None:
@@ -2727,6 +2729,40 @@ def test_create_command_applies_provider_after_create(monkeypatch) -> None:
     assert apply_calls[0][2]["agent"] == "reviewer"
     assert apply_calls[0][2]["persist"] is True
     assert "Applied provider:" in result.stdout
+    # --apply-persist writes the provider env file after the container is
+    # already running; without a recreate the docker --env-file mount
+    # never sees the new key. Assert the create flow auto-recreates.
+    recreate_calls = [c for c in service.calls if c[0] == "recreate_instance"]
+    assert len(recreate_calls) == 1
+    assert recreate_calls[0][2]["name"] == "writer"
+    assert recreate_calls[0][2]["prepare_artifact"] is False
+
+
+def test_create_command_skips_recreate_when_apply_persist_off(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "create",
+            "openclaw",
+            "--name",
+            "writer",
+            "--version",
+            "2026.4.1",
+            "--apply-provider",
+            "openai-main",
+        ],
+    )
+
+    assert result.exit_code == 0
+    apply_calls = [c for c in service.calls if c[0] == "apply_provider"]
+    assert len(apply_calls) == 1
+    assert apply_calls[0][2]["persist"] is False
+    # No persist → no env-file change → no need to recreate.
+    recreate_calls = [c for c in service.calls if c[0] == "recreate_instance"]
+    assert recreate_calls == []
 
 
 def test_create_command_surfaces_apply_provider_failure_without_aborting(monkeypatch) -> None:

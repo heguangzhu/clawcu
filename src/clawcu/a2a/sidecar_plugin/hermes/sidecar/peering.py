@@ -185,6 +185,7 @@ def forward_to_peer(
     hop: int,
     timeout: float,
     request_id: str | None = None,
+    mode: str | None = None,
 ) -> dict[str, Any]:
     try:
         _validate_outbound_url(endpoint)
@@ -193,6 +194,8 @@ def forward_to_peer(
     body: dict[str, Any] = {"from": self_name, "to": peer_name, "message": message}
     if thread_id:
         body["thread_id"] = thread_id
+    if mode:
+        body["mode"] = mode
     data = json.dumps(body).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
@@ -219,6 +222,118 @@ def forward_to_peer(
             raise OutboundError(508, f"peer rejected hop limit: {body_raw[:200]}", e.code) from e
         if e.code == 429:
             raise OutboundError(429, f"peer rate-limited: {body_raw[:200]}", e.code) from e
+        raise OutboundError(502, f"peer HTTP {e.code}: {body_raw[:200]}", e.code) from e
+    except URLError as e:
+        raise OutboundError(504, f"peer unreachable or timed out: {e.reason}") from e
+    except (OSError, TimeoutError) as e:
+        raise OutboundError(504, f"peer request failed: {e}") from e
+    if status < 200 or status >= 300:
+        raise OutboundError(502, f"peer HTTP {status}: {raw[:200]}", status)
+    try:
+        return json.loads(raw)
+    except Exception as e:
+        raise OutboundError(502, f"peer returned non-json: {e}") from e
+
+
+def _task_endpoint(endpoint: str, task_id: str, suffix: str = "") -> str:
+    """Derive the peer's task endpoint from its ``/a2a/send`` advertised URL.
+
+    Registry cards advertise the send endpoint (e.g. ``…/a2a/send``); task
+    endpoints (``/a2a/tasks/<id>`` + ``/cancel``) share the same mount point
+    one level up. Mirror of openclaw's ``_task_base_path``, specialized to
+    hermes' full-URL urllib-based transport.
+    """
+    parsed = urllib.parse.urlsplit(endpoint)
+    path = parsed.path
+    if path.endswith("/a2a/send"):
+        base = path[: -len("/send")]
+    elif path.endswith("/send"):
+        base = path[: -len("/send")]
+    else:
+        base = path.rstrip("/")
+    new_path = f"{base}/tasks/{urllib.parse.quote(task_id, safe='')}"
+    if suffix:
+        new_path = new_path + suffix
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, new_path, "", "")
+    )
+
+
+def get_task_from_peer(
+    endpoint: str,
+    task_id: str,
+    timeout: float,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    try:
+        _validate_outbound_url(endpoint)
+    except _BadOutboundUrl as e:
+        raise OutboundError(502, f"peer endpoint rejected: {e}") from e
+    url = _task_endpoint(endpoint, task_id)
+    headers = {"Accept": "application/json", "User-Agent": "a2a-bridge-sidecar/0.3"}
+    if request_id:
+        headers[REQUEST_ID_HEADER] = request_id
+    req = urllib.request.Request(url, method="GET", headers=headers)
+    try:
+        with _OPENER.open(req, timeout=timeout) as resp:
+            raw = _read_capped(resp).decode("utf-8")
+            status = resp.status
+    except _ResponseTooLarge as e:
+        raise OutboundError(502, f"peer response too large: {e}") from e
+    except HTTPError as e:
+        try:
+            body_bytes = _read_capped(e) if hasattr(e, "read") else b""
+        except _ResponseTooLarge:
+            body_bytes = b""
+        body_raw = body_bytes.decode("utf-8", errors="replace")
+        if e.code == 404:
+            raise OutboundError(404, f"task not found on peer: {task_id}", e.code) from e
+        raise OutboundError(502, f"peer HTTP {e.code}: {body_raw[:200]}", e.code) from e
+    except URLError as e:
+        raise OutboundError(504, f"peer unreachable or timed out: {e.reason}") from e
+    except (OSError, TimeoutError) as e:
+        raise OutboundError(504, f"peer request failed: {e}") from e
+    if status < 200 or status >= 300:
+        raise OutboundError(502, f"peer HTTP {status}: {raw[:200]}", status)
+    try:
+        return json.loads(raw)
+    except Exception as e:
+        raise OutboundError(502, f"peer returned non-json: {e}") from e
+
+
+def cancel_task_on_peer(
+    endpoint: str,
+    task_id: str,
+    timeout: float,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    try:
+        _validate_outbound_url(endpoint)
+    except _BadOutboundUrl as e:
+        raise OutboundError(502, f"peer endpoint rejected: {e}") from e
+    url = _task_endpoint(endpoint, task_id, suffix="/cancel")
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "a2a-bridge-sidecar/0.3",
+    }
+    if request_id:
+        headers[REQUEST_ID_HEADER] = request_id
+    req = urllib.request.Request(url, data=b"{}", method="POST", headers=headers)
+    try:
+        with _OPENER.open(req, timeout=timeout) as resp:
+            raw = _read_capped(resp).decode("utf-8")
+            status = resp.status
+    except _ResponseTooLarge as e:
+        raise OutboundError(502, f"peer response too large: {e}") from e
+    except HTTPError as e:
+        try:
+            body_bytes = _read_capped(e) if hasattr(e, "read") else b""
+        except _ResponseTooLarge:
+            body_bytes = b""
+        body_raw = body_bytes.decode("utf-8", errors="replace")
+        if e.code == 404:
+            raise OutboundError(404, f"task not found on peer: {task_id}", e.code) from e
         raise OutboundError(502, f"peer HTTP {e.code}: {body_raw[:200]}", e.code) from e
     except URLError as e:
         raise OutboundError(504, f"peer unreachable or timed out: {e.reason}") from e

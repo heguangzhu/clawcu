@@ -142,11 +142,14 @@ def forward_to_peer(
     hop: int,
     timeout_ms: int,
     request_id: Optional[str] = None,
+    mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     parsed = parse_http_url(endpoint)
     body_obj: Dict[str, Any] = {"from": self_name, "to": peer_name, "message": message}
     if thread_id:
         body_obj["thread_id"] = thread_id
+    if mode:
+        body_obj["mode"] = mode
     headers = {"x-a2a-hop": str(hop)}
     if request_id:
         headers[REQUEST_ID_HEADER] = request_id
@@ -164,6 +167,7 @@ def forward_to_peer(
         raise UpstreamError(f"peer unreachable or timed out: {exc}", http_status=504)
     status = resp["status"]
     body = resp["body"]
+    # async mode returns 202; sync returns 200. Both are success.
     if 200 <= status < 300:
         try:
             return json.loads(body)
@@ -173,6 +177,93 @@ def forward_to_peer(
         raise UpstreamError(f"peer rejected hop limit: {body[:200]}", http_status=508)
     if status == 429:
         raise UpstreamError(f"peer rate-limited: {body[:200]}", http_status=429)
+    raise UpstreamError(f"peer HTTP {status}: {body[:200]}", http_status=502, peer_status=status)
+
+
+def _task_base_path(endpoint: str) -> tuple[Dict[str, Any], str]:
+    """Parse a peer's ``/a2a/send`` endpoint into ``(parsed, base_path)``
+    where ``base_path`` is the directory prefix (``…/a2a``) that
+    ``/tasks/<id>`` and ``/tasks/<id>/cancel`` hang off. Registry cards
+    advertise the send endpoint; the task endpoints share the same mount
+    point one level up."""
+    parsed = parse_http_url(endpoint)
+    path = parsed["pathname"]
+    if path.endswith("/a2a/send"):
+        base = path[: -len("/send")]
+    elif path.endswith("/send"):
+        base = path[: -len("/send")]
+    else:
+        base = path.rstrip("/")
+    return parsed, base
+
+
+def get_task_from_peer(
+    endpoint: str,
+    task_id: str,
+    timeout_ms: int,
+    request_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    parsed, base = _task_base_path(endpoint)
+    path = f"{base}/tasks/{task_id}"
+    headers: Dict[str, str] = {"accept": "application/json"}
+    if request_id:
+        headers[REQUEST_ID_HEADER] = request_id
+    try:
+        resp = http_request_raw(
+            method="GET",
+            host=parsed["host"],
+            port=parsed["port"],
+            path=path,
+            headers=headers,
+            timeout_ms=timeout_ms,
+            scheme=parsed["scheme"],
+        )
+    except Exception as exc:
+        raise UpstreamError(f"peer unreachable or timed out: {exc}", http_status=504)
+    status = resp["status"]
+    body = resp["body"]
+    if status == 404:
+        raise UpstreamError(f"task not found on peer: {task_id}", http_status=404)
+    if 200 <= status < 300:
+        try:
+            return json.loads(body)
+        except Exception as exc:
+            raise UpstreamError(f"peer returned non-json: {exc}", http_status=502)
+    raise UpstreamError(f"peer HTTP {status}: {body[:200]}", http_status=502, peer_status=status)
+
+
+def cancel_task_on_peer(
+    endpoint: str,
+    task_id: str,
+    timeout_ms: int,
+    request_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    parsed, base = _task_base_path(endpoint)
+    path = f"{base}/tasks/{task_id}/cancel"
+    headers: Dict[str, str] = {}
+    if request_id:
+        headers[REQUEST_ID_HEADER] = request_id
+    try:
+        resp = post_json(
+            host=parsed["host"],
+            port=parsed["port"],
+            path=path,
+            headers=headers,
+            body_obj={},
+            timeout_ms=timeout_ms,
+            scheme=parsed["scheme"],
+        )
+    except Exception as exc:
+        raise UpstreamError(f"peer unreachable or timed out: {exc}", http_status=504)
+    status = resp["status"]
+    body = resp["body"]
+    if status == 404:
+        raise UpstreamError(f"task not found on peer: {task_id}", http_status=404)
+    if 200 <= status < 300:
+        try:
+            return json.loads(body)
+        except Exception as exc:
+            raise UpstreamError(f"peer returned non-json: {exc}", http_status=502)
     raise UpstreamError(f"peer HTTP {status}: {body[:200]}", http_status=502, peer_status=status)
 
 

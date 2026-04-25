@@ -1142,6 +1142,19 @@ def _do_create(
             console.print(
                 f"[green]Applied provider:[/green] {apply_provider} -> {record.name}/{apply_agent}"
             )
+            # The container started before --apply-persist wrote the env
+            # file, so its docker --env-file never saw the provider secret
+            # (e.g. CLAWCU_PROVIDER_*_API_KEY). Recreate so the next start
+            # mounts the freshly written env. Skip when persist is off —
+            # nothing in the container env changed.
+            if apply_persist:
+                try:
+                    service.recreate_instance(record.name, prepare_artifact=False)
+                except Exception as exc:
+                    console.print(
+                        f"[yellow]Provider persisted but recreate failed:[/yellow] {exc}\n"
+                        f"[dim]Run `clawcu recreate {record.name}` so the container picks up the new env.[/dim]"
+                    )
     _print_access_url(service, record.name)
 
 

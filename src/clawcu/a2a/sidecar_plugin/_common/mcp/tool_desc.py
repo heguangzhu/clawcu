@@ -14,13 +14,21 @@ from typing import Any, Dict, Mapping, Optional
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
 TOOL_NAME = "a2a_call_peer"
+TOOL_NAME_ASYNC = "a2a_call_peer_async"
+TOOL_NAME_GET_TASK = "a2a_get_task"
+TOOL_NAME_CANCEL_TASK = "a2a_cancel_task"
+ASYNC_TOOL_NAMES = frozenset({TOOL_NAME_ASYNC, TOOL_NAME_GET_TASK, TOOL_NAME_CANCEL_TASK})
 MAX_PEERS_IN_DESCRIPTION = 16
 MAX_SKILLS_IN_PEER_LINE = 3
 
 BASE_DESCRIPTION = (
-    "Call another agent in the A2A federation and return its reply. "
-    "Use when the current task needs data or work owned by a different "
-    "agent (e.g., an analyst for market data, a writer for prose)."
+    "Call another agent in the A2A federation and wait inline for its reply. "
+    "IMPORTANT: this tool blocks the calling MCP client, which times out at "
+    "~60 seconds. Use it only for short, fast replies — lookups, status "
+    "checks, one-shot factual answers a peer can produce in well under a "
+    "minute. For analysis, research, web browsing, multi-step reasoning, "
+    "code generation, or anything where the duration is unknown, use "
+    "a2a_call_peer_async instead."
 )
 
 
@@ -131,15 +139,136 @@ def tool_descriptor(
     }
 
 
+ASYNC_CALL_DESCRIPTION = (
+    "Dispatch a task to another agent and return immediately with a task_id. "
+    "PREFER THIS over a2a_call_peer for any non-trivial work — analysis, "
+    "research, web browsing, multi-step reasoning, code generation, content "
+    "drafting, or any request where the peer might take more than a few "
+    "seconds. The sync variant blocks the calling MCP client and dies at "
+    "~60s; this variant has no such cap and works for tasks that run for "
+    "minutes or hours.\n\n"
+    "Workflow:\n"
+    "  1. Call this and receive {task_id, state}.\n"
+    "  2. IMMEDIATELY tell the user the task was dispatched and roughly "
+    "how long peer work typically takes — the user is otherwise staring "
+    "at a blank screen and will cancel.\n"
+    "  3. Poll a2a_get_task until state is terminal "
+    "(completed/failed/canceled).\n"
+    "  4. Use a2a_cancel_task only if the user asks to abort."
+)
+
+GET_TASK_DESCRIPTION = (
+    "Poll an async task on a peer agent. Returns a snapshot with state "
+    "(submitted/working/completed/failed/canceled). On completed, the "
+    "peer's reply is included in the response text. On failed, the error "
+    "message is included.\n\n"
+    "Polling discipline (IMPORTANT — clients will cancel if you poll too "
+    "fast or go silent):\n"
+    "  - Wait at least 20 seconds before the first poll. Analyst-style "
+    "work rarely finishes faster.\n"
+    "  - Between polls, wait 20–60 seconds. Polling every 3–5 seconds is "
+    "wasteful and triggers stuck-session diagnostics on the host.\n"
+    "  - Every 1–2 polls while still working, send the user a brief "
+    "progress note (\"still working on the analyst task, ~Xm elapsed\") so "
+    "they don't think the chat froze.\n"
+    "  - Stop polling as soon as state is terminal — the response text "
+    "already contains the reply or error."
+)
+
+CANCEL_TASK_DESCRIPTION = (
+    "Request cancellation of an async task on a peer agent. Cooperative — "
+    "the peer stops at its next checkpoint; the snapshot flips to canceled "
+    "immediately. Use when the user no longer wants the result, or when a "
+    "task has clearly hung."
+)
+
+
+def async_call_tool_descriptor() -> Dict[str, Any]:
+    return {
+        "name": TOOL_NAME_ASYNC,
+        "description": ASYNC_CALL_DESCRIPTION,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "to": {
+                    "type": "string",
+                    "description": "Peer agent name as registered in the A2A registry.",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "The question or task for the peer agent.",
+                },
+                "thread_id": {
+                    "type": "string",
+                    "description": "Optional. Reuse a prior conversation thread with the peer.",
+                },
+            },
+            "required": ["to", "message"],
+        },
+    }
+
+
+def get_task_tool_descriptor() -> Dict[str, Any]:
+    return {
+        "name": TOOL_NAME_GET_TASK,
+        "description": GET_TASK_DESCRIPTION,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "peer": {
+                    "type": "string",
+                    "description": "Peer agent name that owns the task.",
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "Task ID previously returned by a2a_call_peer_async.",
+                },
+            },
+            "required": ["peer", "task_id"],
+        },
+    }
+
+
+def cancel_task_tool_descriptor() -> Dict[str, Any]:
+    return {
+        "name": TOOL_NAME_CANCEL_TASK,
+        "description": CANCEL_TASK_DESCRIPTION,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "peer": {
+                    "type": "string",
+                    "description": "Peer agent name that owns the task.",
+                },
+                "task_id": {
+                    "type": "string",
+                    "description": "Task ID to cancel.",
+                },
+            },
+            "required": ["peer", "task_id"],
+        },
+    }
+
+
 __all__ = [
     "MCP_PROTOCOL_VERSION",
     "TOOL_NAME",
+    "TOOL_NAME_ASYNC",
+    "TOOL_NAME_GET_TASK",
+    "TOOL_NAME_CANCEL_TASK",
+    "ASYNC_TOOL_NAMES",
     "MAX_PEERS_IN_DESCRIPTION",
     "MAX_SKILLS_IN_PEER_LINE",
     "BASE_DESCRIPTION",
+    "ASYNC_CALL_DESCRIPTION",
+    "GET_TASK_DESCRIPTION",
+    "CANCEL_TASK_DESCRIPTION",
     "is_tool_desc_static",
     "tool_desc_include_role",
     "format_peer_line",
     "format_peer_summary",
     "tool_descriptor",
+    "async_call_tool_descriptor",
+    "get_task_tool_descriptor",
+    "cancel_task_tool_descriptor",
 ]

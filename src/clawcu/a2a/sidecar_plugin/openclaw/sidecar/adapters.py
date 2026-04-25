@@ -32,8 +32,12 @@ import threading
 import time
 from typing import Any, Dict
 
-OPENCLAW_CONFIG_PATH = "/home/node/.openclaw/openclaw.json"
-OPENCLAW_AUTH_PATH = "/home/node/.openclaw/auth.json"
+OPENCLAW_CONFIG_PATH = (
+    os.environ.get("OPENCLAW_CONFIG_PATH") or "/home/node/.openclaw/openclaw.json"
+)
+OPENCLAW_AUTH_PATH = (
+    os.environ.get("OPENCLAW_AUTH_PATH") or "/home/node/.openclaw/auth.json"
+)
 
 # Review-1 §10 / review-2 §7: ``read_gateway_auth`` runs on every inbound
 # ``/a2a/send``. Without a cache the host adapter forks ``docker exec

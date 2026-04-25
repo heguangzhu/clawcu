@@ -64,7 +64,7 @@ class Config:
         self.api_key = os.environ.get("API_SERVER_KEY") or ""
         self.model = _envs("HERMES_MODEL", "hermes-agent")
         self.system_prompt = os.environ.get("A2A_SYSTEM_PROMPT") or ""
-        self.timeout = float(_envs("A2A_TIMEOUT_SECONDS", "300"))
+        self.timeout = float(_envs("A2A_TIMEOUT_SECONDS", "86400"))
         self.ready_deadline = float(_envs("A2A_GATEWAY_READY_DEADLINE_S", "30"))
         self.ready_probe_timeout = float(_envs("A2A_GATEWAY_READY_PROBE_S", "2"))
         self.ready_poll_interval = float(_envs("A2A_GATEWAY_READY_POLL_S", "0.5"))
@@ -104,6 +104,21 @@ class Config:
         # parser lives in ``_common.peer_cache`` so both sidecars honor
         # the same truthy vocabulary.
         self.allow_client_registry_url = read_allow_client_registry_url()
+
+        # a2a-async-design.md: Phase 1 async task plumbing. Disabled unless
+        # ``A2A_TASK_DIR`` is set by the adapter. All knobs default to
+        # openclaw-parity values so an operator can switch sidecar flavors
+        # without relearning the env surface.
+        self.task_dir = (os.environ.get("A2A_TASK_DIR") or "").strip()
+        self.task_deadline_s = _env_nonneg_int("A2A_TASK_DEADLINE_S", 86400)
+        self.task_retain_s = _env_nonneg_int("A2A_TASK_RETAIN_S", 86400)
+        self.task_workers = _env_nonneg_int("A2A_TASK_WORKERS", 4)
+        try:
+            self.task_heartbeat_s = float(os.environ.get("A2A_TASK_HEARTBEAT_S") or 15.0)
+        except ValueError:
+            self.task_heartbeat_s = 15.0
+        _dm = (os.environ.get("A2A_DEFAULT_MODE") or "").strip().lower()
+        self.default_mode = _dm if _dm in ("sync", "async") else "sync"
 
     def agent_card(self) -> dict[str, Any]:
         return {

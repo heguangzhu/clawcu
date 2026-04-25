@@ -3561,7 +3561,7 @@ def test_hermes_mcp_tools_call_happy_path():
         captured["lookup"] = (reg, name, timeout)
         return {"name": name, "endpoint": "http://peer/a2a/send"}
 
-    def fake_forward(endpoint, self_name, peer, message, thread_id, hop, timeout, request_id):
+    def fake_forward(endpoint, self_name, peer, message, thread_id, hop, timeout, request_id, mode=None):
         captured["forward"] = {
             "endpoint": endpoint,
             "self_name": self_name,
@@ -3570,6 +3570,7 @@ def test_hermes_mcp_tools_call_happy_path():
             "thread_id": thread_id,
             "hop": hop,
             "request_id": request_id,
+            "mode": mode,
         }
         return {"from": "analyst", "reply": "Q1 was +18%", "thread_id": "t-9"}
 
@@ -4345,7 +4346,7 @@ def test_hermes_mcp_tool_call_rate_limits_after_rpm_and_returns_retry_after():
     def _fake_lookup(registry_url, peer, timeout):
         return peer_card
 
-    def _fake_forward(endpoint, self_name, peer_name, message, thread_id, hop, timeout, request_id):
+    def _fake_forward(endpoint, self_name, peer_name, message, thread_id, hop, timeout, request_id, mode=None):
         return {"from": peer_name, "reply": "ok", "thread_id": thread_id}
 
     def _call():

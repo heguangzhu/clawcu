@@ -27,8 +27,9 @@ copied, so ``server._gateway_ready_cache`` and
 from __future__ import annotations
 
 import json
+import time
 import urllib.request
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 from urllib.error import HTTPError, URLError
 
 from _common.readiness import ReadinessCache
@@ -97,8 +98,17 @@ def call_hermes(
     message: str,
     peer_from: str,
     history: list[dict[str, str]] | None = None,
+    *,
+    progress: Callable[[str], None] | None = None,
+    progress_interval_s: float = 3.0,
 ) -> str:
-    """POST to Hermes' OpenAI-compat /v1/chat/completions, return assistant text."""
+    """POST to Hermes' OpenAI-compat /v1/chat/completions, return assistant text.
+
+    When ``progress`` is provided, switches to ``stream: true`` and emits a
+    ``streaming: N chars · "<tail>"`` note every ``progress_interval_s`` so a
+    long inference shows live growth instead of one opaque blob between the
+    "calling hermes" and "received reply" task breadcrumbs (a2a-async layer 3).
+    """
 
     messages: list[dict[str, str]] = []
     if cfg.system_prompt:
@@ -109,17 +119,18 @@ def call_hermes(
     prefix = f"[from agent '{peer_from}'] " if peer_from else ""
     messages.append({"role": "user", "content": prefix + message})
 
+    use_stream = callable(progress)
     body = json.dumps(
         {
             "model": cfg.model,
             "messages": messages,
-            "stream": False,
+            "stream": use_stream,
         }
     ).encode("utf-8")
 
     headers = {
         "Content-Type": "application/json",
-        "Accept": "application/json",
+        "Accept": "text/event-stream" if use_stream else "application/json",
     }
     if cfg.api_key:
         headers["Authorization"] = f"Bearer {cfg.api_key}"
@@ -127,13 +138,101 @@ def call_hermes(
     req = urllib.request.Request(
         cfg.chat_url(), data=body, method="POST", headers=headers
     )
-    with urllib.request.urlopen(req, timeout=cfg.timeout) as resp:
-        raw = _streams.read_capped_bytes(resp, cap=A2A_LOCAL_UPSTREAM_CAP).decode("utf-8")
-    payload = json.loads(raw)
 
+    if not use_stream:
+        with urllib.request.urlopen(req, timeout=cfg.timeout) as resp:
+            raw = _streams.read_capped_bytes(resp, cap=A2A_LOCAL_UPSTREAM_CAP).decode("utf-8")
+        payload = json.loads(raw)
+        try:
+            return payload["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError(
+                f"unexpected chat response shape: {payload!r}"
+            ) from exc
+
+    return _consume_chat_stream(
+        req,
+        timeout=cfg.timeout,
+        progress=progress,
+        progress_interval_s=progress_interval_s,
+    )
+
+
+def _consume_chat_stream(
+    req: urllib.request.Request,
+    *,
+    timeout: float,
+    progress: Callable[[str], None],
+    progress_interval_s: float,
+) -> str:
+    """Read an OpenAI-compat SSE stream, emitting periodic progress notes.
+
+    Iterates ``data: {...}`` lines, accumulates ``choices[0].delta.content``
+    deltas, and calls ``progress(text)`` no more often than every
+    ``progress_interval_s`` seconds. Total accumulated content is bounded by
+    ``A2A_LOCAL_UPSTREAM_CAP`` — a runaway stream raises ``RuntimeError``.
+    """
+    return _consume_chat_stream_from(
+        urllib.request.urlopen(req, timeout=timeout),
+        progress=progress,
+        progress_interval_s=progress_interval_s,
+    )
+
+
+def _consume_chat_stream_from(
+    resp,
+    *,
+    progress: Callable[[str], None],
+    progress_interval_s: float,
+) -> str:
+    """Stream-consume an already-open SSE response. Split out for tests."""
+    chunks: list[str] = []
+    total = 0
+    last_emit = time.monotonic()
     try:
-        return payload["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        raise RuntimeError(
-            f"unexpected chat response shape: {payload!r}"
-        ) from exc
+        for raw_line in resp:
+            line = raw_line.strip()
+            if not line or not line.startswith(b"data:"):
+                continue
+            data = line[len(b"data:"):].strip()
+            if data == b"[DONE]":
+                break
+            try:
+                event = json.loads(data)
+            except ValueError:
+                continue
+            try:
+                content = event["choices"][0]["delta"].get("content")
+            except (KeyError, IndexError, TypeError):
+                content = None
+            if not isinstance(content, str) or not content:
+                continue
+            chunks.append(content)
+            total += len(content)
+            if total > A2A_LOCAL_UPSTREAM_CAP:
+                raise RuntimeError(
+                    f"streaming response exceeded {A2A_LOCAL_UPSTREAM_CAP} bytes"
+                )
+            now = time.monotonic()
+            if now - last_emit >= progress_interval_s:
+                _emit_stream_progress(progress, chunks, total)
+                last_emit = now
+    finally:
+        try:
+            resp.close()
+        except Exception:  # noqa: BLE001
+            pass
+    return "".join(chunks)
+
+
+def _emit_stream_progress(
+    progress: Callable[[str], None],
+    chunks: list[str],
+    total: int,
+) -> None:
+    tail = "".join(chunks)[-60:].replace("\n", " ").replace("\r", " ").strip()
+    note = f"streaming: {total} chars · …{tail}" if tail else f"streaming: {total} chars"
+    try:
+        progress(note[:200])
+    except Exception:  # noqa: BLE001
+        pass

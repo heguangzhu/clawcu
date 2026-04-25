@@ -38,6 +38,12 @@ ARG CLAWCU_PLUGIN_VERSION=unknown
 # and MCP auto-wire is silently skipped (review-10 P0-A4). We install the
 # Debian system package rather than pip to avoid bringing in pip just for
 # one dependency. Keep apt lists clean to minimise layer size.
+#
+# The upstream hermes-agent image switched its default USER from ``root``
+# to ``hermes`` starting in v2026.4.23 — apt-get / mkdir / chmod under that
+# user fail with ``permission denied``. Switch to root for the privileged
+# steps and hand control back to the original user before ENTRYPOINT runs.
+USER root
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3-yaml \
     && rm -rf /var/lib/apt/lists/*
@@ -52,6 +58,7 @@ COPY hermes/sidecar/     /opt/a2a/
 COPY _common/            /opt/a2a/_common/
 COPY hermes/entrypoint.sh /usr/local/bin/entrypoint-a2a.sh
 RUN chmod +x /usr/local/bin/entrypoint-a2a.sh
+USER hermes
 
 # Container port the sidecar binds. Publish at run time (e.g. -p 9129:9119).
 EXPOSE 9119

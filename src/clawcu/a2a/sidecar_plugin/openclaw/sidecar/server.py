@@ -91,6 +91,14 @@ from _common.ratelimit import (  # noqa: E402
     create_rate_limiter,
     write_peer_rate_limit_response,
 )
+from _common.sse import stream_task_events  # noqa: E402
+from _common.task_store import (  # noqa: E402
+    TERMINAL_STATES,
+    TaskError,
+    create_task_store,
+    mint_task_id,
+)
+from _common.task_worker import TaskWorker  # noqa: E402
 from _common.thread import create_thread_store  # noqa: E402
 from adapters import (  # noqa: E402
     HostAdapter,
@@ -113,16 +121,19 @@ from http_client import (  # noqa: E402
 )
 from outbound import (  # noqa: E402
     _default_now_ms,
+    cancel_task_on_peer,
     create_peer_cache,
     default_registry_url,
     fetch_peer_list,
     forward_to_peer,
+    get_task_from_peer,
     lookup_peer,
     read_allow_client_registry_url,
 )
 from chat import (  # noqa: E402
     build_a2a_context,
     post_chat_completion,
+    post_chat_completion_streaming,
 )
 from _common.inbound_limits import (  # noqa: E402
     _max_body_bytes,
@@ -296,6 +307,9 @@ def _make_handler_class(ctx: "Context"):
     model = ctx.model
     rate_limiter = ctx.rate_limiter
     thread_store = ctx.thread_store
+    task_store = ctx.task_store
+    task_worker = ctx.task_worker
+    task_heartbeat_s = ctx.task_heartbeat_s
     # Shared, lazily-initialised peer cache.
     peer_cache_holder: Dict[str, Any] = {"cache": None, "lock": threading.Lock()}
 
@@ -342,6 +356,13 @@ def _make_handler_class(ctx: "Context"):
                             "gateway": f"{gateway_host}:{gateway_port}",
                         },
                     )
+                # /a2a/tasks/:id and /a2a/tasks/:id/events
+                if path.startswith("/a2a/tasks/"):
+                    tail = path[len("/a2a/tasks/"):]
+                    if tail.endswith("/events"):
+                        return self._handle_task_events(tail[: -len("/events")])
+                    if "/" not in tail and tail:
+                        return self._handle_task_get(tail)
                 return write_json_response(self, 404, {"error": "not found"})
             except Exception as err:
                 logger.error(f"[sidecar:{self_name}] unhandled:", traceback.format_exc() or err)
@@ -361,6 +382,14 @@ def _make_handler_class(ctx: "Context"):
                     return self._handle_a2a_outbound()
                 if path == "/mcp":
                     return self._handle_mcp()
+                if path.startswith("/a2a/tasks/"):
+                    tail = path[len("/a2a/tasks/"):]
+                    if tail.endswith("/cancel"):
+                        return self._handle_task_cancel(tail[: -len("/cancel")])
+                    if tail.endswith("/input"):
+                        return write_json_response(
+                            self, 501, {"error": "input-required is not implemented yet"}
+                        )
                 return write_json_response(self, 404, {"error": "not found"})
             except Exception as err:
                 logger.error(f"[sidecar:{self_name}] unhandled:", traceback.format_exc() or err)
@@ -392,8 +421,23 @@ def _make_handler_class(ctx: "Context"):
                     self, exc, request_id=request_id, rid_headers=rid_headers
                 )
 
+            mode_raw = body.get("mode") if isinstance(body, dict) else None
+            if isinstance(mode_raw, str) and mode_raw:
+                mode = mode_raw
+            else:
+                # Operator-level default, picked up live so the env var can
+                # be flipped without a sidecar restart for dry-run rollouts.
+                env_default = (os.environ.get("A2A_DEFAULT_MODE") or "").strip().lower()
+                mode = env_default if env_default in ("sync", "async") else "sync"
+            if mode not in ("sync", "async"):
+                return write_error_envelope(
+                    self, 400, f"invalid mode: {mode_raw!r}",
+                    request_id=request_id, rid_headers=rid_headers,
+                )
+
             logger.info(
-                f"[sidecar:{self_name}] a2a.send accepted request_id={request_id} from={peer_from} hop={incoming_hop}"
+                f"[sidecar:{self_name}] a2a.send accepted request_id={request_id} "
+                f"from={peer_from} mode={mode} hop={incoming_hop}"
             )
 
             rl = rate_limiter.allow(peer_from)
@@ -425,6 +469,43 @@ def _make_handler_class(ctx: "Context"):
                     self, 503,
                     f"gateway not ready after {gateway_ready_deadline_ms}ms",
                     request_id=request_id, rid_headers=rid_headers,
+                )
+
+            if mode == "async":
+                if task_store is None or task_worker is None:
+                    return write_error_envelope(
+                        self, 503,
+                        "async mode requires A2A_TASK_DIR",
+                        request_id=request_id, rid_headers=rid_headers,
+                    )
+                try:
+                    snapshot = task_store.create(
+                        peer=peer_from,
+                        task_id=mint_task_id(),
+                        thread_id=thread_id,
+                        message=message,
+                        request_id=request_id,
+                    )
+                except TaskError as exc:
+                    return write_error_envelope(
+                        self, exc.http_status, str(exc),
+                        request_id=request_id, rid_headers=rid_headers,
+                    )
+                task_worker.submit(peer=peer_from, task_id=snapshot["task_id"])
+                logger.info(
+                    f"[sidecar:{self_name}] a2a.send async queued "
+                    f"request_id={request_id} task_id={snapshot['task_id']} from={peer_from}"
+                )
+                return write_json_response(
+                    self,
+                    202,
+                    {
+                        "task_id": snapshot["task_id"],
+                        "state": snapshot["state"],
+                        "thread_id": thread_id,
+                        "request_id": request_id,
+                    },
+                    extra_headers=rid_headers,
                 )
 
             history = thread_store.load_history(peer_from, thread_id)
@@ -575,6 +656,102 @@ def _make_handler_class(ctx: "Context"):
                 rid_headers=rid_headers,
             )
 
+        # ---- /a2a/tasks/:id --------------------------------------------------
+
+        def _require_task_store(self):
+            """Return (task_store, rid_headers) or ``None`` after writing 503."""
+            request_id = read_or_mint_request_id(self.headers)
+            rid_headers = {REQUEST_ID_HEADER: request_id}
+            if task_store is None:
+                write_error_envelope(
+                    self, 503, "async mode requires A2A_TASK_DIR",
+                    request_id=request_id, rid_headers=rid_headers,
+                )
+                return None
+            return request_id, rid_headers
+
+        def _resolve_task_peer(self, task_id: str, request_id: str, rid_headers):
+            """Look up a task across all peer dirs.
+
+            Phase 1 puts the snapshot under ``<peer>/<task_id>.json`` but the
+            GET/cancel/events endpoints don't carry the peer in the URL —
+            task_id is globally unique by design (§1.3). We do a linear scan
+            over peer dirs, which is cheap for the task counts Phase 1 targets
+            (tens to low hundreds). Returns peer name or ``None`` after
+            writing 404.
+            """
+            if task_store is None:
+                write_error_envelope(
+                    self, 503, "async mode requires A2A_TASK_DIR",
+                    request_id=request_id, rid_headers=rid_headers,
+                )
+                return None
+            try:
+                peers = os.listdir(task_store.storage_dir)
+            except OSError:
+                peers = []
+            for peer in peers:
+                snapshot = task_store.get(peer=peer, task_id=task_id)
+                if snapshot is not None:
+                    return peer
+            write_error_envelope(
+                self, 404, f"task not found: {task_id}",
+                request_id=request_id, rid_headers=rid_headers,
+            )
+            return None
+
+        def _handle_task_get(self, task_id: str) -> None:
+            request_id = read_or_mint_request_id(self.headers)
+            rid_headers = {REQUEST_ID_HEADER: request_id}
+            peer = self._resolve_task_peer(task_id, request_id, rid_headers)
+            if peer is None:
+                return
+            snapshot = task_store.get(peer=peer, task_id=task_id)
+            if snapshot is None:
+                return write_error_envelope(
+                    self, 404, f"task not found: {task_id}",
+                    request_id=request_id, rid_headers=rid_headers,
+                )
+            return write_json_response(self, 200, snapshot, rid_headers)
+
+        def _handle_task_cancel(self, task_id: str) -> None:
+            request_id = read_or_mint_request_id(self.headers)
+            rid_headers = {REQUEST_ID_HEADER: request_id}
+            peer = self._resolve_task_peer(task_id, request_id, rid_headers)
+            if peer is None:
+                return
+            try:
+                snapshot = task_store.request_cancel(peer=peer, task_id=task_id)
+            except TaskError as exc:
+                return write_error_envelope(
+                    self, exc.http_status, str(exc),
+                    request_id=request_id, rid_headers=rid_headers,
+                )
+            logger.info(
+                f"[sidecar:{self_name}] task canceled request_id={request_id} task_id={task_id}"
+            )
+            return write_json_response(self, 200, snapshot, rid_headers)
+
+        def _handle_task_events(self, task_id: str) -> None:
+            request_id = read_or_mint_request_id(self.headers)
+            rid_headers = {REQUEST_ID_HEADER: request_id}
+            peer = self._resolve_task_peer(task_id, request_id, rid_headers)
+            if peer is None:
+                return
+            try:
+                stream_task_events(
+                    self,
+                    store=task_store,
+                    peer=peer,
+                    task_id=task_id,
+                    heartbeat_s=task_heartbeat_s,
+                    idle_timeout_s=task_heartbeat_s * 4,
+                )
+            except Exception as err:  # noqa: BLE001
+                logger.error(
+                    f"[sidecar:{self_name}] sse stream failed task_id={task_id}: {err}"
+                )
+
         # ---- /mcp ------------------------------------------------------------
 
         def _handle_mcp(self) -> None:
@@ -602,6 +779,9 @@ def _make_handler_class(ctx: "Context"):
                 outbound_limit_key_fn=outbound_limit_key,
                 list_peers_fn=list_peers,
                 include_role=include_role,
+                async_enabled=task_store is not None,
+                get_task_fn=get_task_from_peer,
+                cancel_task_fn=cancel_task_on_peer,
             )
             return write_json_response(self, 200, response, rid_headers)
 
@@ -676,7 +856,7 @@ def main() -> None:
         args.get("request-timeout-ms"),
         _ms_from_seconds_env("A2A_REQUEST_TIMEOUT_SECONDS"),
         os.environ.get("A2A_REQUEST_TIMEOUT_MS"),
-        default=300000,
+        default=86400000,
     )
 
     gateway_ready_deadline_ms = _int_from_sources(
@@ -713,6 +893,88 @@ def main() -> None:
         max_history_pairs=thread_max_pairs,
     )
 
+    task_dir = os.environ.get("A2A_TASK_DIR") or ""
+    task_deadline_s = _int_from_sources(
+        os.environ.get("A2A_TASK_DEADLINE_S"), default=86400
+    )
+    task_retain_s = _int_from_sources(
+        os.environ.get("A2A_TASK_RETAIN_S"), default=86400
+    )
+    task_workers = _int_from_sources(
+        os.environ.get("A2A_TASK_WORKERS"), default=4
+    )
+    try:
+        task_heartbeat_s = float(os.environ.get("A2A_TASK_HEARTBEAT_S") or 15.0)
+    except ValueError:
+        task_heartbeat_s = 15.0
+    task_store = None
+    task_worker = None
+    if task_dir:
+        task_store = create_task_store(
+            storage_dir=task_dir,
+            default_deadline_s=task_deadline_s,
+            retain_s=task_retain_s,
+        )
+
+        def _run_task_fn(
+            snapshot: Dict[str, Any],
+            *,
+            progress: Any = None,
+        ) -> Dict[str, Any]:
+            peer_from = snapshot["peer"]
+            msg = snapshot["input"]["message"]
+            thr_id = snapshot.get("thread_id")
+
+            def _note(text: str) -> None:
+                if callable(progress):
+                    try:
+                        progress(text)
+                    except Exception:  # noqa: BLE001
+                        pass
+
+            _note("resolving gateway auth")
+            try:
+                auth = read_gateway_auth(adapter)
+            except Exception as exc:
+                raise RuntimeError(f"instance not ready: {exc}")
+            history = thread_store.load_history(peer_from, thr_id)
+            _note(f"calling gateway (history={len(history)} turns)")
+            if callable(progress):
+                reply = post_chat_completion_streaming(
+                    gateway_host=gateway_host,
+                    gateway_port=gateway_port,
+                    token=auth.get("token"),
+                    user_message=msg,
+                    system_prompt=build_a2a_context(self_name, peer_from),
+                    history=history,
+                    model=model,
+                    timeout_ms=request_timeout_ms,
+                    progress=_note,
+                )
+            else:
+                reply = post_chat_completion(
+                    gateway_host=gateway_host,
+                    gateway_port=gateway_port,
+                    token=auth.get("token"),
+                    user_message=msg,
+                    system_prompt=build_a2a_context(self_name, peer_from),
+                    history=history,
+                    model=model,
+                    timeout_ms=request_timeout_ms,
+                )
+            _note(f"received reply ({len(reply)} chars)")
+            thread_store.append_turn(peer_from, thr_id, msg, reply)
+            return {"reply": reply, "thread_id": thr_id}
+
+        task_worker = TaskWorker(
+            store=task_store,
+            run_fn=_run_task_fn,
+            logger=default_logger,
+            self_name=self_name,
+            max_workers=task_workers,
+            heartbeat_s=task_heartbeat_s,
+        )
+
     card = {"name": self_name, "role": role, "skills": skills, "endpoint": endpoint}
 
     ctx = Context(
@@ -728,6 +990,9 @@ def main() -> None:
         model=model,
         rate_limiter=rate_limiter,
         thread_store=thread_store,
+        task_store=task_store,
+        task_worker=task_worker,
+        task_heartbeat_s=task_heartbeat_s,
     )
     handler_cls = _make_handler_class(ctx)
 
@@ -748,6 +1013,24 @@ def main() -> None:
         interval_ms=read_outbound_sweep_interval_ms(os.environ),
         logger=default_logger,
     )
+
+    # Periodic task GC sweep: times out deadline-exceeded in-flight tasks
+    # and purges terminal tasks past their retention window. Interval is
+    # ``min(heartbeat_s * 4, 60s)`` so a mostly-idle sidecar doesn't scan
+    # the task tree aggressively, and a busy one still catches timeouts
+    # within a heartbeat or two.
+    if task_store is not None:
+        sweep_interval_s = max(10.0, min(task_heartbeat_s * 4, 60.0))
+
+        def _sweep_loop() -> None:
+            while True:
+                try:
+                    task_store.sweep()
+                except Exception as exc:  # noqa: BLE001
+                    default_logger.warn(f"[sidecar:{self_name}] task sweep failed: {exc}")
+                threading.Event().wait(sweep_interval_s)
+
+        threading.Thread(target=_sweep_loop, daemon=True, name="a2a-task-sweep").start()
 
     server = _ThreadingHTTPServer((bind_host, port), handler_cls)
 
@@ -771,6 +1054,15 @@ def main() -> None:
     default_logger.info("  POST /a2a/send      → gateway /v1/chat/completions (native agent)")
     default_logger.info("  POST /a2a/outbound  → registry lookup → peer /a2a/send")
     default_logger.info("  POST /mcp           → MCP streamable-http (tool: a2a_call_peer)")
+    if task_store is not None:
+        default_logger.info("  GET  /a2a/tasks/:id         → task snapshot")
+        default_logger.info("  GET  /a2a/tasks/:id/events  → task SSE stream")
+        default_logger.info("  POST /a2a/tasks/:id/cancel  → cancel task (cooperative)")
+        _dm = (os.environ.get("A2A_DEFAULT_MODE") or "").strip().lower()
+        effective_default = _dm if _dm in ("sync", "async") else "sync"
+        default_logger.info(
+            f"  async tasks enabled (A2A_DEFAULT_MODE={effective_default})"
+        )
 
     try:
         server.serve_forever()

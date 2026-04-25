@@ -33,9 +33,10 @@ caller that used ``sidecar.post_chat_completion`` keeps working.
 from __future__ import annotations
 
 import json
-from typing import Optional
+import time
+from typing import Callable, Optional
 
-from http_client import post_json
+from http_client import post_json, _connection_for, A2A_MAX_RESPONSE_BYTES
 
 
 def post_chat_completion(
@@ -85,6 +86,120 @@ def post_chat_completion(
     if not isinstance(content, str) or not content:
         raise RuntimeError(f"gateway returned empty content: {body[:400]}")
     return content
+
+
+def post_chat_completion_streaming(
+    gateway_host: str,
+    gateway_port: int,
+    token: Optional[str],
+    user_message: str,
+    system_prompt: Optional[str],
+    history: list,
+    model: str,
+    timeout_ms: int,
+    *,
+    progress: Callable[[str], None],
+    progress_interval_s: float = 3.0,
+    response_cap: int = A2A_MAX_RESPONSE_BYTES,
+) -> str:
+    """Streaming variant of :func:`post_chat_completion`.
+
+    Uses ``stream: true`` and reads the SSE response chunk-by-chunk so the
+    caller can surface live progress (a2a-async layer 3). Calls
+    ``progress("streaming: N chars · …<tail>")`` no more often than every
+    ``progress_interval_s`` seconds. Returns the concatenated assistant text.
+
+    A separate function — rather than a flag on :func:`post_chat_completion`
+    — because the streaming path uses a manually-managed HTTP connection
+    (so it doesn't fully read the body before returning), while the original
+    call goes through ``post_json``'s capped-read shortcut.
+    """
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.extend(history or [])
+    messages.append({"role": "user", "content": user_message})
+    body = json.dumps(
+        {
+            "model": model or "openclaw",
+            "stream": True,
+            "messages": messages,
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    headers = {
+        "content-type": "application/json",
+        "content-length": str(len(body)),
+        "user-agent": "a2a-bridge-sidecar/0.3",
+        "accept": "text/event-stream",
+    }
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+
+    conn = _connection_for(gateway_host, gateway_port, timeout_ms / 1000.0)
+    try:
+        conn.request("POST", "/v1/chat/completions", body=body, headers=headers)
+        resp = conn.getresponse()
+        status = resp.status or 0
+        if status != 200:
+            preview = resp.read(400).decode("utf-8", errors="replace")
+            raise RuntimeError(
+                f"gateway /v1/chat/completions {status}: {preview}"
+            )
+
+        chunks: list[str] = []
+        total = 0
+        last_emit = time.monotonic()
+        for raw_line in resp:
+            line = raw_line.strip()
+            if not line or not line.startswith(b"data:"):
+                continue
+            data = line[len(b"data:"):].strip()
+            if data == b"[DONE]":
+                break
+            try:
+                event = json.loads(data)
+            except ValueError:
+                continue
+            try:
+                content = event["choices"][0]["delta"].get("content")
+            except (KeyError, IndexError, TypeError):
+                content = None
+            if not isinstance(content, str) or not content:
+                continue
+            chunks.append(content)
+            total += len(content)
+            if total > response_cap:
+                raise RuntimeError(
+                    f"streaming response exceeded {response_cap} bytes"
+                )
+            now = time.monotonic()
+            if now - last_emit >= progress_interval_s:
+                _emit_stream_progress(progress, chunks, total)
+                last_emit = now
+
+        full = "".join(chunks)
+        if not full:
+            raise RuntimeError("gateway streamed empty content")
+        return full
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _emit_stream_progress(
+    progress: Callable[[str], None],
+    chunks: list,
+    total: int,
+) -> None:
+    tail = "".join(chunks)[-60:].replace("\n", " ").replace("\r", " ").strip()
+    note = f"streaming: {total} chars · …{tail}" if tail else f"streaming: {total} chars"
+    try:
+        progress(note[:200])
+    except Exception:
+        pass
 
 
 def build_a2a_context(self_name: str, from_agent: str) -> str:

@@ -41,7 +41,7 @@ def base_kwargs(**overrides):
     def default_lookup(_reg, _name, _t):
         return {"name": "analyst", "endpoint": "http://127.0.0.1:9129/a2a/send"}
 
-    def default_forward(_ep, _self, _peer, _msg, _thread, _hop, _t, _rid):
+    def default_forward(_ep, _self, _peer, _msg, _thread, _hop, _t, _rid, _mode=None):
         return {"from": "analyst", "reply": "42", "thread_id": None}
 
     kwargs = {
@@ -102,7 +102,7 @@ def test_tools_call_forwards_and_returns_text_content():
         }
         return {"name": "analyst", "endpoint": "http://127.0.0.1:9129/a2a/send"}
 
-    def forward(endpoint, self_name, peer_name, message, thread_id, hop, timeout, request_id):
+    def forward(endpoint, self_name, peer_name, message, thread_id, hop, timeout, request_id, mode=None):
         seen["forward"] = {
             "endpoint": endpoint,
             "self_name": self_name,
@@ -112,6 +112,7 @@ def test_tools_call_forwards_and_returns_text_content():
             "hop": hop,
             "timeout": timeout,
             "request_id": request_id,
+            "mode": mode,
         }
         return {"from": "analyst", "reply": "Q1 was up 18%", "thread_id": "t-1"}
 
@@ -145,12 +146,15 @@ def test_tools_call_forwards_and_returns_text_content():
     assert seen["forward"]["thread_id"] == "t-1"
     assert seen["forward"]["hop"] == 1
     assert seen["forward"]["request_id"] == "req-1"
+    # Regression: sync MCP tool MUST pin mode="sync" so a peer running with
+    # A2A_DEFAULT_MODE=async still returns the inline reply (not a task_id).
+    assert seen["forward"]["mode"] == "sync"
 
 
 def test_tools_call_without_thread_id_passes_none():
     seen_thread = {"v": "uninitialized"}
 
-    def forward(_ep, _self, _peer, _msg, thread_id, _hop, _t, _rid):
+    def forward(_ep, _self, _peer, _msg, thread_id, _hop, _t, _rid, _mode=None):
         seen_thread["v"] = thread_id
         return {"from": "analyst", "reply": "ok", "thread_id": None}
 
@@ -250,6 +254,185 @@ def test_tools_call_peer_forward_failure_surfaces_http_status_and_peer_status():
     assert res["error"]["code"] == ERR_A2A_UPSTREAM
     assert res["error"]["data"]["httpStatus"] == 502
     assert res["error"]["data"]["peerStatus"] == 500
+
+
+# -- a2a_get_task content payload ------------------------------------------
+# Regression: the get_task tool used to return only "task <id> state=<state>"
+# in content[0].text, even when the task was completed. The actual reply
+# lived in structuredContent.result.reply, which most LLM clients ignore.
+# A coordinator polling the task would see "state=completed" and have no
+# idea what the answer was — appearing as if results were lost.
+
+
+def _async_kwargs(**overrides):
+    def default_lookup(_reg, _name, _t):
+        return {"name": "analyst", "endpoint": "http://127.0.0.1:9129/a2a/send"}
+
+    def default_forward(*_a, **_kw):
+        return {"task_id": "task_x", "state": "submitted"}
+
+    base = {
+        "self_name": "writer",
+        "registry_url": "http://127.0.0.1:9100",
+        "timeout": 2000,
+        "request_id": "req-async",
+        "plugin_version": "0.3.3.testsha",
+        "lookup_peer_fn": default_lookup,
+        "forward_to_peer_fn": default_forward,
+        "async_enabled": True,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_get_task_completed_embeds_reply_in_text_content():
+    snapshot = {
+        "task_id": "task_abc",
+        "state": "completed",
+        "result": {"reply": "Q1 was up 18%, driven by infra capex.", "thread_id": "t-1"},
+    }
+
+    def get_task(_endpoint, _task_id, _timeout, _request_id):
+        return snapshot
+
+    res = handle_mcp_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 100,
+            "method": "tools/call",
+            "params": {
+                "name": "a2a_get_task",
+                "arguments": {"peer": "analyst", "task_id": "task_abc"},
+            },
+        },
+        **_async_kwargs(get_task_fn=get_task),
+    )
+    text = res["result"]["content"][0]["text"]
+    assert "state=completed" in text
+    assert "Q1 was up 18%, driven by infra capex." in text
+    assert res["result"]["structuredContent"] == snapshot
+
+
+def test_get_task_failed_embeds_error_message_in_text_content():
+    snapshot = {
+        "task_id": "task_abc",
+        "state": "failed",
+        "error": {"message": "upstream unreachable", "http_status": 502},
+    }
+
+    def get_task(*_a, **_kw):
+        return snapshot
+
+    res = handle_mcp_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 101,
+            "method": "tools/call",
+            "params": {
+                "name": "a2a_get_task",
+                "arguments": {"peer": "analyst", "task_id": "task_abc"},
+            },
+        },
+        **_async_kwargs(get_task_fn=get_task),
+    )
+    text = res["result"]["content"][0]["text"]
+    assert "state=failed" in text
+    assert "upstream unreachable" in text
+
+
+def test_get_task_working_keeps_state_only_text():
+    snapshot = {"task_id": "task_abc", "state": "working", "result": None}
+
+    def get_task(*_a, **_kw):
+        return snapshot
+
+    res = handle_mcp_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 102,
+            "method": "tools/call",
+            "params": {
+                "name": "a2a_get_task",
+                "arguments": {"peer": "analyst", "task_id": "task_abc"},
+            },
+        },
+        **_async_kwargs(get_task_fn=get_task),
+    )
+    assert res["result"]["content"][0]["text"] == "task task_abc state=working"
+
+
+def test_get_task_working_surfaces_elapsed_and_last_activity():
+    """When the snapshot has timestamps, the working response should tell
+    the LLM how long the task has been running so it can decide whether
+    to keep waiting."""
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    created = (now - timedelta(seconds=125)).isoformat()
+    last_progress = (now - timedelta(seconds=4)).isoformat()
+    snapshot = {
+        "task_id": "task_abc",
+        "state": "working",
+        "result": None,
+        "created_at": created,
+        "updated_at": last_progress,
+        "last_progress_at": last_progress,
+    }
+
+    def get_task(*_a, **_kw):
+        return snapshot
+
+    res = handle_mcp_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 103,
+            "method": "tools/call",
+            "params": {
+                "name": "a2a_get_task",
+                "arguments": {"peer": "analyst", "task_id": "task_abc"},
+            },
+        },
+        **_async_kwargs(get_task_fn=get_task),
+    )
+    text = res["result"]["content"][0]["text"]
+    assert "state=working" in text
+    assert "elapsed 2m" in text  # 125s formats as 2m05s
+    assert "last activity" in text
+    assert "ago" in text
+
+
+def test_get_task_working_surfaces_breadcrumb_message():
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    created = (now - timedelta(seconds=10)).isoformat()
+    snapshot = {
+        "task_id": "task_abc",
+        "state": "working",
+        "result": None,
+        "created_at": created,
+        "updated_at": now.isoformat(),
+        "last_progress_at": now.isoformat(),
+        "last_progress_message": "calling hermes",
+    }
+
+    def get_task(*_a, **_kw):
+        return snapshot
+
+    res = handle_mcp_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 104,
+            "method": "tools/call",
+            "params": {
+                "name": "a2a_get_task",
+                "arguments": {"peer": "analyst", "task_id": "task_abc"},
+            },
+        },
+        **_async_kwargs(get_task_fn=get_task),
+    )
+    text = res["result"]["content"][0]["text"]
+    assert 'note: "calling hermes"' in text
 
 
 # -- top-level dispatch ------------------------------------------------------

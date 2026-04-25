@@ -44,3 +44,9 @@ class Context:
     model: str
     rate_limiter: Any
     thread_store: Any
+    # Async-task plumbing (Phase 1). Both ``None`` when A2A_TASK_DIR is unset —
+    # the handler then refuses ``mode=async`` with 503 rather than advertising
+    # a feature backed by nothing.
+    task_store: Any = None
+    task_worker: Any = None
+    task_heartbeat_s: float = 15.0
