@@ -89,8 +89,7 @@ def test_snapshot_restore_replaces_directory_and_instance_env(temp_clawcu_home, 
     assert env_path.read_text(encoding="utf-8") == "OPENAI_API_KEY=before\n"
 
 
-def test_bootstrap_home_can_be_saved_and_read(tmp_path, monkeypatch) -> None:
-    monkeypatch.delenv("CLAWCU_HOME", raising=False)
+def test_bootstrap_home_can_be_saved_and_read(temp_clawcu_home, tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path / "user-home"))
     store = StateStore(get_paths())
 
