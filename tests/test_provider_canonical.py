@@ -638,3 +638,116 @@ def test_plan_apply_provider_returns_dst_planned_writes(temp_clawcu_home, tmp_pa
     # nothing on disk
     assert not (target / "config.yaml").exists()
     assert not (target / ".env").exists()
+
+
+# -- cross-service translation (the original bug) ------------------------
+
+def test_openclaw_kimi_bundle_to_hermes_instance(temp_clawcu_home, tmp_path) -> None:
+    """openclaw kimi-coding bundle → hermes instance. The original
+    user-reported bug — apply silently no-op'd before this refactor."""
+    from clawcu.core.storage import StateStore
+    from clawcu.core.docker import DockerManager
+    from clawcu.core.models import InstanceRecord
+    service = ClawCUService(store=StateStore(), docker=DockerManager())
+
+    # collect kimi-coding as an openclaw bundle
+    service.store.save_provider_bundle(
+        "openclaw", "kimi-coding", _openclaw_bundle(),
+    )
+    # create a hermes target
+    target = tmp_path / "analyst"
+    target.mkdir()
+    (target / "config.yaml").write_text(
+        "model:\n  provider: openrouter\n  default: m1\n"
+        "smart_model_routing:\n  enabled: false\n",
+        encoding="utf-8",
+    )
+    (target / ".env").write_text("API_SERVER_KEY=existing\n", encoding="utf-8")
+    service.store.save_record(InstanceRecord(
+        service="hermes", name="analyst", version="2026.4.8",
+        upstream_ref="v2026.4.8", image_tag="clawcu/hermes:test",
+        container_name="clawcu-hermes-analyst", datadir=str(target),
+        port=8642, cpu="1", memory="2g", auth_mode="native", status="running",
+        created_at="2026-04-25T00:00:00+00:00",
+        updated_at="2026-04-25T00:00:00+00:00", history=[],
+    ))
+
+    result = service.apply_provider("kimi-coding", "analyst", persist=True)
+
+    assert result["service"] == "hermes"
+
+    import yaml
+    config = yaml.safe_load((target / "config.yaml").read_text(encoding="utf-8"))
+    assert config["model"]["provider"] == "kimi-coding"
+    assert config["model"]["default"] == "k2p5"
+    assert config["model"]["base_url"] == "https://api.kimi.com/coding/"
+    assert config["smart_model_routing"] == {"enabled": False}  # preserved
+
+    env = (target / ".env").read_text(encoding="utf-8")
+    assert "KIMI_API_KEY=sk-kimi-test" in env
+    assert "API_SERVER_KEY=existing" in env  # preserved
+
+
+def test_hermes_kimi_bundle_to_openclaw_instance(temp_clawcu_home, tmp_path) -> None:
+    """Reverse direction: hermes-collected kimi bundle → openclaw instance."""
+    from clawcu.core.storage import StateStore
+    from clawcu.core.docker import DockerManager
+    from clawcu.core.models import InstanceRecord
+    import yaml
+    import json
+    service = ClawCUService(store=StateStore(), docker=DockerManager())
+
+    service.store.save_provider_bundle("hermes", "kimi-coding", {
+        "service": "hermes", "name": "kimi-coding",
+        "metadata": {"service": "hermes", "name": "kimi-coding"},
+        "config_yaml": yaml.safe_dump({
+            "model": {"provider": "kimi-coding", "default": "k2p5"},
+        }),
+        "env": "KIMI_API_KEY=sk-kimi-from-hermes\n",
+    })
+    target = tmp_path / "writer"
+    service.store.save_record(InstanceRecord(
+        service="openclaw", name="writer", version="2026.4.1",
+        upstream_ref="v2026.4.1", image_tag="clawcu/openclaw:test",
+        container_name="clawcu-openclaw-writer", datadir=str(target),
+        port=18799, cpu="1", memory="2g", auth_mode="token", status="running",
+        created_at="2026-04-25T00:00:00+00:00",
+        updated_at="2026-04-25T00:00:00+00:00", history=[],
+    ))
+
+    service.apply_provider("kimi-coding", "writer", agent="main")
+
+    runtime_dir = target / "agents" / "main" / "agent"
+    auth = json.loads((runtime_dir / "auth-profiles.json").read_text(encoding="utf-8"))
+    models = json.loads((runtime_dir / "models.json").read_text(encoding="utf-8"))
+    assert auth["profiles"]["kimi-coding:default"]["key"] == "sk-kimi-from-hermes"
+    assert models["providers"]["kimi-coding"]["models"][0]["id"] == "k2p5"
+    # zero defaults filled in for fields hermes didn't carry
+    assert models["providers"]["kimi-coding"]["models"][0]["contextWindow"] == 0
+
+
+def test_codex_oauth_bundle_to_openclaw_raises(temp_clawcu_home, tmp_path) -> None:
+    """OAuth providers (Codex) cannot apply to openclaw — error must be clear."""
+    from clawcu.core.storage import StateStore
+    from clawcu.core.docker import DockerManager
+    from clawcu.core.models import InstanceRecord
+    import yaml
+    service = ClawCUService(store=StateStore(), docker=DockerManager())
+    service.store.save_provider_bundle("hermes", "openai-codex", {
+        "service": "hermes", "name": "openai-codex",
+        "metadata": {"service": "hermes", "name": "openai-codex"},
+        "config_yaml": yaml.safe_dump({"model": {"provider": "openai-codex", "default": "gpt-5.4"}}),
+        "env": "",
+        "auth_json": '{"tokens": {"access_token": "tok"}}',
+    })
+    target = tmp_path / "writer"
+    service.store.save_record(InstanceRecord(
+        service="openclaw", name="writer", version="2026.4.1",
+        upstream_ref="v2026.4.1", image_tag="clawcu/openclaw:test",
+        container_name="clawcu-openclaw-writer", datadir=str(target),
+        port=18799, cpu="1", memory="2g", auth_mode="token", status="running",
+        created_at="2026-04-25T00:00:00+00:00",
+        updated_at="2026-04-25T00:00:00+00:00", history=[],
+    ))
+    with pytest.raises(IncompatibleCredentialError, match="openai-codex"):
+        service.apply_provider("openai-codex", "writer")
