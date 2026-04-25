@@ -364,18 +364,19 @@ class ClawCUService:
         fallbacks: list[str] | None = None,
         persist: bool = False,
     ) -> dict[str, str]:
+        from clawcu.core.provider_models import apply_overrides
+
         record = self.store.load_record(instance)
-        service_name, provider_name = self._resolve_provider_ref(provider, target_service=record.service)
-        bundle = self.store.load_provider_bundle(service_name, provider_name)
-        adapter = self.adapter_for_record(record)
-        return adapter.apply_provider(
-            self,
-            bundle,
-            record.name,
-            agent=agent,
-            primary=primary,
-            fallbacks=fallbacks,
-            persist=persist,
+        src_service, provider_name = self._resolve_provider_ref(
+            provider, target_service=record.service,
+        )
+        bundle = self.store.load_provider_bundle(src_service, provider_name)
+        src_adapter = self.adapter_for_service(src_service)
+        canonical = src_adapter.bundle_to_canonical(self, bundle)
+        canonical = apply_overrides(canonical, primary=primary, fallbacks=fallbacks)
+        dst_adapter = self.adapter_for_record(record)
+        return dst_adapter.write_canonical(
+            self, canonical, record, agent=agent, persist=persist,
         )
 
     def plan_apply_provider(

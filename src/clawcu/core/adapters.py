@@ -232,23 +232,6 @@ class ServiceAdapter(ABC):
         """
         raise NotImplementedError
 
-    # ── DEPRECATED: removed once both adapters implement write_canonical
-    # (see Task 8). Concrete subclasses keep their existing apply_provider
-    # bodies untouched until then.
-    @abstractmethod
-    def apply_provider(
-        self,
-        service: "ClawCUService",
-        bundle: dict[str, object],
-        instance: str,
-        *,
-        agent: str = "main",
-        primary: str | None = None,
-        fallbacks: list[str] | None = None,
-        persist: bool = False,
-    ) -> dict[str, str]:
-        raise NotImplementedError
-
     @abstractmethod
     def provider_models(self, service: "ClawCUService", bundle: dict[str, object]) -> list[str]:
         raise NotImplementedError

@@ -670,52 +670,6 @@ class OpenClawAdapter(ServiceAdapter):
             )
         return bundles
 
-    def apply_provider(self, service, bundle: dict[str, object], instance: str, *, agent: str = "main", primary: str | None = None, fallbacks: list[str] | None = None, persist: bool = False) -> dict[str, str]:
-        record = service.store.load_record(instance)
-        if record.service != self.service_name:
-            raise ValueError(f"Provider bundle '{bundle.get('name')}' cannot be applied to {record.service} instance '{record.name}'.")
-        agent_name = agent.strip() or "main"
-        env_key = service._store_provider_api_key_in_instance_env(record.name, str(bundle["name"]), bundle) if persist else None
-        runtime_dir = Path(record.datadir) / "agents" / agent_name / "agent"
-        runtime_dir.mkdir(parents=True, exist_ok=True)
-        auth_path = runtime_dir / "auth-profiles.json"
-        models_path = runtime_dir / "models.json"
-        merged_auth = service._merge_auth_payloads(service._load_json_file(auth_path), dict(bundle.get("auth_profiles", {})))
-        merged_models = service._merge_models_payloads(service._load_json_file(models_path), dict(bundle.get("models", {})))
-        config_path = Path(record.datadir) / "openclaw.json"
-        config = service._load_json_file(config_path)
-        config = service._upsert_root_provider_models_config(config, dict(bundle.get("models", {})), env_key=env_key)
-        config = service._upsert_agent_model_config(config, agent_name=agent_name, primary=primary, fallbacks=fallbacks)
-        config_path.write_text(
-            json.dumps(config, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        auth_path.write_text(
-            json.dumps(merged_auth, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        models_path.write_text(
-            json.dumps(merged_models, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        service.store.append_log(
-            "provider apply "
-            f"provider={bundle['name']} instance={record.name} agent={agent_name} "
-            f"primary={primary or '-'} fallbacks={','.join(fallbacks or []) or '-'} "
-            f"runtime_dir={runtime_dir}"
-        )
-        return {
-            "provider": str(bundle["name"]),
-            "service": self.service_name,
-            "instance": record.name,
-            "agent": agent_name,
-            "runtime_dir": str(runtime_dir),
-            "env_key": env_key or "-",
-            "persist": "yes" if persist else "no",
-            "primary": primary or "-",
-            "fallbacks": ", ".join(fallbacks) if fallbacks else "-",
-        }
-
     def bundle_to_canonical(self, service, bundle):
         from clawcu.core.provider_models import (
             CanonicalModel,

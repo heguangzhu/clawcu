@@ -636,68 +636,6 @@ class HermesAdapter(ServiceAdapter):
             bundle["auth_json"] = auth_json_path.read_text(encoding="utf-8")
         return [bundle]
 
-    def apply_provider(self, service, bundle: dict[str, object], instance: str, *, agent: str = "main", primary: str | None = None, fallbacks: list[str] | None = None, persist: bool = False) -> dict[str, str]:
-        record = service.store.load_record(instance)
-        if record.service != self.service_name:
-            raise ValueError(f"Provider bundle '{bundle.get('name')}' cannot be applied to {record.service} instance '{record.name}'.")
-        config_path = Path(record.datadir) / "config.yaml"
-        target_config = self._load_config(record)
-        incoming_config = yaml.safe_load(str(bundle.get("config_yaml") or "")) or {}
-        if isinstance(incoming_config, dict):
-            for key in ("model", "fallback_model", "smart_model_routing", "custom_providers"):
-                if key in incoming_config:
-                    target_config[key] = incoming_config[key]
-        model_cfg = target_config.setdefault("model", {})
-        if not isinstance(model_cfg, dict):
-            model_cfg = {}
-            target_config["model"] = model_cfg
-        if primary:
-            if "/" in primary:
-                provider_name, model_name = primary.split("/", 1)
-                model_cfg["provider"] = provider_name
-                model_cfg["default"] = model_name
-            else:
-                model_cfg["default"] = primary
-        if fallbacks:
-            first = fallbacks[0]
-            if "/" in first:
-                provider_name, model_name = first.split("/", 1)
-                target_config["fallback_model"] = {"provider": provider_name, "model": model_name}
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(yaml.safe_dump(target_config, sort_keys=False), encoding="utf-8")
-
-        env_path = self.env_path(service, record)
-        target_env = service._load_env_file(env_path)
-        incoming_env = service._load_env_text(str(bundle.get("env") or ""))
-        target_env.update(incoming_env)
-        env_path.write_text(service._dump_env_file(target_env), encoding="utf-8")
-
-        # Restore Codex auth.json when present in the bundle — without this the
-        # target instance's hermes gateway would 500 with "No Codex credentials
-        # stored" until the operator runs `hermes auth` inside it.
-        incoming_auth_json = bundle.get("auth_json")
-        if isinstance(incoming_auth_json, str) and incoming_auth_json:
-            auth_json_path = Path(record.datadir) / "auth.json"
-            auth_json_path.parent.mkdir(parents=True, exist_ok=True)
-            auth_json_path.write_text(incoming_auth_json, encoding="utf-8")
-        service.store.append_log(
-            "provider apply "
-            f"provider={bundle['name']} instance={record.name} agent=main "
-            f"primary={primary or '-'} fallbacks={','.join(fallbacks or []) or '-'} "
-            f"config_path={config_path}"
-        )
-        return {
-            "provider": str(bundle["name"]),
-            "service": self.service_name,
-            "instance": record.name,
-            "agent": "main",
-            "config_path": str(config_path),
-            "env_path": str(env_path),
-            "persist": "yes" if persist else "yes",
-            "primary": primary or "-",
-            "fallbacks": ", ".join(fallbacks) if fallbacks else "-",
-        }
-
     def provider_models(self, service, bundle: dict[str, object]) -> list[str]:
         config = yaml.safe_load(str(bundle.get("config_yaml") or "")) or {}
         models: list[str] = []
