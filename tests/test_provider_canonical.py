@@ -149,3 +149,114 @@ def test_registry_includes_full_known_set() -> None:
         "opencode-go", "kilocode", "huggingface",
     }
     assert expected.issubset(set(PROVIDER_REGISTRY))
+
+
+# -- HermesAdapter.bundle_to_canonical -----------------------------------
+
+import yaml
+from clawcu.core.service import ClawCUService
+from clawcu.hermes.adapter import HermesAdapter
+
+
+def _hermes_bundle(*, config_yaml: str, env: str = "", auth_json: str | None = None) -> dict:
+    bundle = {
+        "service": "hermes",
+        "name": "test-provider",
+        "metadata": {"service": "hermes", "name": "test-provider"},
+        "config_yaml": config_yaml,
+        "env": env,
+    }
+    if auth_json is not None:
+        bundle["auth_json"] = auth_json
+    return bundle
+
+
+def test_hermes_to_canonical_api_key_provider(temp_clawcu_home) -> None:
+    service = ClawCUService()  # store/docker default OK for this read-only call
+    adapter = service.adapters["hermes"]
+    bundle = _hermes_bundle(
+        config_yaml=yaml.safe_dump({
+            "model": {"provider": "kimi-coding", "default": "k2p5"},
+        }),
+        env="KIMI_API_KEY=sk-kimi-xyz\n",
+    )
+    bundle["name"] = "kimi-coding"
+    bundle["metadata"]["name"] = "kimi-coding"
+
+    canonical = adapter.bundle_to_canonical(service, bundle)
+
+    assert canonical.name == "kimi-coding"
+    assert canonical.default_model_id == "k2p5"
+    assert canonical.api_key == "sk-kimi-xyz"
+    assert canonical.api_key_env_var == "KIMI_API_KEY"
+    assert canonical.auth_type == "api_key"
+    assert canonical.oauth_blob is None
+    assert canonical.base_url == "https://api.moonshot.ai/v1"  # from registry
+    # hermes carries no per-model metadata; just an id stub.
+    assert len(canonical.models) == 1
+    assert canonical.models[0].id == "k2p5"
+
+
+def test_hermes_to_canonical_explicit_base_url_overrides_registry(temp_clawcu_home) -> None:
+    service = ClawCUService()
+    adapter = service.adapters["hermes"]
+    bundle = _hermes_bundle(
+        config_yaml=yaml.safe_dump({
+            "model": {
+                "provider": "kimi-coding",
+                "default": "k2p5",
+                "base_url": "https://custom.kimi.example/v1",
+            },
+        }),
+        env="KIMI_API_KEY=sk-kimi-xyz\n",
+    )
+    bundle["name"] = "kimi-coding"
+    canonical = adapter.bundle_to_canonical(service, bundle)
+    assert canonical.base_url == "https://custom.kimi.example/v1"
+
+
+def test_hermes_to_canonical_codex_oauth(temp_clawcu_home) -> None:
+    service = ClawCUService()
+    adapter = service.adapters["hermes"]
+    auth_blob = '{"tokens": {"access_token": "tok-abc"}}'
+    bundle = _hermes_bundle(
+        config_yaml=yaml.safe_dump({
+            "model": {"provider": "openai-codex", "default": "gpt-5.4"},
+        }),
+        env="",
+        auth_json=auth_blob,
+    )
+    bundle["name"] = "openai-codex"
+    canonical = adapter.bundle_to_canonical(service, bundle)
+    assert canonical.auth_type == "oauth"
+    assert canonical.oauth_blob == auth_blob
+    assert canonical.api_key is None
+
+
+def test_hermes_to_canonical_missing_credential_raises(temp_clawcu_home) -> None:
+    service = ClawCUService()
+    adapter = service.adapters["hermes"]
+    bundle = _hermes_bundle(
+        config_yaml=yaml.safe_dump({
+            "model": {"provider": "kimi-coding", "default": "k2p5"},
+        }),
+        env="",  # no key + no auth.json
+    )
+    bundle["name"] = "kimi-coding"
+    with pytest.raises(MissingCredentialError, match="kimi-coding"):
+        adapter.bundle_to_canonical(service, bundle)
+
+
+def test_hermes_to_canonical_fallback_model_translated(temp_clawcu_home) -> None:
+    service = ClawCUService()
+    adapter = service.adapters["hermes"]
+    bundle = _hermes_bundle(
+        config_yaml=yaml.safe_dump({
+            "model": {"provider": "kimi-coding", "default": "k2p5"},
+            "fallback_model": {"provider": "minimax", "model": "MiniMax-M2"},
+        }),
+        env="KIMI_API_KEY=sk-kimi\n",
+    )
+    bundle["name"] = "kimi-coding"
+    canonical = adapter.bundle_to_canonical(service, bundle)
+    assert canonical.fallback_model_ids == ("minimax/MiniMax-M2",)

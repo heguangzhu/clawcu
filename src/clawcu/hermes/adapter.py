@@ -717,8 +717,79 @@ class HermesAdapter(ServiceAdapter):
         return models
 
     def bundle_to_canonical(self, service, bundle):
-        from clawcu.core.provider_models import CanonicalProvider  # noqa: F401
-        raise NotImplementedError("HermesAdapter.bundle_to_canonical (Task 4)")
+        from clawcu.core.provider_models import (
+            CanonicalModel,
+            CanonicalProvider,
+            MissingCredentialError,
+        )
+        from clawcu.hermes.providers import info_for
+
+        config_yaml = str(bundle.get("config_yaml") or "")
+        config = yaml.safe_load(config_yaml) or {}
+        if not isinstance(config, dict):
+            config = {}
+        model_cfg = config.get("model", {}) if isinstance(config.get("model"), dict) else {}
+        provider_name = str(model_cfg.get("provider") or bundle.get("name") or "").strip()
+        default_model_id = str(model_cfg.get("default") or model_cfg.get("model") or "").strip() or None
+
+        info = info_for(provider_name) if provider_name else None
+
+        env_values = service._load_env_text(str(bundle.get("env") or ""))
+        api_key: str | None = None
+        if info and info.api_key_env_var and env_values.get(info.api_key_env_var):
+            api_key = env_values[info.api_key_env_var].strip() or None
+        if api_key is None:
+            # Fall back to any *_API_KEY / *_TOKEN entry (mirrors the
+            # heuristic in service._provider_bundle_api_key for hermes).
+            preferred = [k for k in sorted(env_values) if k.endswith("_API_KEY") or k.endswith("_TOKEN")]
+            if preferred:
+                api_key = env_values[preferred[0]].strip() or None
+
+        auth_json = bundle.get("auth_json")
+        oauth_blob = auth_json if isinstance(auth_json, str) and auth_json else None
+        is_oauth_provider = info is not None and info.auth_type.startswith("oauth")
+        if oauth_blob and is_oauth_provider:
+            auth_type = "oauth"
+        else:
+            auth_type = "api_key"
+            oauth_blob = None  # only carry oauth_blob when we'll use it
+
+        if auth_type == "api_key" and not api_key:
+            raise MissingCredentialError(
+                f"Hermes bundle for provider {provider_name!r} has no api_key "
+                f"(checked env var {info.api_key_env_var if info else '<derived>'} "
+                f"and any *_API_KEY/*_TOKEN entry) and no oauth_blob."
+            )
+
+        base_url = str(model_cfg.get("base_url") or "").strip() or None
+        if base_url is None and info:
+            base_url = info.inference_base_url
+
+        fallback_ids: tuple[str, ...] = ()
+        fallback_cfg = config.get("fallback_model")
+        if isinstance(fallback_cfg, dict):
+            fb_provider = str(fallback_cfg.get("provider") or "").strip()
+            fb_model = str(fallback_cfg.get("model") or "").strip()
+            if fb_provider and fb_model:
+                fallback_ids = (f"{fb_provider}/{fb_model}",)
+            elif fb_model:
+                fallback_ids = (fb_model,)
+
+        models = (CanonicalModel(id=default_model_id),) if default_model_id else ()
+
+        return CanonicalProvider(
+            name=provider_name or str(bundle.get("name") or ""),
+            api_style="openai",
+            base_url=base_url,
+            auth_type=auth_type,
+            api_key=api_key,
+            oauth_blob=oauth_blob,
+            api_key_env_var=info.api_key_env_var if info else None,
+            models=models,
+            default_model_id=default_model_id,
+            fallback_model_ids=fallback_ids,
+            extras={},
+        )
 
     def write_canonical(self, service, canonical, record, *, agent="main", persist=False, dry_run=False):
         raise NotImplementedError("HermesAdapter.write_canonical (Task 5)")
