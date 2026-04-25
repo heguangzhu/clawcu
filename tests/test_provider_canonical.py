@@ -481,3 +481,124 @@ def test_openclaw_to_canonical_default_api_style_when_missing(temp_clawcu_home) 
     bundle = _openclaw_bundle(api="")
     canonical = adapter.bundle_to_canonical(service, bundle)
     assert canonical.api_style == "openai"
+
+
+# -- OpenClawAdapter.write_canonical -------------------------------------
+
+def _openclaw_record(datadir: Path, name: str = "writer") -> InstanceRecord:
+    return InstanceRecord(
+        service="openclaw",
+        name=name,
+        version="2026.4.1",
+        upstream_ref="v2026.4.1",
+        image_tag="clawcu/openclaw:2026.4.1",
+        container_name=f"clawcu-openclaw-{name}",
+        datadir=str(datadir),
+        port=18799,
+        cpu="1",
+        memory="2g",
+        auth_mode="token",
+        status="running",
+        created_at="2026-04-25T00:00:00+00:00",
+        updated_at="2026-04-25T00:00:00+00:00",
+        history=[],
+    )
+
+
+def test_openclaw_write_canonical_writes_runtime_files(temp_clawcu_home, tmp_path) -> None:
+    from clawcu.core.storage import StateStore
+    from clawcu.core.docker import DockerManager
+    # need a real store for service.store.append_log + env helpers
+    service = ClawCUService(store=StateStore(), docker=DockerManager())
+    adapter = service.adapters["openclaw"]
+    datadir = tmp_path / "writer"
+    canonical = CanonicalProvider(
+        name="kimi-coding", api_style="anthropic-messages",
+        base_url="https://api.kimi.com/coding/",
+        api_key="sk-kimi-xyz",
+        headers={"User-Agent": "claude-code/0.1.0"},
+        default_model_id="k2p5",
+        models=(CanonicalModel(
+            id="k2p5", name="Kimi for Coding", context_window=262144,
+            max_tokens=32768, inputs=("text", "image"), reasoning=True,
+            cost={"cacheRead": 0, "cacheWrite": 0, "input": 0, "output": 0},
+        ),),
+    )
+    record = _openclaw_record(datadir)
+
+    adapter.write_canonical(service, canonical, record, agent="main")
+
+    runtime_dir = datadir / "agents" / "main" / "agent"
+    auth = json.loads((runtime_dir / "auth-profiles.json").read_text(encoding="utf-8"))
+    models = json.loads((runtime_dir / "models.json").read_text(encoding="utf-8"))
+    config = json.loads((datadir / "openclaw.json").read_text(encoding="utf-8"))
+
+    assert "kimi-coding:default" in auth["profiles"]
+    assert auth["profiles"]["kimi-coding:default"]["key"] == "sk-kimi-xyz"
+    assert auth["lastGood"] == {"kimi-coding": "kimi-coding:default"}
+
+    p = models["providers"]["kimi-coding"]
+    assert p["api"] == "anthropic-messages"
+    assert p["baseUrl"] == "https://api.kimi.com/coding/"
+    assert p["headers"] == {"User-Agent": "claude-code/0.1.0"}
+    assert p["models"][0]["id"] == "k2p5"
+    assert p["models"][0]["contextWindow"] == 262144
+
+    assert "kimi-coding" in config["models"]["providers"]
+
+
+def test_openclaw_write_canonical_oauth_raises(temp_clawcu_home, tmp_path) -> None:
+    service = ClawCUService()
+    adapter = service.adapters["openclaw"]
+    datadir = tmp_path / "writer"
+    canonical = CanonicalProvider(
+        name="openai-codex",
+        auth_type="oauth", oauth_blob='{"tokens": {}}',
+        default_model_id="gpt-5.4",
+        models=(CanonicalModel(id="gpt-5.4"),),
+    )
+    with pytest.raises(IncompatibleCredentialError, match="openai-codex"):
+        adapter.write_canonical(service, canonical, _openclaw_record(datadir))
+
+
+def test_openclaw_write_canonical_synthesizes_zero_defaults(temp_clawcu_home, tmp_path) -> None:
+    """When canonical.models has only id (e.g. from a hermes source),
+    openclaw write must fill zeros rather than emit broken model objects."""
+    from clawcu.core.storage import StateStore
+    from clawcu.core.docker import DockerManager
+    service = ClawCUService(store=StateStore(), docker=DockerManager())
+    adapter = service.adapters["openclaw"]
+    datadir = tmp_path / "writer"
+    canonical = CanonicalProvider(
+        name="kimi-coding", api_style="openai", api_key="sk-kimi",
+        base_url="https://api.moonshot.ai/v1",
+        default_model_id="k2p5",
+        models=(CanonicalModel(id="k2p5"),),  # bare-id only
+    )
+    adapter.write_canonical(service, canonical, _openclaw_record(datadir))
+    models = json.loads((datadir / "agents" / "main" / "agent" / "models.json").read_text(encoding="utf-8"))
+    m = models["providers"]["kimi-coding"]["models"][0]
+    assert m["id"] == "k2p5"
+    assert m["name"] == "k2p5"  # falls back to id when canonical.name absent
+    assert m["contextWindow"] == 0
+    assert m["maxTokens"] == 0
+    assert m["input"] == ["text"]
+    assert m["reasoning"] is False
+    assert m["cost"] == {"cacheRead": 0, "cacheWrite": 0, "input": 0, "output": 0}
+
+
+def test_openclaw_write_canonical_dry_run_writes_nothing(temp_clawcu_home, tmp_path) -> None:
+    service = ClawCUService()
+    adapter = service.adapters["openclaw"]
+    datadir = tmp_path / "writer"
+    canonical = CanonicalProvider(
+        name="kimi-coding", api_key="sk-kimi", default_model_id="k2p5",
+        models=(CanonicalModel(id="k2p5"),),
+    )
+    result = adapter.write_canonical(service, canonical, _openclaw_record(datadir), dry_run=True)
+    assert not (datadir / "agents").exists()
+    assert not (datadir / "openclaw.json").exists()
+    assert "writes" in result
+    assert any("auth-profiles.json" in path for path in result["writes"])
+    assert any("models.json" in path for path in result["writes"])
+    assert any("openclaw.json" in path for path in result["writes"])

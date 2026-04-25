@@ -796,7 +796,160 @@ class OpenClawAdapter(ServiceAdapter):
         )
 
     def write_canonical(self, service, canonical, record, *, agent="main", persist=False, dry_run=False):
-        raise NotImplementedError("OpenClawAdapter.write_canonical (Task 7)")
+        from clawcu.core.provider_models import IncompatibleCredentialError
+
+        if canonical.auth_type == "oauth":
+            raise IncompatibleCredentialError(
+                f"Provider {canonical.name!r} uses OAuth credentials which "
+                f"are not supported by openclaw instances."
+            )
+
+        agent_name = (agent or "main").strip() or "main"
+        runtime_dir = Path(record.datadir) / "agents" / agent_name / "agent"
+
+        # 1. Build the bundle-shaped payloads from canonical
+        bundle_models_payload = {
+            "providers": {
+                canonical.name: {
+                    "api": canonical.api_style,
+                    "apiKey": canonical.api_key,
+                    "baseUrl": canonical.base_url or "",
+                    "headers": canonical.headers or {},
+                    "models": [_render_canonical_model(canonical, m) for m in canonical.models],
+                },
+            },
+        }
+        last_good = canonical.extras.get("openclaw_lastGood")
+        if not isinstance(last_good, dict):
+            last_good = {canonical.name: f"{canonical.name}:default"}
+        bundle_auth_payload = {
+            "lastGood": dict(last_good),
+            "profiles": {
+                f"{canonical.name}:default": {
+                    "key": canonical.api_key,
+                    "provider": canonical.name,
+                    "type": "api_key",
+                },
+            },
+        }
+        synth_bundle = {
+            "service": "openclaw",
+            "name": canonical.name,
+            "auth_profiles": bundle_auth_payload,
+            "models": bundle_models_payload,
+        }
+
+        # 2. Plan the writes
+        auth_path = runtime_dir / "auth-profiles.json"
+        models_path = runtime_dir / "models.json"
+        config_path = Path(record.datadir) / "openclaw.json"
+        planned_writes = [str(auth_path), str(models_path), str(config_path)]
+
+        env_key: str | None = None
+        env_path: str | None = None
+        if persist and not dry_run:
+            env_key = service._store_provider_api_key_in_instance_env(
+                record.name, canonical.name, synth_bundle,
+            )
+            try:
+                env_path = str(self.env_path(service, record))
+            except Exception:
+                env_path = None
+        elif persist and dry_run:
+            api_key = canonical.api_key
+            if isinstance(api_key, str) and api_key.strip():
+                env_key = service._provider_env_key(canonical.name)
+            try:
+                env_path = str(self.env_path(service, record))
+            except Exception:
+                env_path = None
+
+        if dry_run:
+            return {
+                "provider": canonical.name,
+                "service": self.service_name,
+                "instance": record.name,
+                "agent": agent_name,
+                "runtime_dir": str(runtime_dir),
+                "writes": planned_writes,
+                "env_key": env_key or "-",
+                "env_path": env_path or "-",
+                "persist": "yes" if persist else "no",
+                "primary": canonical.default_model_id or "-",
+                "fallbacks": ", ".join(canonical.fallback_model_ids) if canonical.fallback_model_ids else "-",
+            }
+
+        # 3. Apply writes
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        merged_auth = service._merge_auth_payloads(
+            service._load_json_file(auth_path), dict(bundle_auth_payload)
+        )
+        merged_models = service._merge_models_payloads(
+            service._load_json_file(models_path), dict(bundle_models_payload)
+        )
+        primary_for_agent = (
+            f"{canonical.name}/{canonical.default_model_id}"
+            if canonical.default_model_id else None
+        )
+        fallbacks_for_agent = list(canonical.fallback_model_ids) or None
+        config = service._load_json_file(config_path)
+        config = service._upsert_root_provider_models_config(
+            config, dict(bundle_models_payload), env_key=env_key,
+        )
+        config = service._upsert_agent_model_config(
+            config, agent_name=agent_name,
+            primary=primary_for_agent, fallbacks=fallbacks_for_agent,
+        )
+        config_path.write_text(
+            json.dumps(config, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        auth_path.write_text(
+            json.dumps(merged_auth, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        models_path.write_text(
+            json.dumps(merged_models, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        service.store.append_log(
+            f"provider apply (canonical) provider={canonical.name} "
+            f"instance={record.name} agent={agent_name} "
+            f"primary={primary_for_agent or '-'} "
+            f"fallbacks={','.join(canonical.fallback_model_ids) or '-'} "
+            f"runtime_dir={runtime_dir}"
+        )
+        return {
+            "provider": canonical.name,
+            "service": self.service_name,
+            "instance": record.name,
+            "agent": agent_name,
+            "runtime_dir": str(runtime_dir),
+            "writes": planned_writes,
+            "env_key": env_key or "-",
+            "env_path": env_path or "-",
+            "persist": "yes" if persist else "no",
+            "primary": primary_for_agent or "-",
+            "fallbacks": ", ".join(canonical.fallback_model_ids) if canonical.fallback_model_ids else "-",
+        }
 
     def provider_models(self, service, bundle: dict[str, object]) -> list[str]:
         return service._bundle_model_ids(dict(bundle.get("models", {})))
+
+
+def _render_canonical_model(canonical, m) -> dict:
+    """Emit the openclaw-shaped model dict, filling zeros/defaults for
+    fields that hermes doesn't carry. Free function so hermes side can
+    stay independent of openclaw rendering rules."""
+    return {
+        "id": m.id,
+        "name": m.name or m.id,
+        "contextWindow": m.context_window if m.context_window is not None else 0,
+        "maxTokens": m.max_tokens if m.max_tokens is not None else 0,
+        "input": list(m.inputs) if m.inputs else ["text"],
+        "reasoning": m.reasoning if m.reasoning is not None else False,
+        "cost": m.cost if m.cost is not None else {
+            "cacheRead": 0, "cacheWrite": 0, "input": 0, "output": 0,
+        },
+    }
