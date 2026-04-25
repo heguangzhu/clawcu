@@ -717,8 +717,83 @@ class OpenClawAdapter(ServiceAdapter):
         }
 
     def bundle_to_canonical(self, service, bundle):
-        from clawcu.core.provider_models import CanonicalProvider  # noqa: F401
-        raise NotImplementedError("OpenClawAdapter.bundle_to_canonical (Task 6)")
+        from clawcu.core.provider_models import (
+            CanonicalModel,
+            CanonicalProvider,
+            MissingCredentialError,
+        )
+
+        models_payload = bundle.get("models", {}) or {}
+        if not isinstance(models_payload, dict):
+            models_payload = {}
+        provider_name, payload = service._single_provider_entry(models_payload)
+
+        # api_key: prefer providers.<name>.apiKey, fall back to auth_profiles.
+        api_key: str | None = None
+        raw_payload_key = payload.get("apiKey") if isinstance(payload, dict) else None
+        if isinstance(raw_payload_key, str) and raw_payload_key.strip() and not raw_payload_key.startswith("$"):
+            api_key = raw_payload_key.strip()
+        if not api_key:
+            auth_payload = bundle.get("auth_profiles", {}) or {}
+            profiles = auth_payload.get("profiles", {}) if isinstance(auth_payload, dict) else {}
+            if isinstance(profiles, dict):
+                for profile in profiles.values():
+                    if not isinstance(profile, dict):
+                        continue
+                    for key_name in ("key", "apiKey"):
+                        candidate = profile.get(key_name)
+                        if isinstance(candidate, str) and candidate.strip():
+                            api_key = candidate.strip()
+                            break
+                    if api_key:
+                        break
+
+        if not api_key:
+            raise MissingCredentialError(
+                f"OpenClaw bundle for provider {provider_name!r} has no usable api_key."
+            )
+
+        api_style = (payload.get("api") if isinstance(payload, dict) else None) or "openai"
+        base_url = (payload.get("baseUrl") if isinstance(payload, dict) else None) or None
+        headers = payload.get("headers") if isinstance(payload, dict) else None
+        if headers is not None and not isinstance(headers, dict):
+            headers = None
+
+        models_list = payload.get("models", []) if isinstance(payload, dict) else []
+        canonical_models: list[CanonicalModel] = []
+        for m in models_list if isinstance(models_list, list) else []:
+            if not isinstance(m, dict) or not m.get("id"):
+                continue
+            canonical_models.append(CanonicalModel(
+                id=str(m["id"]),
+                name=str(m.get("name")) if m.get("name") is not None else None,
+                context_window=int(m["contextWindow"]) if isinstance(m.get("contextWindow"), int) else None,
+                max_tokens=int(m["maxTokens"]) if isinstance(m.get("maxTokens"), int) else None,
+                inputs=tuple(str(x) for x in m["input"]) if isinstance(m.get("input"), list) else (),
+                reasoning=bool(m["reasoning"]) if isinstance(m.get("reasoning"), bool) else None,
+                cost=dict(m["cost"]) if isinstance(m.get("cost"), dict) else None,
+            ))
+
+        default_model_id = canonical_models[0].id if canonical_models else None
+
+        extras: dict = {}
+        auth_payload = bundle.get("auth_profiles", {})
+        last_good = auth_payload.get("lastGood") if isinstance(auth_payload, dict) else None
+        if isinstance(last_good, dict):
+            extras["openclaw_lastGood"] = dict(last_good)
+
+        return CanonicalProvider(
+            name=provider_name,
+            api_style=str(api_style),
+            base_url=base_url,
+            auth_type="api_key",
+            api_key=api_key,
+            api_key_env_var=None,
+            models=tuple(canonical_models),
+            default_model_id=default_model_id,
+            headers=dict(headers) if headers else None,
+            extras=extras,
+        )
 
     def write_canonical(self, service, canonical, record, *, agent="main", persist=False, dry_run=False):
         raise NotImplementedError("OpenClawAdapter.write_canonical (Task 7)")

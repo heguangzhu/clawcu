@@ -407,3 +407,77 @@ def test_hermes_write_canonical_with_fallback_model(temp_clawcu_home, tmp_path) 
     adapter.write_canonical(service, canonical, _hermes_record(datadir))
     config = yaml.safe_load((datadir / "config.yaml").read_text(encoding="utf-8"))
     assert config["fallback_model"] == {"provider": "minimax", "model": "MiniMax-M2"}
+
+
+# -- OpenClawAdapter.bundle_to_canonical ---------------------------------
+
+def _openclaw_bundle(*, provider="kimi-coding", api_key="sk-kimi-test",
+                    api="anthropic-messages", base_url="https://api.kimi.com/coding/",
+                    models=None) -> dict:
+    if models is None:
+        models = [{"id": "k2p5", "name": "Kimi for Coding",
+                   "contextWindow": 262144, "maxTokens": 32768,
+                   "input": ["text", "image"], "reasoning": True,
+                   "cost": {"cacheRead": 0, "cacheWrite": 0, "input": 0, "output": 0}}]
+    return {
+        "service": "openclaw",
+        "name": provider,
+        "metadata": {"service": "openclaw", "name": provider, "provider": provider,
+                     "api_style": api, "endpoint": base_url, "kind": "openclaw-provider"},
+        "auth_profiles": {
+            "lastGood": {provider: f"{provider}:default"},
+            "profiles": {
+                f"{provider}:default": {
+                    "key": api_key, "provider": provider, "type": "api_key",
+                },
+            },
+        },
+        "models": {
+            "providers": {
+                provider: {
+                    "api": api,
+                    "apiKey": api_key,
+                    "baseUrl": base_url,
+                    "headers": {"User-Agent": "claude-code/0.1.0"},
+                    "models": models,
+                },
+            },
+        },
+    }
+
+
+def test_openclaw_to_canonical_carries_full_metadata(temp_clawcu_home) -> None:
+    service = ClawCUService()
+    adapter = service.adapters["openclaw"]
+    canonical = adapter.bundle_to_canonical(service, _openclaw_bundle())
+    assert canonical.name == "kimi-coding"
+    assert canonical.api_key == "sk-kimi-test"
+    assert canonical.api_key_env_var is None  # openclaw doesn't carry env vars
+    assert canonical.api_style == "anthropic-messages"
+    assert canonical.base_url == "https://api.kimi.com/coding/"
+    assert canonical.headers == {"User-Agent": "claude-code/0.1.0"}
+    assert canonical.default_model_id == "k2p5"
+    assert canonical.models[0].id == "k2p5"
+    assert canonical.models[0].name == "Kimi for Coding"
+    assert canonical.models[0].context_window == 262144
+    assert canonical.models[0].max_tokens == 32768
+    assert canonical.models[0].inputs == ("text", "image")
+    assert canonical.models[0].reasoning is True
+    assert canonical.models[0].cost == {"cacheRead": 0, "cacheWrite": 0, "input": 0, "output": 0}
+    assert canonical.extras["openclaw_lastGood"] == {"kimi-coding": "kimi-coding:default"}
+
+
+def test_openclaw_to_canonical_missing_api_key_raises(temp_clawcu_home) -> None:
+    service = ClawCUService()
+    adapter = service.adapters["openclaw"]
+    bundle = _openclaw_bundle(api_key="")
+    with pytest.raises(MissingCredentialError):
+        adapter.bundle_to_canonical(service, bundle)
+
+
+def test_openclaw_to_canonical_default_api_style_when_missing(temp_clawcu_home) -> None:
+    service = ClawCUService()
+    adapter = service.adapters["openclaw"]
+    bundle = _openclaw_bundle(api="")
+    canonical = adapter.bundle_to_canonical(service, bundle)
+    assert canonical.api_style == "openai"
