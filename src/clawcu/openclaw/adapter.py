@@ -716,5 +716,12 @@ class OpenClawAdapter(ServiceAdapter):
             "fallbacks": ", ".join(fallbacks) if fallbacks else "-",
         }
 
+    def bundle_to_canonical(self, service, bundle):
+        from clawcu.core.provider_models import CanonicalProvider  # noqa: F401
+        raise NotImplementedError("OpenClawAdapter.bundle_to_canonical (Task 6)")
+
+    def write_canonical(self, service, canonical, record, *, agent="main", persist=False, dry_run=False):
+        raise NotImplementedError("OpenClawAdapter.write_canonical (Task 7)")
+
     def provider_models(self, service, bundle: dict[str, object]) -> list[str]:
         return service._bundle_model_ids(dict(bundle.get("models", {})))

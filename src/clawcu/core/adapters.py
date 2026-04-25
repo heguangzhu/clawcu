@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from clawcu.core.models import AccessInfo, ContainerRunSpec, InstanceRecord, InstanceSpec
+from clawcu.core.provider_models import CanonicalProvider  # noqa: F401
 
 if TYPE_CHECKING:
     from clawcu.core.service import ClawCUService
@@ -195,6 +196,45 @@ class ServiceAdapter(ABC):
     ) -> list[dict[str, object]]:
         raise NotImplementedError
 
+    # ── canonical-provider contract (new) ───────────────────────────
+    @abstractmethod
+    def bundle_to_canonical(
+        self,
+        service: "ClawCUService",
+        bundle: dict[str, object],
+    ) -> "CanonicalProvider":
+        """Read this service's native bundle shape into canonical form.
+
+        Raises ``ProviderTranslationError`` if the bundle is malformed
+        or missing required fields for this service.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def write_canonical(
+        self,
+        service: "ClawCUService",
+        canonical: "CanonicalProvider",
+        record: InstanceRecord,
+        *,
+        agent: str = "main",
+        persist: bool = False,
+        dry_run: bool = False,
+    ) -> dict[str, str]:
+        """Render canonical into this service's instance files.
+
+        Returns a result dict (provider, instance, agent, runtime_dir or
+        config_path/env_path, env_key, persist, primary, fallbacks).
+        Raises ``IncompatibleCredentialError`` if canonical's auth_type
+        is unsupported by this service. When ``dry_run=True`` no files
+        are written; the result dict still lists planned paths so
+        ``plan_apply_provider`` can render them.
+        """
+        raise NotImplementedError
+
+    # ── DEPRECATED: removed once both adapters implement write_canonical
+    # (see Task 8). Concrete subclasses keep their existing apply_provider
+    # bodies untouched until then.
     @abstractmethod
     def apply_provider(
         self,

@@ -716,6 +716,13 @@ class HermesAdapter(ServiceAdapter):
                     models.append(f"{provider}/{model_name}")
         return models
 
+    def bundle_to_canonical(self, service, bundle):
+        from clawcu.core.provider_models import CanonicalProvider  # noqa: F401
+        raise NotImplementedError("HermesAdapter.bundle_to_canonical (Task 4)")
+
+    def write_canonical(self, service, canonical, record, *, agent="main", persist=False, dry_run=False):
+        raise NotImplementedError("HermesAdapter.write_canonical (Task 5)")
+
     def _load_config(self, record: InstanceRecord) -> dict:
         config_path = Path(record.datadir) / "config.yaml"
         if not config_path.exists():
