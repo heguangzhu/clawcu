@@ -1952,6 +1952,16 @@ def list_instances(
             ),
         ),
     ] = True,
+    no_cache: Annotated[
+        bool,
+        typer.Option(
+            "--no-cache",
+            help=(
+                "Bypass the local Available Versions cache and fetch fresh "
+                "remote tags for the footer."
+            ),
+        ),
+    ] = False,
     json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
     _set_json_mode(json_output)
@@ -2021,7 +2031,8 @@ def list_instances(
     ):
         try:
             versions_payload = service.list_service_available_versions(
-                include_remote=include_remote
+                include_remote=include_remote,
+                use_cache=not no_cache,
             )
         except Exception as exc:
             console.print(

@@ -39,6 +39,24 @@ def test_store_round_trip(temp_clawcu_home, tmp_path) -> None:
     assert loaded.image_tag == "clawcu/openclaw:2026.4.1"
 
 
+def test_store_load_record_ignores_unknown_legacy_fields(
+    temp_clawcu_home, tmp_path
+) -> None:
+    store = StateStore(get_paths())
+    record = make_record(tmp_path / "writer")
+    payload = record.to_dict()
+    payload["a2a_enabled"] = True
+    store.instance_path("writer").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    loaded = store.load_record("writer")
+
+    assert loaded.name == "writer"
+    assert loaded.service == "openclaw"
+
+
 def test_snapshot_restore_replaces_directory(temp_clawcu_home, tmp_path) -> None:
     store = StateStore(get_paths())
     datadir = tmp_path / "writer-data"

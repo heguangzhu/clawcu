@@ -3607,6 +3607,45 @@ def test_list_service_available_versions_caches_fetches_for_the_day(
     assert second["hermes"]["versions"] == ["2026.4.13"]
 
 
+def test_list_service_available_versions_no_cache_forces_fresh_fetch(
+    temp_clawcu_home,
+) -> None:
+    from tests.support import _FakeRemoteTagResult
+
+    service, _, openclaw, _ = make_service(temp_clawcu_home)
+    openclaw.remote_result = _FakeRemoteTagResult(
+        tags=["2026.4.10"], registry="ghcr.io"
+    )
+    service.hermes.remote_result = _FakeRemoteTagResult(
+        tags=["2026.4.13"], registry="registry-1.docker.io"
+    )
+
+    first = service.list_service_available_versions()
+    assert first["openclaw"]["versions"] == ["2026.4.10"]
+    assert first["hermes"]["versions"] == ["2026.4.13"]
+    assert len(openclaw.list_remote_versions_calls) == 1
+    assert len(service.hermes.list_remote_versions_calls) == 1
+
+    openclaw.remote_result = _FakeRemoteTagResult(
+        tags=["2026.4.20"], registry="ghcr.io"
+    )
+    service.hermes.remote_result = _FakeRemoteTagResult(
+        tags=["2026.4.21"], registry="registry-1.docker.io"
+    )
+
+    second = service.list_service_available_versions(use_cache=False)
+    assert len(openclaw.list_remote_versions_calls) == 2
+    assert len(service.hermes.list_remote_versions_calls) == 2
+    assert second["openclaw"]["versions"] == ["2026.4.20"]
+    assert second["hermes"]["versions"] == ["2026.4.21"]
+
+    cached = service.list_service_available_versions()
+    assert len(openclaw.list_remote_versions_calls) == 2
+    assert len(service.hermes.list_remote_versions_calls) == 2
+    assert cached["openclaw"]["versions"] == ["2026.4.20"]
+    assert cached["hermes"]["versions"] == ["2026.4.21"]
+
+
 def test_list_service_available_versions_refetches_after_day_boundary(
     temp_clawcu_home,
 ) -> None:

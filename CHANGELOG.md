@@ -165,6 +165,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `clawcu hermes identity set <name> <path>` installs a user-authored SOUL.md into a Hermes instance's datadir so `prompt_builder.load_soul_md` picks up the new persona on the next chat turn (no restart).
 - A2A sidecar layer: per-peer rate limit, tee'd log file, readiness probe against gateway, optional conversation-history via `thread_id` (path-traversal hardened; per-peer JSONL under `<datadir>/threads/`).
 
+## [0.2.12] - 2026-04-22
+
+### Added
+- `clawcu list --no-cache` now forces a fresh Available Versions registry refresh for the footer while still updating the on-disk daily cache after a successful fetch.
+
+### Fixed
+- `clawcu list` now tolerates legacy instance-record fields such as `a2a_enabled` instead of failing to deserialize older managed-instance JSON files.
+
 ## [0.2.11] - 2026-04-22
 
 ### Added
@@ -227,7 +235,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [0.3.3]: https://github.com/heguangzhu/clawcu/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/heguangzhu/clawcu/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/heguangzhu/clawcu/compare/v0.3.0...v0.3.1
-[0.3.0]: https://github.com/heguangzhu/clawcu/compare/v0.2.11...v0.3.0
+[0.3.0]: https://github.com/heguangzhu/clawcu/compare/v0.2.12...v0.3.0
+[0.2.12]: https://github.com/heguangzhu/clawcu/compare/v0.2.11...v0.2.12
 [0.2.11]: https://github.com/heguangzhu/clawcu/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/heguangzhu/clawcu/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/heguangzhu/clawcu/compare/v0.2.8...v0.2.9

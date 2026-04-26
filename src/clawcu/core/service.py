@@ -1770,7 +1770,7 @@ class ClawCUService:
         tmp.replace(path)
 
     def list_service_available_versions(
-        self, *, include_remote: bool = True
+        self, *, include_remote: bool = True, use_cache: bool = True
     ) -> dict:
         """Enumerate remote release tags per service, independent of any instance.
 
@@ -1789,10 +1789,17 @@ class ClawCUService:
         triggers a fresh fetch. Failures are never cached so a transient
         registry outage does not linger. ``include_remote=False``
         bypasses both the fetch and the cache entirely — used by
-        ``--no-remote`` for strictly offline rendering.
+        ``--no-remote`` for strictly offline rendering. ``use_cache=False``
+        skips reading the cache but still refreshes it after a successful
+        fetch, which lets ``clawcu list --no-cache`` force a one-off
+        registry refresh without permanently disabling cache warmth.
         """
         today = time.strftime("%Y-%m-%d")
-        cache: dict = self._load_available_versions_cache() if include_remote else {}
+        cache: dict = (
+            self._load_available_versions_cache()
+            if include_remote and use_cache
+            else {}
+        )
         cache_changed = False
         out: dict[str, dict] = {}
         for name, manager in (
