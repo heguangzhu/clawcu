@@ -342,7 +342,9 @@ def test_worker_emits_heartbeat_while_run_fn_runs(tmp_path):
 
     def run_fn(snapshot):
         # Block long enough to receive at least 2 heartbeats at 0.05s.
-        release.wait(timeout=0.5)
+        # Generous timeout so slow runners (macOS-arm64 GH actions) can still
+        # tick the heartbeat thread enough times before the run_fn returns.
+        release.wait(timeout=2.0)
         return {"reply": "done", "thread_id": None}
 
     worker = TaskWorker(
@@ -356,8 +358,9 @@ def test_worker_emits_heartbeat_while_run_fn_runs(tmp_path):
     snap = store.create(peer="alice", message="hi")
     tid = snap["task_id"]
     worker.submit(peer="alice", task_id=tid)
-    # Let heartbeats accumulate.
-    time.sleep(0.2)
+    # Let heartbeats accumulate. 0.5s @ 0.05s cadence ≈ 10 ticks; tolerates
+    # ~5× scheduler slowdown on slow CI runners and still meets the ≥2 floor.
+    time.sleep(0.5)
     release.set()
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline:

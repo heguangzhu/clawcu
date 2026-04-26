@@ -112,7 +112,7 @@ def _post_json(url, body, headers=None):
         conn.close()
 
 
-def _wait_for_port(port, deadline_s=5.0):
+def _wait_for_port(port, deadline_s=30.0):
     deadline = time.monotonic() + deadline_s
     while time.monotonic() < deadline:
         try:
