@@ -111,7 +111,27 @@ import time
 import traceback
 import urllib.request
 import uuid
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import socketserver
+from http.server import BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer as _StdThreadingHTTPServer
+
+
+class ThreadingHTTPServer(_StdThreadingHTTPServer):
+    """ThreadingHTTPServer that skips ``socket.getfqdn`` during bind.
+
+    The stdlib's ``HTTPServer.server_bind`` calls ``socket.getfqdn(host)``
+    *between* bind() and listen(), and on macOS that reverse-DNS lookup can
+    stall for tens of seconds (notably on GitHub Actions runners). The
+    socket is bound but not listening during the stall, so callers see
+    ECONNREFUSED until getfqdn returns. We never use ``server_name`` for
+    routing, so set it directly to the bound host.
+    """
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 

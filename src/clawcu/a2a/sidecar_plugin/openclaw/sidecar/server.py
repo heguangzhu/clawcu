@@ -293,6 +293,19 @@ class _ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+    def server_bind(self) -> None:
+        # http.server.HTTPServer.server_bind() calls socket.getfqdn() *between*
+        # bind() and listen(), and on macOS that reverse-DNS lookup can stall
+        # for tens of seconds (especially on GitHub Actions runners). The
+        # socket is bound but not listening during the stall, so callers see
+        # ECONNREFUSED until getfqdn returns. Skip the FQDN entirely — we
+        # never use server_name for routing — and call listen ourselves via
+        # the parent's normal flow.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
 
 def _make_handler_class(ctx: "Context"):
     logger = ctx.logger
