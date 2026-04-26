@@ -88,6 +88,27 @@ def _write_json(h, status, obj):
     h.wfile.write(body)
 
 
+def _write_sse(h, content):
+    """Stream ``content`` as a single SSE delta + ``[DONE]``.
+
+    The async/task path on the openclaw sidecar drives the gateway with
+    ``stream: true`` and reads ``data: …`` lines. Stub gateways for that
+    path must therefore speak SSE — a plain JSON body produces an empty
+    chunk list and the worker fails the task with ``gateway streamed
+    empty content``.
+    """
+    delta = json.dumps({"choices": [{"delta": {"content": content}}]})
+    payload = (
+        f"data: {delta}\n\n"
+        "data: [DONE]\n\n"
+    ).encode("utf-8")
+    h.send_response(200)
+    h.send_header("content-type", "text/event-stream")
+    h.send_header("content-length", str(len(payload)))
+    h.end_headers()
+    h.wfile.write(payload)
+
+
 def _post_json(host, port, path, body, headers=None):
     conn = http.client.HTTPConnection(host, port, timeout=5)
     try:
@@ -214,11 +235,15 @@ def test_async_send_returns_202_and_completes(tmp_path):
             for m in body.get("messages", []):
                 if m.get("role") == "user":
                     user_msg = m.get("content", "")
-            _write_json(h, 200, {
-                "choices": [
-                    {"message": {"role": "assistant", "content": f"echo: {user_msg}"}}
-                ],
-            })
+            reply = f"echo: {user_msg}"
+            if body.get("stream"):
+                _write_sse(h, reply)
+            else:
+                _write_json(h, 200, {
+                    "choices": [
+                        {"message": {"role": "assistant", "content": reply}}
+                    ],
+                })
             return
         h.send_response(404)
         h.send_header("content-length", "0")
@@ -323,9 +348,13 @@ def test_default_mode_async_flips_omitted_mode_to_async(tmp_path):
                 (m["content"] for m in body.get("messages", []) if m.get("role") == "user"),
                 "",
             )
-            _write_json(h, 200, {
-                "choices": [{"message": {"role": "assistant", "content": f"async-default:{user_msg}"}}],
-            })
+            reply = f"async-default:{user_msg}"
+            if body.get("stream"):
+                _write_sse(h, reply)
+            else:
+                _write_json(h, 200, {
+                    "choices": [{"message": {"role": "assistant", "content": reply}}],
+                })
             return
         h.send_response(404)
         h.send_header("content-length", "0")
