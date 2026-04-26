@@ -31,6 +31,7 @@
 - **One CLI, two runtimes** — OpenClaw and Hermes through the same lifecycle commands
 - **Snapshots before every upgrade** — datadir and env both captured; `rollback` restores from real backups
 - **Clone-first experiments** — copy an instance, upgrade the copy, leave the original running
+- **Agent-to-agent messaging (`v0.3.0`)** — opt-in `--a2a` bakes an A2A v0 sidecar into the managed image, exposing `/.well-known/agent-card.json` + `POST /a2a/send` on a neighbor port. Stock instances are unaffected.
 - **Available versions with cache-aware refresh** — `clawcu list` is fast by default, and `clawcu list --no-cache` forces a fresh registry read when you want to see the latest tags now
 
 ```text
@@ -103,13 +104,22 @@ Configure providers / models inside an instance via its service-native flow (Ope
 clawcu config writer
 ```
 
+Make instances talk to each other with A2A (opt-in, `v0.3.0`):
+
+```bash
+clawcu create openclaw --name writer  --version 2026.4.12 --a2a
+clawcu create hermes   --name analyst --version 2026.4.13 --a2a
+clawcu a2a up                                             # registry + bridges, one command
+clawcu a2a send --to analyst --message "summarize yesterday"
+```
+
 Need the versions footer to ignore today's cache and fetch fresh tags immediately?
 
 ```bash
 clawcu list --no-cache
 ```
 
-For the full command reference (`list` / `inspect` / `exec` / `upgrade` / `provider` …), see [USAGE_latest.md](release/USAGE_latest.md).
+Deep-dive on the A2A sidecar (architecture, protocol, operations, troubleshooting): [docs/a2a-sidecar.md](docs/a2a-sidecar.md). For the full command reference (`list` / `inspect` / `exec` / `upgrade` / `provider` / `a2a` …), see [USAGE_latest.md](release/USAGE_latest.md).
 
 ## Safe Upgrade Workflow
 

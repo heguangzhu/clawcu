@@ -135,6 +135,9 @@ class StateStore:
     def provider_env_path(self, service: str, name: str) -> Path:
         return self.provider_dir(service, name) / ".env"
 
+    def provider_auth_json_path(self, service: str, name: str) -> Path:
+        return self.provider_dir(service, name) / "auth.json"
+
     def _provider_ref_args(self, service_or_name: str, name: str | None = None) -> tuple[str, str]:
         if name is None:
             return "openclaw", service_or_name
@@ -179,6 +182,9 @@ class StateStore:
             bundle["config_yaml"] = config_path.read_text(encoding="utf-8")
         if env_path.exists():
             bundle["env"] = env_path.read_text(encoding="utf-8")
+        auth_json_path = self.provider_auth_json_path(service_name, provider_name)
+        if auth_json_path.exists():
+            bundle["auth_json"] = auth_json_path.read_text(encoding="utf-8")
         return bundle
 
     def save_provider_bundle(self, service: str, name: str | dict[str, object], payload: dict[str, object] | None = None) -> None:
@@ -212,6 +218,11 @@ class StateStore:
         if "env" in payload:
             self.provider_env_path(service_name, provider_name).write_text(
                 str(payload["env"]),
+                encoding="utf-8",
+            )
+        if "auth_json" in payload:
+            self.provider_auth_json_path(service_name, provider_name).write_text(
+                str(payload["auth_json"]),
                 encoding="utf-8",
             )
 

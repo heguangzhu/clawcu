@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 
 from clawcu import __version__ as clawcu_version
+from clawcu.a2a.sidecar_plugin import resolve_advertise_host
 from clawcu.core.adapters import ServiceAdapter
 from clawcu.core.models import AccessInfo, ContainerRunSpec, InstanceRecord, InstanceSpec
 from clawcu.core.validation import (
@@ -32,6 +33,14 @@ class OpenClawAdapter(ServiceAdapter):
     display_name = "OpenClaw"
     default_port = 18799
     internal_port = 18789
+
+    # Review-1 §3: A2A protocol defaults. Gateway occupies display_port,
+    # sidecar binds display_port + 1 — so federation probes try the base
+    # first (in case someone co-locates a custom plugin on the gateway
+    # port) then the sidecar slot.
+    a2a_skills = ("chat", "tools")
+    a2a_role = "OpenClaw local assistant"
+    a2a_plugin_port_offsets = (0, 1)
 
     def __init__(self, manager: OpenClawManager):
         self.manager = manager
@@ -64,22 +73,98 @@ class OpenClawAdapter(ServiceAdapter):
         name = record if isinstance(record, str) else record.name
         return service.store.instance_env_path(name)
 
+    # When an instance is baked with the A2A plugin, the sidecar binds
+    # this internal port; the host publishes ``record.port + 1`` so the
+    # federation probe in clawcu.a2a.card finds the card at the expected
+    # neighbor port (``plugin_port_candidates`` = (0, 1)).
+    a2a_internal_port = 18790
+
     def run_spec(self, service, record: InstanceRecord) -> ContainerRunSpec:
         env_path = self.env_path(service, record)
+        env_values = service._load_env_file(env_path)
+        additional_ports: list[tuple[int, int]] = []
+        extra_hosts: list[tuple[str, str]] = []
+        extra_env: dict[str, str] = {}
+        # The baked image's entrypoint-a2a.sh supervises BOTH the stock
+        # gateway and the sidecar; we don't override CMD here because the
+        # image's CMD already launches the gateway with the same flags we
+        # pass in the non-a2a case.
+        command: list[str] | None = [
+            "node",
+            "openclaw.mjs",
+            "gateway",
+            "--allow-unconfigured",
+            "--bind",
+            "lan",
+            "--port",
+            str(self.internal_port),
+        ]
+        if record.a2a_enabled:
+            a2a_host_port = record.port + 1
+            additional_ports.append((a2a_host_port, self.a2a_internal_port))
+            # Review-1 P0-B: Linux hosts don't resolve host.docker.internal
+            # without an explicit --add-host. Docker Desktop resolves it
+            # automatically, so this is a no-op on macOS/Windows. Required
+            # for /a2a/outbound to reach the host-side registry.
+            extra_hosts.append(("host.docker.internal", "host-gateway"))
+            extra_env.update(
+                {
+                    "A2A_SIDECAR_NAME": record.name,
+                    "A2A_SIDECAR_PORT": str(self.a2a_internal_port),
+                    # Review-9 P1-A3: peers in other containers can't reach
+                    # 127.0.0.1 — the baked default used to break cross-
+                    # container A2A calls on Docker Desktop. Resolver returns
+                    # host.docker.internal on Darwin/Windows and honors the
+                    # per-record override when set via --a2a-advertise-host.
+                    "A2A_SIDECAR_ADVERTISE_HOST": resolve_advertise_host(record),
+                    "A2A_SIDECAR_ADVERTISE_PORT": str(a2a_host_port),
+                    # Sidecar forwards /a2a/send to the gateway's own
+                    # OpenAI-compat endpoint so the agent's native
+                    # persona + skills drive the reply. This env tells
+                    # the sidecar which port the gateway is listening
+                    # on inside the container.
+                    "A2A_GATEWAY_PORT": str(self.internal_port),
+                    # OpenClaw gateway exposes readiness at /healthz. The
+                    # sidecar is now gateway-agnostic (review-7 P2-E) —
+                    # each adapter declares its own readiness path so the
+                    # sidecar doesn't need to know the service layout.
+                    "A2A_GATEWAY_READY_PATH": "/healthz",
+                    # Review-10 P2-C: tee sidecar logs into the datadir
+                    # mount so they survive `clawcu recreate`. Host sees
+                    # them at <record.datadir>/logs/a2a-sidecar.log.
+                    "A2A_SIDECAR_LOG_DIR": "/home/node/.openclaw/logs",
+                    # Review-13 P1-C: per-peer / per-thread conversation
+                    # history. When the peer sends thread_id, the sidecar
+                    # reads/appends <dir>/<peer>/<thread_id>.jsonl so the
+                    # agent sees continuous context. Lives under the
+                    # datadir mount so threads survive `clawcu recreate`.
+                    "A2A_THREAD_DIR": "/home/node/.openclaw/threads",
+                }
+            )
+            # Review-1 P0-B: auto-inject a registry URL default so
+            # /a2a/outbound works out of the box on Linux (host.docker.internal
+            # only resolves thanks to the extra_hosts we added above). User
+            # overrides in the env file win — we only set it when absent.
+            if not env_values.get("A2A_REGISTRY_URL"):
+                extra_env["A2A_REGISTRY_URL"] = "http://host.docker.internal:9100"
+            # a2a-design-4.md §P0-A: auto-wiring bootstrap. The sidecar reads
+            # these on start and merges `mcp.servers.a2a` into the OpenClaw
+            # config file so the LLM sees `a2a_call_peer` as an MCP tool
+            # without any IDENTITY.md edit. User env-file entries win.
+            if not env_values.get("A2A_ENABLED"):
+                extra_env["A2A_ENABLED"] = "true"
+            if not env_values.get("A2A_SERVICE_MCP_CONFIG_PATH"):
+                extra_env["A2A_SERVICE_MCP_CONFIG_PATH"] = "/home/node/.openclaw/openclaw.json"
+            if not env_values.get("A2A_SERVICE_MCP_CONFIG_FORMAT"):
+                extra_env["A2A_SERVICE_MCP_CONFIG_FORMAT"] = "json"
         return ContainerRunSpec(
             internal_port=self.internal_port,
             mount_target="/home/node/.openclaw",
             env_file=str(env_path) if env_path.exists() else None,
-            command=[
-                "node",
-                "openclaw.mjs",
-                "gateway",
-                "--allow-unconfigured",
-                "--bind",
-                "lan",
-                "--port",
-                str(self.internal_port),
-            ],
+            extra_env=extra_env,
+            command=command,
+            additional_ports=additional_ports,
+            extra_hosts=extra_hosts,
         )
 
     def configure_before_run(self, service, record: InstanceRecord) -> None:
@@ -125,6 +210,15 @@ class OpenClawAdapter(ServiceAdapter):
             config.setdefault("agents", {}).setdefault("defaults", {})["workspace"] = (
                 "/home/node/.openclaw/workspace"
             )
+            # A2A sidecar forwards /a2a/send through the gateway's native
+            # OpenAI-compat endpoint so it hits the real agent runtime (full
+            # persona + skills + tool loop) instead of bypassing straight to
+            # the LLM. That endpoint is gated by config and off by default.
+            if getattr(record, "a2a_enabled", False):
+                http_cfg = gw.setdefault("http", {})
+                endpoints = http_cfg.setdefault("endpoints", {})
+                chat_completions = endpoints.setdefault("chatCompletions", {})
+                chat_completions["enabled"] = True
             config_path.write_text(
                 json.dumps(config, indent=2, ensure_ascii=False),
                 encoding="utf-8",

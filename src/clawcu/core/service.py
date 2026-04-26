@@ -12,9 +12,10 @@ import urllib.parse
 import urllib.request
 from dataclasses import replace
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from clawcu import __version__ as clawcu_version
+from clawcu.a2a.builder import A2AImageBuilder, a2a_image_tag
 from clawcu.core.adapters import ServiceAdapter
 from clawcu.core.docker import DockerManager
 from clawcu.core.models import AccessInfo, InstanceRecord, InstanceSpec
@@ -655,9 +656,21 @@ class ClawCUService:
         port: int | None = None,
         cpu: str,
         memory: str,
+        a2a: bool = False,
+        a2a_hop_budget: int | None = None,
+        a2a_advertise_host: str | None = None,
     ) -> InstanceRecord:
         adapter = self.adapter_for_service(service_name)
         auto_port = port is None
+        if a2a_hop_budget is not None:
+            if not a2a:
+                raise ValueError("a2a_hop_budget requires a2a=True.")
+            if not isinstance(a2a_hop_budget, int) or isinstance(a2a_hop_budget, bool) or a2a_hop_budget < 1:
+                raise ValueError("a2a_hop_budget must be a positive integer (>= 1).")
+        if a2a_advertise_host is not None:
+            if not a2a:
+                raise ValueError("a2a_advertise_host requires a2a=True.")
+            a2a_advertise_host = str(a2a_advertise_host).strip() or None
         self.reporter("Step 1/5: Validating options and resolving defaults. This should take a second or two.")
         spec = adapter.build_spec(
             self,
@@ -668,6 +681,7 @@ class ClawCUService:
             cpu=cpu,
             memory=memory,
         )
+        spec = replace(spec, a2a_enabled=bool(a2a), a2a_advertise_host=a2a_advertise_host)
         if self.store.instance_path(spec.name).exists():
             raise ValueError(f"Instance '{spec.name}' already exists.")
         container_name = container_name_for_service(spec.service, spec.name)
@@ -676,12 +690,13 @@ class ClawCUService:
                 f"Instance '{spec.name}' already exists. Docker container '{container_name}' is already present."
             )
 
+        a2a_note = " a2a=on" if spec.a2a_enabled else ""
         self.reporter(
-            f"Resolved instance settings: datadir={spec.datadir}, port={spec.port}, cpu={spec.cpu}, memory={spec.memory}, auth={spec.auth_mode}."
+            f"Resolved instance settings: datadir={spec.datadir}, port={spec.port}, cpu={spec.cpu}, memory={spec.memory}, auth={spec.auth_mode}.{a2a_note}"
         )
         explicit_image = self._normalize_requested_image(image)
         self.store.append_log(
-            f"create instance service={spec.service} name={spec.name} version={spec.version} datadir={spec.datadir}"
+            f"create instance service={spec.service} name={spec.name} version={spec.version} datadir={spec.datadir} a2a={spec.a2a_enabled}"
             + (f" image={explicit_image}" if explicit_image else "")
         )
         if explicit_image is not None:
@@ -692,6 +707,8 @@ class ClawCUService:
             )
         else:
             prepared_image = adapter.prepare_artifact(spec.version)
+        if spec.a2a_enabled:
+            prepared_image = self._bake_a2a_image(spec.service, spec.version, prepared_image)
         spec = replace(spec, image_tag_override=prepared_image)
         datadir_path = Path(spec.datadir)
         self.reporter("Step 4/5: Preparing the local data directory and runtime metadata. This usually takes a few seconds.")
@@ -707,8 +724,16 @@ class ClawCUService:
                 "service": spec.service,
             }
         ]
+        env_overrides: dict[str, str] = {}
+        if a2a and a2a_hop_budget is not None:
+            env_overrides["A2A_HOP_BUDGET"] = str(a2a_hop_budget)
         self.reporter("Step 5/5: Starting the Docker container and checking health. This usually takes a few seconds.")
-        live_record = self._start_new_instance(spec, history=history, auto_port=auto_port)
+        live_record = self._start_new_instance(
+            spec,
+            history=history,
+            auto_port=auto_port,
+            env_overrides=env_overrides or None,
+        )
         self.reporter(self._lifecycle_summary("created", live_record))
         return live_record
 
@@ -722,6 +747,9 @@ class ClawCUService:
         port: int | None = None,
         cpu: str,
         memory: str,
+        a2a: bool = False,
+        a2a_hop_budget: int | None = None,
+        a2a_advertise_host: str | None = None,
     ) -> InstanceRecord:
         return self.create_service(
             "openclaw",
@@ -732,6 +760,9 @@ class ClawCUService:
             port=port,
             cpu=cpu,
             memory=memory,
+            a2a=a2a,
+            a2a_hop_budget=a2a_hop_budget,
+            a2a_advertise_host=a2a_advertise_host,
         )
 
     def create_hermes(
@@ -744,6 +775,9 @@ class ClawCUService:
         port: int | None = None,
         cpu: str,
         memory: str,
+        a2a: bool = False,
+        a2a_hop_budget: int | None = None,
+        a2a_advertise_host: str | None = None,
     ) -> InstanceRecord:
         return self.create_service(
             "hermes",
@@ -754,7 +788,19 @@ class ClawCUService:
             port=port,
             cpu=cpu,
             memory=memory,
+            a2a=a2a,
+            a2a_hop_budget=a2a_hop_budget,
+            a2a_advertise_host=a2a_advertise_host,
         )
+
+    def _bake_a2a_image(self, service: str, base_version: str, base_image: str) -> str:
+        """Build (or reuse) the a2a variant of ``base_image`` for ``service``."""
+        builder = A2AImageBuilder(
+            docker=self.docker,
+            clawcu_version=clawcu_version,
+            reporter=self.reporter,
+        )
+        return builder.ensure_image(service, base_version, base_image)
 
     def list_instances(self, *, running_only: bool = False) -> list[InstanceRecord]:
         records = self.store.list_records()
@@ -926,6 +972,51 @@ class ClawCUService:
                 "token": access.token,
             },
             "container": inspection,
+            "a2a": self._a2a_inspect_section(record),
+        }
+
+    def _a2a_inspect_section(self, record: InstanceRecord) -> dict[str, Any] | None:
+        """Review-2 P1-F (iter 3): surface A2A wiring on inspect.
+
+        When A2A is enabled, read the instance env file for the user-
+        visible A2A knobs (hop budget, registry URL) and compute the
+        bridge port + MCP URL. Operators can see the whole A2A config
+        without ``clawcu getenv | grep``. Returns ``None`` for stock
+        instances so the renderer can skip the whole section.
+        """
+        if not getattr(record, "a2a_enabled", False):
+            return None
+        from clawcu.a2a.card import bridge_port_for
+
+        env: dict[str, str] = {}
+        try:
+            env_path = self.adapter_for_record(record).env_path(self, record)
+            if env_path.exists():
+                env = self._load_env_file(env_path)
+        except Exception:
+            # Env file read is best-effort; a missing/unreadable file
+            # shouldn't break `inspect`. The adapter layer already
+            # guarantees env_path exists for A2A instances.
+            env = {}
+
+        bridge_port = bridge_port_for(record)
+        hop_budget_raw = env.get("A2A_HOP_BUDGET", "").strip()
+        try:
+            hop_budget: int | None = int(hop_budget_raw) if hop_budget_raw else None
+        except ValueError:
+            hop_budget = None
+
+        registry_url = (
+            env.get("A2A_REGISTRY_URL", "").strip()
+            or "http://host.docker.internal:9100"
+        )
+        return {
+            "enabled": True,
+            "port": bridge_port,
+            "registry_url": registry_url,
+            "hop_budget": hop_budget,
+            "hop_budget_default": 8,
+            "mcp_url": f"http://127.0.0.1:{bridge_port}/mcp",
         }
 
     def dashboard_url(self, name: str) -> str:
@@ -1016,6 +1107,46 @@ class ClawCUService:
             "status": record.status,
         }
 
+    def set_hermes_identity(self, name: str, source: Path | str) -> dict[str, object]:
+        """Install a user-provided SOUL.md as the hermes instance's persona.
+
+        The file is copied to ``<datadir>/SOUL.md`` — the same location the
+        ``configure_before_run`` scaffolder uses. Because the container mounts
+        ``HERMES_HOME=/opt/data`` → datadir, ``prompt_builder.load_soul_md``
+        picks the new persona up on the next chat turn without restarting.
+        """
+        from clawcu.hermes.adapter import HERMES_SOUL_FILENAME
+
+        record = self.store.load_record(name)
+        if record.service != "hermes":
+            raise ValueError(
+                f"Instance '{record.name}' is a {record.service} service; "
+                "`identity set` is only available for hermes instances."
+            )
+        src = Path(source).expanduser()
+        if not src.is_file():
+            raise ValueError(f"Identity file not found: {src}")
+        content = src.read_text(encoding="utf-8")
+        if not content.strip():
+            raise ValueError(
+                f"Identity file {src} is empty — refusing to overwrite "
+                "the existing SOUL.md with a blank persona."
+            )
+        datadir = Path(record.datadir)
+        datadir.mkdir(parents=True, exist_ok=True)
+        target = datadir / HERMES_SOUL_FILENAME
+        target.write_text(content, encoding="utf-8")
+        self.store.append_log(
+            f"identity_set instance={record.name} source={src} target={target} bytes={len(content)}"
+        )
+        return {
+            "instance": record.name,
+            "source": str(src),
+            "target": str(target),
+            "bytes": len(content),
+            "status": record.status,
+        }
+
     def _config_provider_summary(self, config: dict) -> dict[str, str]:
         providers = self._configured_provider_names(config)
         models = self._configured_model_names(config)
@@ -1063,6 +1194,24 @@ class ClawCUService:
     def _dump_env_file(self, values: dict[str, str]) -> str:
         lines = [f"{key}={values[key]}" for key in sorted(values)]
         return ("\n".join(lines) + "\n") if lines else ""
+
+    def _apply_env_overrides(
+        self,
+        adapter,
+        record: InstanceRecord,
+        overrides: dict[str, str],
+    ) -> None:
+        """Merge ``overrides`` into the instance env file (create-time only).
+
+        Runs *after* adapter.configure_before_run so that Hermes' persona
+        scaffolder can seed ``API_SERVER_KEY`` first; the overrides merge
+        on top without clobbering adapter-managed keys we don't touch.
+        """
+        env_path = adapter.env_path(self, record)
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_values = self._load_env_file(env_path)
+        env_values.update(overrides)
+        env_path.write_text(self._dump_env_file(env_values), encoding="utf-8")
 
     def _load_env_text(self, text: str) -> dict[str, str]:
         values: dict[str, str] = {}
@@ -1262,6 +1411,7 @@ class ClawCUService:
             auth_mode=effective_auth_mode,
             dashboard_port=record.dashboard_port,
             image_tag_override=prepared_image,
+            a2a_enabled=record.a2a_enabled,
         )
         history = copy.deepcopy(record.history)
         history.append(
@@ -1270,6 +1420,7 @@ class ClawCUService:
                 "timestamp": utc_now_iso(),
                 "version": record.version,
                 "from_status": record.status,
+                "a2a_enabled": record.a2a_enabled,
             }
         )
         live_record = self._start_new_instance(spec, history=history, auto_port=True)
@@ -1284,6 +1435,7 @@ class ClawCUService:
         fresh: bool = False,
         timeout: int | None = None,
         version: str | None = None,
+        a2a: bool | None = None,
     ) -> InstanceRecord:
         try:
             record = self.store.load_record(name)
@@ -1294,23 +1446,38 @@ class ClawCUService:
                 fresh=fresh,
                 timeout=timeout,
                 version=version,
+                a2a=a2a,
             )
         if version is not None:
             raise ValueError(
                 f"Instance '{name}' already exists. Use `clawcu upgrade {name} --version {version}` to change versions."
             )
         effective_auth_mode = self._effective_auth_mode(record)
+        # If the caller didn't explicitly toggle a2a, preserve the record's
+        # flavor. A change in flavor always re-runs artifact preparation,
+        # so the ``prepare_artifact=False`` shortcut only applies when the
+        # flavor hasn't moved.
+        effective_a2a = record.a2a_enabled if a2a is None else bool(a2a)
+        if effective_a2a != record.a2a_enabled:
+            prepare_artifact = True
+        a2a_note = " a2a=on" if effective_a2a else " a2a=off"
         self.reporter(
-            f"Recreating instance '{record.name}' (service={record.service}, version {record.version}, port {record.port}, auth={effective_auth_mode})."
+            f"Recreating instance '{record.name}' (service={record.service}, version {record.version}, port {record.port}, auth={effective_auth_mode}){a2a_note}."
         )
         self.store.append_log(
-            f"recreate instance name={record.name} version={record.version} fresh={fresh} timeout={timeout}"
+            f"recreate instance name={record.name} version={record.version} fresh={fresh} timeout={timeout} a2a={effective_a2a}"
         )
-        prepared_image = record.image_tag
-        self.reporter(
-            f"Reusing the saved runtime image {prepared_image} for recreate. "
-            "Docker will pull it on container start if it is missing locally."
-        )
+        if effective_a2a != record.a2a_enabled:
+            adapter = self.adapter_for_record(record)
+            prepared_image = adapter.prepare_artifact(record.version)
+            if effective_a2a:
+                prepared_image = self._bake_a2a_image(record.service, record.version, prepared_image)
+        else:
+            prepared_image = record.image_tag
+            self.reporter(
+                f"Reusing the saved runtime image {prepared_image} for recreate. "
+                "Docker will pull it on container start if it is missing locally."
+            )
         if timeout is not None:
             try:
                 self.docker.stop_container(record.container_name, timeout=timeout)
@@ -1333,6 +1500,7 @@ class ClawCUService:
             auth_mode=effective_auth_mode,
             dashboard_port=record.dashboard_port,
             image_tag_override=prepared_image,
+            a2a_enabled=effective_a2a,
         )
         history = copy.deepcopy(record.history)
         history.append(
@@ -1343,6 +1511,7 @@ class ClawCUService:
                 "from_status": record.status,
                 "clawcu_version": clawcu_version,
                 "auth_mode": effective_auth_mode,
+                "a2a_enabled": effective_a2a,
             }
         )
         live_record = self._start_new_instance(spec, history=history, auto_port=False)
@@ -1357,15 +1526,19 @@ class ClawCUService:
         fresh: bool,
         timeout: int | None,
         version: str | None,
+        a2a: bool | None = None,
     ) -> InstanceRecord:
         spec = self._build_removed_instance_spec(name, version=version)
+        effective_a2a = bool(a2a) if a2a is not None else getattr(spec, "a2a_enabled", False)
+        spec = replace(spec, a2a_enabled=effective_a2a)
         adapter = self.adapter_for_service(spec.service)
+        a2a_note = " a2a=on" if effective_a2a else ""
         self.reporter(
             f"Recovering removed instance '{spec.name}' from {spec.datadir} "
-            f"(service={spec.service}, version {spec.version}, port {spec.port}, auth={spec.auth_mode})."
+            f"(service={spec.service}, version {spec.version}, port {spec.port}, auth={spec.auth_mode}).{a2a_note}"
         )
         self.store.append_log(
-            f"recreate removed instance name={spec.name} version={spec.version} fresh={fresh} timeout={timeout}"
+            f"recreate removed instance name={spec.name} version={spec.version} fresh={fresh} timeout={timeout} a2a={effective_a2a}"
         )
         if spec.image_tag_override:
             prepared_image = spec.image_tag_override
@@ -1375,8 +1548,12 @@ class ClawCUService:
             )
         elif prepare_artifact:
             prepared_image = adapter.prepare_artifact(spec.version)
+            if effective_a2a:
+                prepared_image = self._bake_a2a_image(spec.service, spec.version, prepared_image)
         else:
             prepared_image = spec.image_tag_override or image_tag_for_service(spec.service, spec.version)
+            if effective_a2a:
+                prepared_image = a2a_image_tag(spec.service, spec.version, clawcu_version)
             self.reporter(
                 f"Reusing the existing image tag {prepared_image} without re-running artifact preparation."
             )
@@ -2277,6 +2454,7 @@ class ClawCUService:
         *,
         history: list[dict],
         auto_port: bool,
+        env_overrides: dict[str, str] | None = None,
     ) -> InstanceRecord:
         current_spec = spec
         current_history = copy.deepcopy(history)
@@ -2291,6 +2469,8 @@ class ClawCUService:
             self._write_instance_metadata(record)
             try:
                 adapter.configure_before_run(self, record)
+                if env_overrides:
+                    self._apply_env_overrides(adapter, record, env_overrides)
                 self._run_container(record)
             except Exception as exc:
                 failure = updated_record(
@@ -2727,7 +2907,7 @@ class ClawCUService:
             suffix += 1
 
     def _provider_bundle_equals(self, existing: dict[str, object], incoming: dict[str, object]) -> bool:
-        keys = ("metadata", "auth_profiles", "models", "config_yaml", "env")
+        keys = ("metadata", "auth_profiles", "models", "config_yaml", "env", "auth_json")
         return {key: existing.get(key) for key in keys} == {key: incoming.get(key) for key in keys}
 
     def _provider_signature(self, bundle: dict[str, object]) -> tuple[str, str, str | None, str | None]:

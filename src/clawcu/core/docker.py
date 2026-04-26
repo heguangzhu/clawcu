@@ -1,12 +1,50 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Callable
 
 from clawcu.core.models import ContainerRunSpec, InstanceRecord
 from clawcu.core.subprocess_utils import CommandError, run_command
+
+
+def resolve_a2a_bind_interface() -> str:
+    """Return the interface prefix docker should bind A2A sidecar ports on.
+
+    Review-12 P1-D1: A2A sidecar ports are reachable from any host network
+    interface because ``docker run -p host:internal`` binds to 0.0.0.0 by
+    default. Any machine on the LAN can POST ``/a2a/send`` /
+    ``/a2a/outbound`` / ``/mcp`` with no auth, drain the LLM quota, or
+    inject adversarial messages into a native agent's session.
+
+    Restricting the sidecar to 127.0.0.1 on the host preserves:
+
+    * the CLI path (``clawcu a2a send`` hits 127.0.0.1 after the iter-11
+      P1-C1 localize step);
+    * container→container on Darwin, because Docker Desktop's userland
+      proxy forwards ``host.docker.internal:<host_port>`` into the host's
+      loopback (empirically confirmed under 27.x).
+
+    On Linux, ``host.docker.internal`` is added as an extra_hosts pointer
+    at the docker bridge gateway IP (typically 172.17.0.1). Binding only
+    to 127.0.0.1 on the host would break container→container because the
+    bridge-gateway traffic never reaches a loopback-only port. We
+    therefore fall back to 0.0.0.0 on Linux by default and let the
+    operator opt in to stricter binding via the env var once they've
+    configured their firewall or network policy.
+
+    The env var ``CLAWCU_A2A_BIND_INTERFACE`` lets advanced users override
+    both defaults (e.g. bind to a specific LAN IP, or accept the
+    defaults).
+    """
+    override = os.environ.get("CLAWCU_A2A_BIND_INTERFACE")
+    if isinstance(override, str) and override.strip():
+        return override.strip()
+    if sys.platform == "darwin":
+        return "127.0.0.1"
+    return ""
 
 
 class DockerManager:
@@ -73,6 +111,7 @@ class DockerManager:
         preferred_variant: str | None = None,
         dockerfile: str | Path | None = None,
         build_contexts: dict[str, str | Path] | None = None,
+        build_args: dict[str, str] | None = None,
     ) -> None:
         command = ["docker", "build"]
         if dockerfile:
@@ -80,6 +119,9 @@ class DockerManager:
         if build_contexts:
             for name, path in sorted(build_contexts.items()):
                 command.extend(["--build-context", f"{name}={path}"])
+        if build_args:
+            for name, value in sorted(build_args.items()):
+                command.extend(["--build-arg", f"{name}={value}"])
         command.extend(["-t", image_tag, "."])
         self.runner(command, cwd=source_dir, capture_output=False)
 
@@ -134,8 +176,23 @@ class DockerManager:
         ]
         for source_path, target_path in spec.additional_mounts:
             command.extend(["-v", f"{source_path}:{target_path}"])
+        # Review-12 P1-D1: additional_ports today are all A2A sidecar ports
+        # (both adapters only add entries here for the sidecar). Bind them to
+        # a single interface so LAN hosts can't reach /a2a/send,
+        # /a2a/outbound, or /mcp without a docker connection. See
+        # ``resolve_a2a_bind_interface`` for the platform defaults.
+        a2a_iface = resolve_a2a_bind_interface()
         for host_port, internal_port in spec.additional_ports:
-            command.extend(["-p", f"{host_port}:{internal_port}"])
+            publish = (
+                f"{a2a_iface}:{host_port}:{internal_port}"
+                if a2a_iface
+                else f"{host_port}:{internal_port}"
+            )
+            command.extend(["-p", publish])
+        for host_name, host_ip in spec.extra_hosts:
+            # `host-gateway` is a docker-engine magic value (Linux parity
+            # with Docker Desktop's auto-resolved host.docker.internal).
+            command.extend(["--add-host", f"{host_name}:{host_ip}"])
         if spec.env_file:
             command.extend(["--env-file", spec.env_file])
         for key, value in sorted(spec.extra_env.items()):

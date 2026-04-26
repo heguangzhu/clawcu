@@ -15,6 +15,16 @@ class ServiceAdapter(ABC):
     display_name: str
     default_port: int
 
+    # Review-1 §3: A2A protocol defaults live on the adapter so adding a
+    # third service doesn't require editing ``clawcu.a2a.card`` — the
+    # control-plane layer stays free of per-service knowledge. The
+    # in-module tables in ``card.py`` are now a fallback used only when
+    # a ``ClawCUService`` handle is not available (e.g. unit tests that
+    # construct cards from lightweight ``FakeRecord`` fixtures).
+    a2a_skills: tuple[str, ...] = ("chat",)
+    a2a_role: str = ""  # empty → card.py templates "{service} local agent"
+    a2a_plugin_port_offsets: tuple[int, ...] = (0,)
+
     @abstractmethod
     def prepare_artifact(self, version: str) -> str:
         raise NotImplementedError
