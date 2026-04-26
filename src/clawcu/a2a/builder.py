@@ -38,6 +38,29 @@ _A2A_BUILD_ARGS: dict[str, tuple[str, str]] = {
 
 _TAG_SAFE = re.compile(r"[^A-Za-z0-9_.-]+")
 
+# Cutoff for the upstream hermes-agent USER switch (root → hermes).
+# v2026.4.23 was the first tag whose image ships a ``hermes`` account; older
+# tags don't have that user, so the a2a Dockerfile must keep running as root
+# there or the container fails at startup with "unable to find user hermes".
+_HERMES_RUNTIME_USER_CUTOFF = (2026, 4, 23)
+_HERMES_VERSION_TRIPLE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)")
+
+
+def _hermes_runtime_user(base_tag: str) -> str:
+    """Return the user the hermes a2a image should drop to before ENTRYPOINT.
+
+    Older hermes-agent tags (≤ v2026.4.22) ran as root; v2026.4.23+ switched
+    to a non-root ``hermes`` user. Picking the wrong one regresses image
+    startup either by 'unable to find user hermes' or by losing the upstream
+    de-rooting. Falls back to ``root`` for tags that don't parse as a triple
+    (e.g. ``latest``, sha-style refs) — root is the universally-safe default.
+    """
+    match = _HERMES_VERSION_TRIPLE.match(base_tag.strip())
+    if not match:
+        return "root"
+    triple = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    return "hermes" if triple >= _HERMES_RUNTIME_USER_CUTOFF else "root"
+
 # Docker official tag spec: first char is [A-Za-z0-9_], rest may include
 # dots and hyphens, up to 128 chars total. Any resulting tag we emit must
 # satisfy this allow-list — see Review-1 §14.
@@ -135,14 +158,17 @@ class A2AImageBuilder:
             f"(clawcu plugin fingerprint {fingerprint}). This can take ~30-60s "
             "on the first build."
         )
+        build_args = {
+            version_arg: tag,
+            repo_arg: repo,
+            "CLAWCU_PLUGIN_VERSION": fingerprint,
+        }
+        if service == "hermes":
+            build_args["HERMES_RUNTIME_USER"] = _hermes_runtime_user(tag)
         self.docker.build_image(
             context_dir,
             target_tag,
             dockerfile=dockerfile_path,
-            build_args={
-                version_arg: tag,
-                repo_arg: repo,
-                "CLAWCU_PLUGIN_VERSION": fingerprint,
-            },
+            build_args=build_args,
         )
         return target_tag

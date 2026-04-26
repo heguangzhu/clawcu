@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import os
 import sys
 
@@ -166,6 +167,98 @@ def test_hermes_stream_caps_total_size(monkeypatch):
             progress=lambda _msg: None,
             progress_interval_s=3.0,
         )
+
+
+def test_hermes_stream_raises_on_empty_response(monkeypatch):
+    """Empty/non-SSE body must surface as RuntimeError, not silent blank reply.
+
+    Review-23 P2: when ``call_hermes`` requests ``stream: true`` and the
+    upstream returns a body with no usable content deltas, the previous
+    consumer collected nothing and returned ``""`` — completing the task with
+    an empty reply. The worker must instead see a failure.
+    """
+    monkeypatch.setattr(hermes_gateway.time, "monotonic", lambda: 0.0)
+    # Body with only a [DONE] terminator (no content deltas).
+    with pytest.raises(RuntimeError, match="no content"):
+        hermes_gateway._consume_chat_stream_from(
+            _FakeSSEResponse([b"data: [DONE]\n"]),
+            progress=lambda _msg: None,
+            progress_interval_s=3.0,
+        )
+
+    # Body with no SSE lines at all (e.g. plain JSON misrouted into the SSE
+    # consumer) — same expectation.
+    with pytest.raises(RuntimeError, match="no content"):
+        hermes_gateway._consume_chat_stream_from(
+            _FakeSSEResponse([b'{"choices":[{"message":{"content":"x"}}]}']),
+            progress=lambda _msg: None,
+            progress_interval_s=3.0,
+        )
+
+
+def test_hermes_call_falls_back_to_json_when_gateway_ignores_stream(monkeypatch):
+    """If the gateway responds with application/json under stream=true, parse it.
+
+    Review-23 P2: some peers always reply with plain JSON regardless of the
+    ``stream: true`` request flag. ``call_hermes`` must detect the
+    Content-Type mismatch and parse as JSON instead of feeding the body to
+    the SSE consumer (which would silently return a blank reply).
+    """
+    cfg_obj = type(
+        "_Cfg",
+        (),
+        {
+            "system_prompt": "",
+            "model": "hermes-agent",
+            "api_key": "",
+            "timeout": 5.0,
+            "chat_url": lambda self: "http://127.0.0.1:9999/v1/chat/completions",
+        },
+    )()
+
+    payload = json.dumps(
+        {"choices": [{"message": {"content": "hi from non-stream gateway"}}]}
+    ).encode("utf-8")
+
+    class _FakeJSONResponse:
+        headers = {"Content-Type": "application/json"}
+
+        def __init__(self) -> None:
+            self._buf = payload
+            self._pos = 0
+            self.closed = False
+
+        def read(self, n=-1):
+            if n is None or n < 0:
+                chunk = self._buf[self._pos:]
+                self._pos = len(self._buf)
+                return chunk
+            chunk = self._buf[self._pos : self._pos + n]
+            self._pos += len(chunk)
+            return chunk
+
+        def close(self) -> None:
+            self.closed = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            self.close()
+            return None
+
+    response = _FakeJSONResponse()
+    monkeypatch.setattr(
+        hermes_gateway.urllib.request, "urlopen",
+        lambda req, timeout=None: response,  # noqa: ARG005
+    )
+
+    notes: list[str] = []
+    reply = hermes_gateway.call_hermes(
+        cfg_obj, "ping", "peer-agent", progress=notes.append
+    )
+    assert reply == "hi from non-stream gateway"
+    assert notes == []  # JSON path doesn't emit streaming progress
 
 
 def test_hermes_stream_progress_callback_failures_are_swallowed(monkeypatch):

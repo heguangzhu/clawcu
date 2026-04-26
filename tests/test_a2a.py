@@ -2474,6 +2474,107 @@ def test_hermes_dockerfile_copies_whole_sidecar_dir():
     _assert_dockerfile_copies_whole_sidecar_dir("hermes")
 
 
+def test_a2a_hermes_runtime_user_picks_root_for_old_versions():
+    """Pre-v2026.4.23 hermes images run as root and have no ``hermes`` user.
+
+    Forcing ``USER hermes`` in those images would make the container fail at
+    startup with "unable to find user hermes". The builder must default to
+    root for those tags so the bake stays compatible across the version range.
+    """
+    from clawcu.a2a.builder import _hermes_runtime_user
+
+    assert _hermes_runtime_user("v2026.4.8") == "root"
+    assert _hermes_runtime_user("v2026.4.13") == "root"
+    assert _hermes_runtime_user("v2026.4.22") == "root"
+
+
+def test_a2a_hermes_runtime_user_picks_hermes_for_new_versions():
+    """v2026.4.23+ ships a non-root ``hermes`` user; pass it to USER."""
+    from clawcu.a2a.builder import _hermes_runtime_user
+
+    assert _hermes_runtime_user("v2026.4.23") == "hermes"
+    assert _hermes_runtime_user("v2026.5.0") == "hermes"
+    assert _hermes_runtime_user("v2027.1.1") == "hermes"
+
+
+def test_a2a_hermes_runtime_user_falls_back_to_root_for_unparseable_tags():
+    """Sha-style or floating tags can't be compared — default to safe ``root``."""
+    from clawcu.a2a.builder import _hermes_runtime_user
+
+    assert _hermes_runtime_user("latest") == "root"
+    assert _hermes_runtime_user("sha256-abcdef") == "root"
+    assert _hermes_runtime_user("") == "root"
+
+
+def test_a2a_image_builder_passes_runtime_user_for_hermes():
+    """``A2AImageBuilder.ensure_image`` forwards HERMES_RUNTIME_USER to docker.
+
+    Regression for review-23 P1: the Dockerfile now defaults
+    ``HERMES_RUNTIME_USER=root`` so older base tags keep building, and the
+    builder must override it to ``hermes`` for v2026.4.23+ where the upstream
+    image switched to a non-root runtime user.
+    """
+    from clawcu.a2a.builder import A2AImageBuilder
+
+    captured: dict[str, dict[str, str] | None] = {}
+
+    class _FakeDocker:
+        def image_exists(self, _tag):
+            return False
+
+        def pull_image(self, _tag):
+            return None
+
+        def build_image(
+            self,
+            context_dir,  # noqa: ARG002
+            target_tag,
+            *,
+            dockerfile=None,  # noqa: ARG002
+            build_contexts=None,  # noqa: ARG002
+            build_args=None,
+        ):
+            captured["build_args"] = build_args
+            captured["target_tag"] = target_tag
+
+    builder = A2AImageBuilder(docker=_FakeDocker(), clawcu_version="0.2.11")
+    builder.ensure_image("hermes", "v2026.4.23", "clawcu/hermes-agent:v2026.4.23")
+    assert captured["build_args"]["HERMES_RUNTIME_USER"] == "hermes"
+
+    captured.clear()
+    builder.ensure_image("hermes", "v2026.4.8", "clawcu/hermes-agent:v2026.4.8")
+    assert captured["build_args"]["HERMES_RUNTIME_USER"] == "root"
+
+
+def test_a2a_image_builder_does_not_set_runtime_user_for_openclaw():
+    """The runtime-user override is hermes-specific; openclaw uses ``USER node``."""
+    from clawcu.a2a.builder import A2AImageBuilder
+
+    captured: dict[str, dict[str, str] | None] = {}
+
+    class _FakeDocker:
+        def image_exists(self, _tag):
+            return False
+
+        def pull_image(self, _tag):
+            return None
+
+        def build_image(
+            self,
+            context_dir,  # noqa: ARG002
+            target_tag,  # noqa: ARG002
+            *,
+            dockerfile=None,  # noqa: ARG002
+            build_contexts=None,  # noqa: ARG002
+            build_args=None,
+        ):
+            captured["build_args"] = build_args
+
+    builder = A2AImageBuilder(docker=_FakeDocker(), clawcu_version="0.2.11")
+    builder.ensure_image("openclaw", "2026.4.12", "ghcr.io/openclaw/openclaw:2026.4.12")
+    assert "HERMES_RUNTIME_USER" not in captured["build_args"]
+
+
 def test_a2a_image_tag_embeds_source_sha_not_raw_version(tmp_path, monkeypatch):
     """Tag component after ``plugin`` is ``<ver>.<sha>``, not bare ``<ver>``.
 
