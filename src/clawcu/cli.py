@@ -58,20 +58,6 @@ app = typer.Typer(
     rich_markup_mode="markdown",
     add_completion=False,
 )
-pull_app = typer.Typer(
-    help=(
-        "Pull and build managed services.\n\n"
-        "**Examples:**\n\n"
-        "```\n"
-        "clawcu pull openclaw --version 2026.4.15\n"
-        "clawcu pull hermes --version 2026.4.13\n"
-        "clawcu pull --service openclaw --version 2026.4.15  # alt form\n"
-        "```"
-    ),
-    rich_markup_mode="markdown",
-    subcommand_metavar="SERVICE",
-    add_completion=False,
-)
 create_app = typer.Typer(
     help=(
         "Create managed services.\n\n"
@@ -90,21 +76,14 @@ provider_app = typer.Typer(
     help="Collect and reuse model configuration assets from managed instances and local homes.",
     add_completion=False,
 )
-hermes_app = typer.Typer(
-    help="Hermes-specific instance operations.",
+openclaw_app = typer.Typer(
+    help="OpenClaw-specific instance operations.",
     subcommand_metavar="COMMAND",
     add_completion=False,
 )
-hermes_identity_app = typer.Typer(
-    help="Manage the SOUL.md persona file for a hermes instance.",
-    subcommand_metavar="ACTION",
-    add_completion=False,
-)
-hermes_app.add_typer(hermes_identity_app, name="identity")
-app.add_typer(pull_app, name="pull", rich_help_panel="Setup")
 app.add_typer(create_app, name="create", rich_help_panel="Lifecycle")
 app.add_typer(provider_app, name="provider", rich_help_panel="Providers")
-app.add_typer(hermes_app, name="hermes", rich_help_panel="Lifecycle")
+app.add_typer(openclaw_app, name="openclaw", rich_help_panel="Service-Specific")
 app.add_typer(a2a_app, name="a2a", rich_help_panel="A2A")
 console = Console()
 _DISPLAY_DATE_RE = re.compile(r"(\d{4}\.\d{1,2}\.\d{1,2})")
@@ -1053,24 +1032,6 @@ def setup_environment(
 _KNOWN_SERVICES = ("openclaw", "hermes")
 
 
-def _do_pull(service_name: str, version: str) -> None:
-    if service_name not in _KNOWN_SERVICES:
-        _exit_with_error(
-            f"Unknown service '{service_name}'. Expected one of: {', '.join(_KNOWN_SERVICES)}."
-        )
-    service = get_service()
-    if hasattr(service, "set_reporter"):
-        service.set_reporter(_print_progress)
-    try:
-        if service_name == "openclaw":
-            image_tag = service.pull_openclaw(version)
-        else:
-            image_tag = service.pull_hermes(version)
-    except Exception as exc:
-        _exit_with_error(str(exc))
-    console.print(f"[green]Built image:[/green] {image_tag}")
-
-
 def _do_create(
     service_name: str,
     *,
@@ -1156,28 +1117,6 @@ def _do_create(
                         f"[dim]Run `clawcu recreate {record.name}` so the container picks up the new env.[/dim]"
                     )
     _print_access_url(service, record.name)
-
-
-@pull_app.callback(invoke_without_command=True)
-def pull_callback(
-    ctx: typer.Context,
-    service: Annotated[
-        str | None,
-        typer.Option("--service", help=f"Service name ({' | '.join(_KNOWN_SERVICES)}). Unified alternative to the 'clawcu pull <service>' subcommand form."),
-    ] = None,
-    version: Annotated[
-        str | None,
-        typer.Option("--version", help="Service version or git ref."),
-    ] = None,
-) -> None:
-    if ctx.invoked_subcommand is not None:
-        return
-    if service:
-        if not version:
-            _exit_with_error("--service requires --version.")
-        _do_pull(service, version)
-        return
-    _show_help_and_exit(ctx)
 
 
 _APPLY_PROVIDER_OPTION = typer.Option(
@@ -1296,20 +1235,6 @@ def provider_callback(ctx: typer.Context) -> None:
         _show_help_and_exit(ctx)
 
 
-@pull_app.command("openclaw", rich_help_panel=_PANEL_SETUP)
-def pull_openclaw(
-    version: Annotated[str, typer.Option("--version", help="OpenClaw version to pull.")],
-) -> None:
-    _do_pull("openclaw", version)
-
-
-@pull_app.command("hermes", rich_help_panel=_PANEL_SETUP)
-def pull_hermes(
-    version: Annotated[str, typer.Option("--version", help="Hermes git ref to pull and build.")],
-) -> None:
-    _do_pull("hermes", version)
-
-
 @create_app.command("openclaw", rich_help_panel=_PANEL_LIFECYCLE)
 def create_openclaw(
     name: Annotated[str, typer.Option("--name", help="Managed instance name.")],
@@ -1399,35 +1324,6 @@ def create_hermes(
         apply_provider=apply_provider,
         apply_agent=apply_agent,
         apply_persist=apply_persist,
-    )
-
-
-@hermes_identity_app.command(
-    "set",
-    help=(
-        "Install a file as the persona (SOUL.md) for a hermes instance.\n\n"
-        "The file is copied into the instance's datadir where the container's "
-        "HERMES_HOME mount makes it `$HERMES_HOME/SOUL.md`. Hermes "
-        "re-reads it on every chat turn — no restart required."
-    ),
-)
-def hermes_identity_set(
-    name: Annotated[str, typer.Argument(help="Managed hermes instance name.")],
-    source: Annotated[str, typer.Argument(help="Path to a local markdown/text file.")],
-) -> None:
-    service = get_service()
-    try:
-        result = service.set_hermes_identity(name, source)
-    except ValueError as exc:
-        _exit_with_error(str(exc))
-    except FileNotFoundError as exc:
-        _exit_with_error(str(exc))
-    console.print(
-        f"[green]Installed persona[/green] for [bold]{result['instance']}[/bold]: "
-        f"{result['source']} -> {result['target']} ({result['bytes']} bytes)."
-    )
-    console.print(
-        "[dim]Next chat turn will pick it up automatically; no restart needed.[/dim]"
     )
 
 
@@ -1941,14 +1837,24 @@ def list_instances(
         bool,
         typer.Option("--reveal", help="Show full dashboard tokens inside ACCESS URLs. Off by default for safety."),
     ] = False,
+    versions: Annotated[
+        bool,
+        typer.Option(
+            "--versions",
+            help=(
+                "Append a top-10 'Available versions' footer per service (OpenClaw, Hermes) "
+                "fetched from the configured image registries. Off by default; pass this flag "
+                "to see candidate versions for upgrade."
+            ),
+        ),
+    ] = False,
     include_remote: Annotated[
         bool,
         typer.Option(
             "--remote/--no-remote",
             help=(
-                "Append a top-10 'Available versions' block per service (OpenClaw, Hermes) "
-                "fetched from the configured image registries. Default on; pass --no-remote "
-                "for a strictly offline view (CI, airgapped, slow networks)."
+                "When used with --versions, query the configured image registry for release tags. "
+                "Default on; pass --no-remote for a strictly offline view (CI, airgapped, slow networks)."
             ),
         ),
     ] = True,
@@ -1957,8 +1863,8 @@ def list_instances(
         typer.Option(
             "--no-cache",
             help=(
-                "Bypass the local Available Versions cache and fetch fresh "
-                "remote tags for the footer."
+                "When used with --versions, bypass the local cache and fetch fresh "
+                "remote tags from the registry."
             ),
         ),
     ] = False,
@@ -2019,27 +1925,25 @@ def list_instances(
     else:
         _print_instance_table(records, wide=wide, reveal=reveal)
 
-    # Versions block is a human-only footer; skip for --json (scripts
-    # already know which versions they care about), --agents (narrow
-    # per-agent view), and --removed (archival view, not an upgrade
-    # surface). Guarded with hasattr so older service implementations
-    # and test stubs without the method degrade to "silently skip".
-    if (
-        not agents
-        and resolved_source in {"managed", "local", "all"}
-        and hasattr(service, "list_service_available_versions")
-    ):
-        try:
-            versions_payload = service.list_service_available_versions(
-                include_remote=include_remote,
-                use_cache=not no_cache,
-            )
-        except Exception as exc:
-            console.print(
-                f"[yellow]Skipped available-versions fetch: {exc}[/yellow]"
-            )
-        else:
-            _print_available_versions(versions_payload, limit=10)
+    # Versions block is a human-only footer; only show when explicitly
+    # requested via --versions. Skip for --json (scripts already know which
+    # versions they care about), --agents (narrow per-agent view), and
+    # --removed (archival view, not an upgrade surface). Guarded with hasattr
+    # so older service implementations and test stubs without the method
+    # degrade to "silently skip".
+    if versions and not agents and resolved_source in {"managed", "local", "all"}:
+        if hasattr(service, "list_service_available_versions"):
+            try:
+                versions_payload = service.list_service_available_versions(
+                    include_remote=include_remote,
+                    use_cache=not no_cache,
+                )
+            except Exception as exc:
+                console.print(
+                    f"[yellow]Skipped available-versions fetch: {exc}[/yellow]"
+                )
+            else:
+                _print_available_versions(versions_payload, limit=10)
 
 
 def _print_inspect_human(payload: dict, *, reveal: bool, show_history: bool) -> None:
@@ -2258,15 +2162,14 @@ def _copy_to_clipboard(value: str) -> tuple[bool, str]:
     return False, "no clipboard backend found (tried pbcopy, wl-copy, xclip, xsel, clip)"
 
 
-@app.command(
+@openclaw_app.command(
     "token",
     help=(
-        "Print the dashboard token for a managed instance. "
+        "Print the dashboard token for an OpenClaw instance. "
         "Default shows both the token and the access URL with the `#token=…` anchor. "
         "Unlike `list`, `token` always prints the literal value (that's the whole point); "
         "avoid piping its output to shared logs."
     ),
-    rich_help_panel=_PANEL_ACCESS,
 )
 def token_for_instance(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
@@ -2578,13 +2481,12 @@ def unset_instance_env(
     )
 
 
-@app.command(
+@openclaw_app.command(
     "approve",
     help=(
-        "Approve a pending browser pairing request for an instance. "
+        "Approve a pending browser pairing request for an OpenClaw instance. "
         "Pass --list to enumerate pending requests without approving."
     ),
-    rich_help_panel=_PANEL_ACCESS,
 )
 def approve_pairing(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
@@ -2625,7 +2527,7 @@ def approve_pairing(
             table.add_row(req_id, device, str(ts))
         console.print(table)
         console.print(
-            f"[dim]Run `clawcu approve {name} <REQUEST_ID>` to approve a specific request.[/dim]"
+            f"[dim]Run `clawcu openclaw approve {name} <REQUEST_ID>` to approve a specific request.[/dim]"
         )
         return
 
@@ -2635,6 +2537,53 @@ def approve_pairing(
         _exit_with_error(str(exc))
     console.print(f"[green]Approved pairing:[/green] {approved_request_id} for {name}")
     _print_access_url(service, name)
+
+
+# Deprecation aliases for commands moved to `clawcu openclaw` in v0.4.
+# These will be removed in v0.5.
+@app.command("token", hidden=True, rich_help_panel=_PANEL_ACCESS)
+def _token_alias(
+    name: Annotated[str, typer.Argument(help="Managed instance name.")],
+    copy: Annotated[
+        bool,
+        typer.Option("--copy", "-c", help="Copy the token to the system clipboard."),
+    ] = False,
+    url_only: Annotated[
+        bool,
+        typer.Option("--url-only", help="Print only the access URL."),
+    ] = False,
+    token_only: Annotated[
+        bool,
+        typer.Option("--token-only", help="Print only the token."),
+    ] = False,
+    json_output: Annotated[bool, _JSON_OPTION] = False,
+) -> None:
+    import sys
+    sys.stderr.write(
+        "DeprecationWarning: 'clawcu token' is deprecated. "
+        "Use 'clawcu openclaw token' instead.\n"
+    )
+    token_for_instance(
+        name, copy=copy, url_only=url_only, token_only=token_only, json_output=json_output
+    )
+
+
+@app.command("approve", hidden=True, rich_help_panel=_PANEL_ACCESS)
+def _approve_alias(
+    name: Annotated[str, typer.Argument(help="Managed instance name.")],
+    request_id: Annotated[str | None, typer.Argument(help="Specific pairing request id to approve.")] = None,
+    list_pending: Annotated[
+        bool,
+        typer.Option("--list", help="List pending pairing requests without approving."),
+    ] = False,
+    json_output: Annotated[bool, _JSON_OPTION] = False,
+) -> None:
+    import sys
+    sys.stderr.write(
+        "DeprecationWarning: 'clawcu approve' is deprecated. "
+        "Use 'clawcu openclaw approve' instead.\n"
+    )
+    approve_pairing(name, request_id=request_id, list_pending=list_pending, json_output=json_output)
 
 
 @app.command(

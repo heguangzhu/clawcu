@@ -794,28 +794,8 @@ class FakeService:
         self._record("remove_removed_instance", name=name)
 
 
-def test_pull_openclaw_command(monkeypatch) -> None:
-    service = FakeService()
-    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
-
-    result = runner.invoke(app, ["pull", "openclaw", "--version", "2026.4.1"])
-
-    assert result.exit_code == 0
-    assert "Built image" in result.stdout
-    assert "Starting OpenClaw image preparation" in result.stdout
-    assert service.pulled_versions == ["2026.4.1"]
 
 
-def test_pull_hermes_command(monkeypatch) -> None:
-    service = FakeService()
-    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
-
-    result = runner.invoke(app, ["pull", "hermes", "--version", "v0.9.0"])
-
-    assert result.exit_code == 0
-    assert "Built image" in result.stdout
-    assert "Starting Hermes image preparation" in result.stdout
-    assert service.calls[0] == ("pull_hermes", (), {"version": "v0.9.0"})
 
 
 def test_root_version_flag_prints_version() -> None:
@@ -848,13 +828,6 @@ def test_create_help_uses_service_language_and_lists_supported_services() -> Non
     assert "hermes" in result.stdout
 
 
-def test_pull_help_uses_service_language_and_lists_supported_services() -> None:
-    result = runner.invoke(app, ["pull", "--help"])
-
-    assert result.exit_code == 0
-    assert "pull [OPTIONS] SERVICE" in result.stdout
-    assert "openclaw" in result.stdout
-    assert "hermes" in result.stdout
 
 
 def test_root_help_lists_descriptions_for_top_level_commands() -> None:
@@ -867,15 +840,14 @@ def test_root_help_lists_descriptions_for_top_level_commands() -> None:
     assert "List managed instances." in result.stdout
     assert "inspect" in result.stdout
     assert "Show detailed state for a managed instance." in result.stdout
-    assert "token" in result.stdout
-    assert "Print the dashboard token for a managed instance." in result.stdout
+    # token/approve moved to `clawcu openclaw` in v0.4; no longer in root help.
+    assert "openclaw" in result.stdout
+    assert "OpenClaw-specific instance operations." in result.stdout
     assert "setup" in result.stdout
     assert "Check local prerequisites and configure the default ClawCU home" in result.stdout
     assert "and service image repos." in result.stdout
     assert "provider" in result.stdout
     assert "Collect and reuse model configuration assets" in result.stdout
-    assert "approve" in result.stdout
-    assert "Approve a pending browser pairing request for an instance." in result.stdout
     assert "config" in result.stdout
     assert "Run the native configuration flow inside a managed instance." in result.stdout
     assert "exec" in result.stdout
@@ -1196,17 +1168,13 @@ def test_exec_help_explains_passthrough_usage() -> None:
 
 def test_empty_service_groups_show_help_instead_of_error() -> None:
     create_result = runner.invoke(app, ["create"])
-    pull_result = runner.invoke(app, ["pull"])
     provider_result = runner.invoke(app, ["provider"])
 
     assert create_result.exit_code == 0
-    assert pull_result.exit_code == 0
     assert provider_result.exit_code == 0
     assert "create [OPTIONS] SERVICE" in create_result.stdout
-    assert "pull [OPTIONS] SERVICE" in pull_result.stdout
     assert "provider [OPTIONS] COMMAND [ARGS]..." in provider_result.stdout
     assert "Missing command" not in create_result.stdout
-    assert "Missing command" not in pull_result.stdout
 
     # `provider models` is a leaf command that takes a provider name
     # directly (v0.2 dropped the trailing `list` level). Bare invocation
@@ -1320,20 +1288,15 @@ def test_list_command_defaults_to_managed_source(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "ClawCU Instances" in result.stdout
     # Default no longer mixes local pseudo-instances into the table.
-    # The available-versions footer calls the service once more.
+    # Versions footer is off by default (requires --versions).
     assert service.calls == [
         ("list_instance_summaries", (), {"running_only": False}),
-        (
-            "list_service_available_versions",
-            (),
-            {"include_remote": True, "use_cache": True},
-        ),
     ]
-    assert "Available versions" in result.stdout
+    assert "Available versions" not in result.stdout
 
 
 def test_list_no_remote_flag_skips_registry_fetch(monkeypatch) -> None:
-    """`--no-remote` still calls the service method but passes include_remote=False.
+    """`--versions --no-remote` calls the service method with include_remote=False.
 
     The service method is responsible for interpreting the flag (no
     network I/O), so the CLI behavior is a one-argument flip.
@@ -1341,7 +1304,7 @@ def test_list_no_remote_flag_skips_registry_fetch(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
 
-    result = runner.invoke(app, ["list", "--no-remote"])
+    result = runner.invoke(app, ["list", "--versions", "--no-remote"])
 
     assert result.exit_code == 0
     assert (
@@ -1355,7 +1318,7 @@ def test_list_no_cache_flag_bypasses_available_versions_cache(monkeypatch) -> No
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
 
-    result = runner.invoke(app, ["list", "--no-cache"])
+    result = runner.invoke(app, ["list", "--versions", "--no-cache"])
 
     assert result.exit_code == 0
     assert (
@@ -1433,7 +1396,7 @@ def test_list_no_remote_footer_renders_as_dim_offline(monkeypatch) -> None:
     service.list_service_available_versions = offline_versions  # type: ignore[assignment]
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
 
-    result = runner.invoke(app, ["list", "--no-remote"])
+    result = runner.invoke(app, ["list", "--versions", "--no-remote"])
 
     assert result.exit_code == 0
     assert "offline (remote skipped by --no-remote)" in result.stdout
@@ -1481,7 +1444,7 @@ def test_list_footer_renders_yellow_on_actual_fetch_failure(monkeypatch) -> None
     service.list_service_available_versions = failing_versions  # type: ignore[assignment]
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
 
-    result = runner.invoke(app, ["list"])
+    result = runner.invoke(app, ["list", "--versions"])
 
     assert result.exit_code == 0
     assert "fetch failed: network unreachable" in result.stdout
@@ -1502,11 +1465,6 @@ def test_list_command_source_all_includes_local(monkeypatch) -> None:
         ("list_local_instance_summaries", (), {}),
         ("list_removed_instance_summaries", (), {}),
         ("list_instance_summaries", (), {"running_only": False}),
-        (
-            "list_service_available_versions",
-            (),
-            {"include_remote": True, "use_cache": True},
-        ),
     ]
 
 
@@ -2899,11 +2857,6 @@ def test_list_local_option_filters_to_local(monkeypatch) -> None:
     assert result.exit_code == 0
     assert service.calls == [
         ("list_local_instance_summaries", (), {}),
-        (
-            "list_service_available_versions",
-            (),
-            {"include_remote": True, "use_cache": True},
-        ),
     ]
 
 
