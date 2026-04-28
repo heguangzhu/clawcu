@@ -2121,7 +2121,7 @@ class ClawCUService:
                 f"Resolved clone settings: datadir={clone_spec.datadir}, port={clone_spec.port}, cpu={clone_spec.cpu}, memory={clone_spec.memory}."
             )
             self.reporter("Step 2/5: Copying the source data directory into a new experiment directory. This can take a while for larger instances.")
-            shutil.copytree(source.datadir, target_dir)
+            shutil.copytree(source.datadir, target_dir, symlinks=True)
             env_external = (
                 source_env_path.exists()
                 and not self._env_path_within_datadir(source_env_path, Path(source.datadir))

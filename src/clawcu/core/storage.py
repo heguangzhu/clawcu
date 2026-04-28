@@ -244,7 +244,7 @@ class StateStore:
         snapshot_dir = self.paths.snapshots_dir / name / f"{timestamp}-{safe_label}"
         snapshot_dir.parent.mkdir(parents=True, exist_ok=True)
         if datadir.exists():
-            shutil.copytree(datadir, snapshot_dir)
+            shutil.copytree(datadir, snapshot_dir, symlinks=True)
         else:
             snapshot_dir.mkdir(parents=True, exist_ok=True)
         if env_path is not None and env_path.exists():
@@ -272,7 +272,7 @@ class StateStore:
     ) -> None:
         if datadir.exists():
             shutil.rmtree(datadir)
-        shutil.copytree(snapshot_dir, datadir)
+        shutil.copytree(snapshot_dir, datadir, symlinks=True)
         if env_path is not None:
             snapshot_env = self.snapshot_env_path(snapshot_dir)
             if snapshot_env.exists():
