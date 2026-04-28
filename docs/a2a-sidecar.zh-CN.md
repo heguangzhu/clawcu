@@ -11,7 +11,7 @@
 - `clawcu create openclaw|hermes --a2a ...` 把 **A2A v0 sidecar** 烤进实例镜像。
 - Sidecar 是原生网关旁边的第二个进程，在邻居端口上发布两个接口：`GET /.well-known/agent-card.json`（发现）和 `POST /a2a/send`（发消息）。
 - 不加 `--a2a` 的普通实例一丝不变。A2A 严格 opt-in、纯加法。
-- `clawcu a2a up` 一条命令起全套：探测运行中的实例，给没 sidecar 的打 echo bridge，前台跑聚合 registry。
+- `clawcu a2a registry serve` 启动聚合 registry，让实例之间可以互相发现。
 - `clawcu a2a send --to <name> --message "..."` 是冒烟测试命令。
 
 * * *
@@ -28,7 +28,7 @@
 - [镜像生命周期与源码 sha 指纹](#镜像生命周期与源码-sha-指纹)
 - [双实例完整演练](#双实例完整演练)
 - [给已有实例开启 A2A](#给已有实例开启-a2a)
-- [`a2a up` vs `registry serve` vs `bridge serve`](#a2a-up-vs-registry-serve-vs-bridge-serve)
+- [A2A registry](#a2a-registry)
 - [排障](#排障)
 - [当前限制](#当前限制)
 - [FAQ](#faq)
@@ -186,7 +186,7 @@ curl -s http://127.0.0.1:<a2a_port>/.well-known/agent-card.json | jq .
 
 ### `GET /healthz`
 
-返回简单 JSON：`status` / `gateway_ready` / `plugin_version`。`clawcu a2a up` 的探测循环在用；也适合接自己的存活检查。
+返回简单 JSON：`status` / `gateway_ready` / `plugin_version`。registry 的探测循环在用；也适合接自己的存活检查。
 
 ```json
 {
@@ -240,7 +240,7 @@ curl -sS -X POST http://127.0.0.1:18790/a2a/outbound \
 | `to`          | string | 是  | 对端 agent 注册名。通过 `GET /agents/{to}` 从注册中心解析。                                   |
 | `message`     | string | 是  | 原样转发到对端的消息体。                                                                 |
 | `thread_id`   | string | 否  | 有就透传到对端的 `/a2a/send`（uuid v7 形状）。                                             |
-| `registry_url`| string | 否  | 覆盖默认。优先读 `$A2A_REGISTRY_URL`，然后是 `http://host.docker.internal:9100`（`clawcu a2a up` 在宿主监听的地址）。 |
+| `registry_url`| string | 否  | 覆盖默认。优先读 `$A2A_REGISTRY_URL`，然后是 `http://host.docker.internal:9100`（`clawcu a2a registry serve` 在宿主监听的地址）。 |
 | `timeout_ms`  | number | 否  | 单次 HTTP 超时，默认 `60000`。                                                        |
 
 ### 响应（2xx）
@@ -449,10 +449,8 @@ clawcu/{service}-a2a:{base_version}-plugin{clawcu_version}.{sha10}
 clawcu create openclaw --name writer  --version 2026.4.12 --a2a
 clawcu create hermes   --name analyst --version 2026.4.13 --a2a
 
-# 2. 起 A2A 拓扑（registry + 必要的 bridge，前台运行）。
-clawcu a2a up
-# [green]OK[/green] writer  (plugin-backed on :18820)
-# [green]OK[/green] analyst (plugin-backed on :9129)
+# 2. 启动 A2A registry（前台运行）。
+clawcu a2a registry serve
 # [bold]A2A registry[/bold] listening on http://127.0.0.1:8765 (Ctrl+C to stop)
 
 # 3. 另开一个终端：发消息。
@@ -488,18 +486,19 @@ datadir（模型、历史、env）在 clone + create 过程中保留。只有镜
 为什么当前没有原地通道？镜像变更是重建，不是原地变形。我们不希望 `upgrade` 上悄悄多一个 flag 重烤镜像——显式胜过聪明。如果后续实际很痛，可以单独加一个 `clawcu enable-a2a <name>` 动词。
 
 * * *
-## `a2a up` vs `registry serve` vs `bridge serve`
+## A2A registry
 
-三个相关命令，按你的场景选一个：
+Registry 聚合所有运行中受管实例的 AgentCard，通过 `GET /agents` 和 `GET /agents/{name}` 暴露。启动命令：
 
-- **`clawcu a2a up`** —— 常见场景。探测每个运行中的受管实例，给没 sidecar 的起 echo bridge，前台跑聚合 registry。一条命令。
-- **`clawcu a2a registry serve`** —— 只跑 registry，不探测、不 bridge。适合每个实例都已烤好 sidecar、不需要 auto-bridge 回退的情况。
-- **`clawcu a2a bridge serve --instance <name>`** —— 只给一个实例起 bridge，不起 registry。demo / 离线 / CI 用。实例本身已有 sidecar 时这个 bridge 是不必要的；它存在是为了让没烤的实例也能在 A2A 面前亮个相。
+```bash
+clawcu a2a registry serve
+```
+
+默认绑定 `127.0.0.1:9100`，前台运行（Ctrl+C 停止）。每个通过 `--a2a` 创建的受管实例会发布自己的卡片；registry 负责收集它们，让实例之间可以互相发现。
 
 一个直觉模型：
 
-- **Sidecar** = 容器内跑的东西。烤一次，永久在里面。
-- **Bridge** = 容器外替没 sidecar 的实例站台。按实例、短暂。
+- **Sidecar** = 容器内跑的东西。`clawcu create --a2a` 时烤一次，永久在里面。
 - **Registry** = 聚合器，跨实例。告诉调用方"这台机器上大家的卡片都在这里"。
 
 * * *

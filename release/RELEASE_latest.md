@@ -105,7 +105,7 @@ Breaking nothing, adding one flag, one field, one subcommand tree.
 For users with existing instances:
 
 - **Try A2A on a clone first.** `clawcu clone writer --name writer-a2a` → `clawcu remove writer-a2a` → `clawcu create openclaw --name writer-a2a --version <v> --a2a`. Baking happens once; subsequent starts are just `docker start`.
-- **Multi-agent setup.** `clawcu a2a up` probes every running instance for a plugin-served AgentCard, starts echo bridges for the ones without, and serves the aggregate registry in the foreground. One command.
+- **Multi-agent setup.** `clawcu a2a registry serve` starts the aggregate registry in the foreground so A2A-enabled instances can discover each other.
 - **Send a message.** `clawcu a2a send --to analyst --message "summarize yesterday"` routes via the registry.
 
 For everyone else:

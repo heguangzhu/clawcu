@@ -25,22 +25,6 @@ clawcu setup [--completion]
 
 Check Docker CLI access, Docker daemon reachability, ClawCU home, and runtime directories. Interactively configures the default ClawCU home, the OpenClaw image repo, and the Hermes image repo.
 
-### `clawcu pull openclaw`
-
-```
-clawcu pull openclaw --version <version>
-```
-
-Prepare the official OpenClaw image reference for the requested version. If the image is missing locally, Docker pulls it when a later `create` / `start` / `recreate` needs it.
-
-### `clawcu pull hermes`
-
-```
-clawcu pull hermes --version <tag>
-```
-
-Pull the prebuilt Hermes image for the requested tag from the configured Hermes image repo.
-
 ## 2. Instance Creation
 
 ### `clawcu create openclaw`
@@ -442,31 +426,6 @@ clawcu a2a registry serve [--port 8765] [--host 127.0.0.1]
 ```
 
 Run the aggregator: serves `GET /agents` (array) and `GET /agents/<name>` (single card) over HTTP, stdlib-only. One process for N instances.
-
-### `clawcu a2a bridge serve`
-
-```
-clawcu a2a bridge serve --instance <name>
-                        [--port <p>] [--host 127.0.0.1]
-                        [--mode echo]
-                        [--role <r>] [--skills <s1,s2>] [--endpoint <url>]
-```
-
-Run a local fallback that exposes `/.well-known/agent-card.json` + `/a2a/send` for one instance. Demo / offline only — when a sidecar is baked into the instance, the registry federates the sidecar's self-served card and this bridge is unnecessary.
-
-- `--mode echo` — the only mode today; replies with a canned string. Switchable when more modes ship.
-- `--role` / `--skills` / `--endpoint` — overrides for the served card. If the instance is unmanaged (no record), all three are required to permit a virtual bridge.
-
-### `clawcu a2a up`
-
-```
-clawcu a2a up [--host 127.0.0.1] [--registry-port 8765]
-              [--probe-timeout 0.5] [--probe-attempts 3] [--probe-delay 1.0]
-```
-
-One-command spin-up: probe every running managed instance for a sidecar-served card; start an echo bridge for those without; serve the registry in the foreground. `Ctrl+C` tears everything down.
-
-- `--probe-timeout` / `--probe-attempts` / `--probe-delay` — per-attempt HTTP probe tuning for the sidecar detection.
 
 ### `clawcu a2a send`
 

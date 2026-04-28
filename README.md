@@ -76,7 +76,6 @@ clawcu setup
 Spin up an OpenClaw instance and open the TUI:
 
 ```bash
-clawcu pull openclaw --version 2026.4.1
 clawcu create openclaw --name writer --version 2026.4.1
 clawcu tui writer
 ```
@@ -93,7 +92,6 @@ clawcu create openclaw \
 Or spin up a Hermes instance with the same shape:
 
 ```bash
-clawcu pull hermes --version 2026.4.13
 clawcu create hermes --name analyst --version 2026.4.13
 clawcu tui analyst
 ```
@@ -109,7 +107,7 @@ Make instances talk to each other with A2A (opt-in, `v0.3.0`):
 ```bash
 clawcu create openclaw --name writer  --version 2026.4.12 --a2a
 clawcu create hermes   --name analyst --version 2026.4.13 --a2a
-clawcu a2a up                                             # registry + bridges, one command
+clawcu a2a registry serve                                 # start the discovery registry
 clawcu a2a send --to analyst --message "summarize yesterday"
 ```
 

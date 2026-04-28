@@ -76,7 +76,6 @@ clawcu setup
 创建一个 OpenClaw 实例并进入 TUI：
 
 ```bash
-clawcu pull openclaw --version 2026.4.1
 clawcu create openclaw --name writer --version 2026.4.1
 clawcu tui writer
 ```
@@ -93,7 +92,6 @@ clawcu create openclaw \
 或者用同样的模式创建一个 Hermes 实例：
 
 ```bash
-clawcu pull hermes --version 2026.4.13
 clawcu create hermes --name analyst --version 2026.4.13
 clawcu tui analyst
 ```
@@ -109,7 +107,7 @@ clawcu config writer
 ```bash
 clawcu create openclaw --name writer  --version 2026.4.12 --a2a
 clawcu create hermes   --name analyst --version 2026.4.13 --a2a
-clawcu a2a up                                             # 注册中心 + 桥接，一条命令
+clawcu a2a registry serve                                 # 启动发现注册中心
 clawcu a2a send --to analyst --message "summarize yesterday"
 ```
 
