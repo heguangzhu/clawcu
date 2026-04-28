@@ -1,0 +1,111 @@
+# ClawCU v0.4.1
+
+🌐 语言：
+[English](RELEASE_v0.4.1.md) | [中文](RELEASE_v0.4.1.zh-CN.md)
+
+发布日期：2026年4月29日
+
+> `v0.4.1` 基于重度用户反馈对 CLI 生命周期命令进行了打磨。所有变更均为增量或可选；不破坏现有工作流。
+
+* * *
+## 亮点
+
+### CLI 重新设计（v0.4.x 基础）
+
+- **`list` 默认不再显示版本页脚**
+  - `clawcu list` 不再打印版本页脚。需要时加 `--versions` 即可查看可用服务版本。
+
+- **`token` / `approve` 移至 `clawcu openclaw` 下**
+  - 根级别的 `clawcu token` 和 `clawcu approve` 仍可作为隐藏别名使用，但会显示弃用警告。
+  - 新位置：`clawcu openclaw token <name>` 和 `clawcu openclaw approve <name>`。
+
+- **移除 `pull`**
+  - `clawcu create` 现在通过服务层自动拉取镜像。单独的 `pull` 步骤是冗余的。
+
+- **移除 `hermes identity set`**
+  - 直接使用 `docker cp` 或 `clawcu exec <name>` 编辑 Hermes 人格文件。
+
+- **移除 `a2a up` 和 `a2a bridge serve`**
+  - A2A 严格在创建时通过 `--a2a` 启用。长期运行的服务应通过 docker-compose 或 systemd 部署，而非 CLI。
+
+### 场景优化
+
+- **`tui` 启动前检查实例状态**
+  - 如果实例已停止，CLI 会明确退出并提示：`Run clawcu start <name> to start it before entering the TUI.`
+  - 不自动启动——在资源受限的机器上，由用户决定启动哪个实例。
+
+- **`remove` 自动停止运行中的实例**
+  - `clawcu remove <name> --delete-data` 现在会在删除前自动停止运行中的容器（10秒优雅期）。
+  - 之前这会导致 Docker 报错；现在一条命令即可完成。
+
+- **`logs --follow` Ctrl+C 后 ANSI 重置**
+  - 在 `clawcu logs <name> --follow` 期间按 Ctrl+C 会发送 ANSI 重置序列，防止终端保留 Docker 的颜色代码。
+
+- **`getenv --table` 分组输出**
+  - `clawcu getenv <name> --table` 以富文本表格形式渲染环境变量，按 A2A / 敏感 / 通用 分组。
+  - 敏感值默认脱敏；加 `--reveal` 可显示原始值。
+
+- **`setenv --reload` 热重载**
+  - `clawcu setenv <name> KEY=VALUE --reload` 在写入环境文件后向运行中的容器发送 SIGHUP。
+  - 尽力而为：支持信号触发的配置重载的服务无需重建即可生效。如果信号发送失败，CLI 会提示改用 `--apply`。
+
+- **`snapshots` 子命令组**
+  - `clawcu snapshots list [name]` — 列出实例（或所有实例）的升级/回滚快照。
+  - `clawcu snapshots clean --keep-last N [name]` — 清理旧快照，每个实例保留最近的 N 个。
+  - 每次 `upgrade` 成功后，ClawCU 自动清理超过最近 10 个的快照（被历史记录引用的快照永不被删除）。
+
+- **`upgrade --list-versions` 失败回退增强**
+  - 当远程镜像仓库不可达时，CLI 现在会显示醒目的 `[green]Fallback:[/green]` 消息，展示本地镜像以及使用本地标签升级的确切命令。
+
+- **`config` 帮助增加服务专属示例**
+  - `clawcu config --help` 现在显示 OpenClaw 和 Hermes 的用法示例，包括 `--non-interactive` 透传。
+
+### A2A 演进（自 v0.3.0）
+
+- OpenClaw sidecar 从 Node.js 迁移至 Python（仅标准库），与 Hermes 保持一致。
+- 提取共享 `_common/` 包——入站限制、出站 HTTP、MCP 调度器、对等缓存、协议助手和就绪探针现在两个 sidecar 统一。
+- 安全加固：方案白名单（仅 `http`/`https`）、重定向拦截、4 MiB 响应体上限、套接字级请求超时、Content-Length 校验、超大请求体拒绝。
+- 真正的流式传输 + 异步任务存储/工作者（layer 3）。
+- A2A_REGISTRY_TOKEN 读取端点 Bearer 门禁。
+- `clawcu a2a send` 新增 `--lookup-timeout` 标志。
+
+* * *
+## 兼容性
+
+`v0.4.1` 可从 `v0.3.0` 直接升级。
+
+- 现有托管实例保持相同的镜像标签、端口和环境变量继续运行。
+- 移除的命令（`pull`、`hermes identity set`、`a2a up`、`a2a bridge serve`）在 `v0.3.0` 用法中已隐藏或未记录。
+- `clawcu token` / `clawcu approve` 根别名仍可工作，并显示弃用警告。
+- 新标志（`--table`、`--reload`、`--versions`）严格可选。
+
+* * *
+## 测试覆盖
+
+**848 个测试**（pytest），比 `v0.3.0` 的 479 个大幅增加。
+
+* * *
+## 推荐工作流
+
+```bash
+# 创建并启动
+clawcu create openclaw --name writer --version 2026.4.1
+
+# 克隆前检查环境变量
+clawcu getenv writer --table
+
+# 不带密钥克隆，然后应用 provider
+clawcu clone writer --name writer-shared --exclude-secrets
+clawcu provider apply <provider> writer-shared
+
+# 升级（含安全快照 + 自动清理）
+clawcu upgrade writer --version 2026.4.2
+
+# 按需手动清理旧快照
+clawcu snapshots clean --keep-last 5
+```
+
+* * *
+## 结语
+
+`v0.4.x` 是第一个将 CLI 定位为**生命周期工具**而非运行时的版本。长期运行的服务（registry、bridge）已从 CLI 表面移除；CLI 专注于创建、启动、停止、升级、回滚、删除、环境变量、日志和快照。A2A 仍在创建时可选启用，行为与之前完全一致。
