@@ -109,7 +109,11 @@ class FakeService:
         self.store = SimpleNamespace(
             paths=SimpleNamespace(home=Path("/tmp/clawcu-test-home")),
             load_record=self._fake_load_record,
+            list_snapshots=self._fake_list_snapshots,
+            prune_snapshots=self._fake_prune_snapshots,
+            snapshot_env_path=self._fake_snapshot_env_path,
         )
+        self._snapshots: dict[str, list[Path]] = {}
         self.instance_statuses: dict[str, str] = {}
         self._missing_instance_names: set[str] = set()
         self._removed_instance_names: set[str] = set()
@@ -118,6 +122,20 @@ class FakeService:
         if name in self._missing_instance_names:
             raise FileNotFoundError(f"Instance '{name}' was not found.")
         return self._instance(name=name)
+
+    def _fake_list_snapshots(self, name: str) -> list[Path]:
+        return list(self._snapshots.get(name, []))
+
+    def _fake_prune_snapshots(self, name: str, *, keep: int = 10) -> list[Path]:
+        snaps = self._snapshots.get(name, [])
+        if len(snaps) <= keep:
+            return []
+        removed = snaps[:-keep]
+        self._snapshots[name] = snaps[-keep:]
+        return removed
+
+    def _fake_snapshot_env_path(self, snapshot_dir: Path) -> Path:
+        return snapshot_dir.with_name(f"{snapshot_dir.name}.env")
 
     def _record(self, method: str, *args, **kwargs) -> None:
         self.calls.append((method, args, kwargs))
@@ -569,6 +587,12 @@ class FakeService:
     def stop_instance(self, name: str, *, timeout: int | None = None) -> InstanceRecord:
         self._record("stop_instance", name=name, timeout=timeout)
         return self._instance(name=name)
+
+    def signal_instance(self, name: str, signal: str) -> None:
+        self._record("signal_instance", name=name, signal=signal)
+
+    def _prune_old_snapshots(self, name: str, keep: int = 10) -> list[Path]:
+        return self.store.prune_snapshots(name, keep=keep)
 
     def restart_instance(
         self,
@@ -1836,6 +1860,20 @@ def test_getenv_command_reveal_shows_raw_values(monkeypatch) -> None:
     assert "OPENAI_BASE_URL=https://api.example.com/v1" in result.stdout
 
 
+def test_getenv_command_table_groups_output(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["getenv", "writer", "--table"])
+
+    assert result.exit_code == 0
+    assert "OPENAI_API_KEY" in result.stdout
+    assert "OPENAI_BASE_URL" in result.stdout
+    assert "2 env var(s)" in result.stdout
+    # Sensitive values are masked in table mode too
+    assert "sk-test" not in result.stdout
+
+
 def test_unsetenv_command_removes_instance_environment(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
@@ -1993,6 +2031,32 @@ def test_setenv_dry_run_and_apply_are_mutually_exclusive(monkeypatch) -> None:
     assert result.exit_code != 0
     assert "mutually exclusive" in result.stdout.lower() or "mutually exclusive" in (result.stderr or "").lower()
     assert not any(call[0] == "set_instance_env" for call in service.calls)
+
+
+def test_setenv_reload_sends_signal_and_is_mutually_exclusive_with_apply(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    # --reload and --apply are mutually exclusive
+    result = runner.invoke(
+        app,
+        ["setenv", "writer", "FOO=bar", "--reload", "--apply"],
+    )
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.stdout.lower() or "mutually exclusive" in (result.stderr or "").lower()
+
+    # --reload sends SIGHUP after writing env
+    result = runner.invoke(
+        app,
+        ["setenv", "writer", "FOO=bar", "--reload"],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert any(call[0] == "set_instance_env" for call in service.calls)
+    assert any(
+        call[0] == "signal_instance" and call[2].get("signal") == "SIGHUP"
+        for call in service.calls
+    )
+    assert "SIGHUP" in result.stdout
 
 
 def test_unsetenv_dry_run_previews_removals(monkeypatch) -> None:
@@ -3792,10 +3856,21 @@ def test_remove_delete_data_and_keep_data_flags(monkeypatch) -> None:
 
     assert delete_result.exit_code == 0
     assert keep_result.exit_code == 0
-    assert service.calls[-2] == (
+    # remove now inspects the instance first (best-effort auto-stop if running)
+    assert service.calls[-4] == (
+        "inspect_instance",
+        (),
+        {"name": "writer"},
+    )
+    assert service.calls[-3] == (
         "remove_instance",
         (),
         {"name": "writer", "delete_data": True},
+    )
+    assert service.calls[-2] == (
+        "inspect_instance",
+        (),
+        {"name": "writer"},
     )
     assert service.calls[-1] == (
         "remove_instance",
@@ -3858,3 +3933,102 @@ def test_remove_removed_rejects_explicit_data_flags(monkeypatch) -> None:
     assert keep_result.exit_code == 1
     assert "--removed already implies permanent deletion" in keep_result.stdout
     assert all(call[0] != "remove_removed_instance" for call in service.calls)
+
+
+def test_snapshots_list_shows_instance_snapshots(monkeypatch) -> None:
+    service = FakeService()
+    service._snapshots["writer"] = [
+        Path("/tmp/clawcu/snapshots/writer/20260101T000000Z-upgrade-to-2026.4.1"),
+        Path("/tmp/clawcu/snapshots/writer/20260102T000000Z-upgrade-to-2026.4.2"),
+    ]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["snapshots", "list", "writer"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "writer" in result.stdout
+    assert "2 snapshot(s)" in result.stdout
+    assert "20260101T000000Z" in result.stdout
+
+
+def test_snapshots_list_all_instances_when_no_name_given(monkeypatch) -> None:
+    service = FakeService()
+    service._snapshots["writer"] = [Path("/tmp/clawcu/snapshots/writer/20260101T000000Z-upgrade")]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["snapshots", "list"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "1 total snapshot(s)" in result.stdout
+
+
+def test_snapshots_clean_prunes_old_snapshots(monkeypatch) -> None:
+    service = FakeService()
+    service._snapshots["writer"] = [
+        Path("/tmp/clawcu/snapshots/writer/20260101T000000Z-upgrade-to-2026.4.1"),
+        Path("/tmp/clawcu/snapshots/writer/20260102T000000Z-upgrade-to-2026.4.2"),
+        Path("/tmp/clawcu/snapshots/writer/20260103T000000Z-upgrade-to-2026.4.3"),
+    ]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["snapshots", "clean", "writer", "--keep-last", "1", "--yes"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Pruned 2 snapshot(s)" in result.stdout
+    assert len(service._snapshots["writer"]) == 1
+
+
+def test_upgrade_list_versions_fallback_shows_local_upgrade_hint(monkeypatch) -> None:
+    service = FakeService()
+
+    def _failing(name, *, include_remote=True):
+        service._record("list_upgradable_versions", name=name, include_remote=include_remote)
+        return {
+            "instance": name,
+            "service": "openclaw",
+            "image_repo": "ghcr.io/openclaw/openclaw",
+            "current_version": "2026.4.1",
+            "history": ["2026.4.1"],
+            "local_images": ["2026.4.1"],
+            "remote_versions": None,
+            "remote_error": "network error: timeout",
+            "remote_registry": "ghcr.io",
+            "remote_requested": True,
+        }
+
+    service.list_upgradable_versions = _failing  # type: ignore[method-assign]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["upgrade", "writer", "--list-versions"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Fallback:" in result.stdout
+    assert " Showing local Docker images below." in result.stdout
+    assert "clawcu upgrade writer --version" in result.stdout
+
+
+def test_upgrade_list_versions_no_remote_shows_skip_note(monkeypatch) -> None:
+    service = FakeService()
+
+    def _offline(name, *, include_remote=True):
+        service._record("list_upgradable_versions", name=name, include_remote=include_remote)
+        return {
+            "instance": name,
+            "service": "openclaw",
+            "image_repo": "ghcr.io/openclaw/openclaw",
+            "current_version": "2026.4.1",
+            "history": ["2026.4.1"],
+            "local_images": ["2026.4.1"],
+            "remote_versions": None,
+            "remote_error": None,
+            "remote_registry": None,
+            "remote_requested": False,
+        }
+
+    service.list_upgradable_versions = _offline  # type: ignore[method-assign]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["upgrade", "writer", "--list-versions", "--no-remote"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "skipped by --no-remote" in result.stdout

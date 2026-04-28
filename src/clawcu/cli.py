@@ -85,6 +85,12 @@ app.add_typer(create_app, name="create", rich_help_panel="Lifecycle")
 app.add_typer(provider_app, name="provider", rich_help_panel="Providers")
 app.add_typer(openclaw_app, name="openclaw", rich_help_panel="Service-Specific")
 app.add_typer(a2a_app, name="a2a", rich_help_panel="A2A")
+
+snapshots_app = typer.Typer(
+    help="List and clean instance upgrade/rollback snapshots.",
+    add_completion=False,
+)
+app.add_typer(snapshots_app, name="snapshots", rich_help_panel="Lifecycle")
 console = Console()
 _DISPLAY_DATE_RE = re.compile(r"(\d{4}\.\d{1,2}\.\d{1,2})")
 
@@ -2267,6 +2273,16 @@ def set_instance_env(
         bool,
         typer.Option("--apply", help="Recreate the instance immediately so the new env takes effect now."),
     ] = False,
+    reload: Annotated[
+        bool,
+        typer.Option(
+            "--reload",
+            help=(
+                "Send SIGHUP to the running container after writing env, requesting a "
+                "hot reload without recreation. Best-effort: the service may not support it."
+            ),
+        ),
+    ] = False,
 ) -> None:
     if from_file is not None and assignments:
         _exit_with_error("Use either inline KEY=VALUE arguments or --from-file, not both.")
@@ -2276,6 +2292,10 @@ def set_instance_env(
         )
     if dry_run and apply_now:
         _exit_with_error("--dry-run and --apply are mutually exclusive.")
+    if reload and apply_now:
+        _exit_with_error("--reload and --apply are mutually exclusive.")
+    if reload and dry_run:
+        _exit_with_error("--reload and --dry-run are mutually exclusive.")
 
     effective_assignments: list[str]
     if from_file is not None:
@@ -2347,10 +2367,30 @@ def set_instance_env(
         )
         _print_access_url(service, record.name)
         return
+    if reload:
+        try:
+            service.signal_instance(name, signal="SIGHUP")
+            console.print(f"[green]Sent SIGHUP to {name}; config reload requested.[/green]")
+        except Exception:
+            console.print(
+                f"[yellow]Could not signal {name}; the service may not support hot reload.[/yellow]\n"
+                "[dim]Use --apply to recreate the container instead.[/dim]"
+            )
+        return
     console.print(
         "Changes will apply the next time the container is recreated. "
         f"Run `clawcu recreate {result['instance']}` if you want them to take effect now."
     )
+
+
+def _env_group_for_key(key: str) -> str:
+    """Return a display group for an env key."""
+    upper = key.upper()
+    if upper.startswith("A2A_"):
+        return "A2A"
+    if any(marker in upper for marker in _SENSITIVE_ENV_MARKERS):
+        return "Sensitive"
+    return "General"
 
 
 @app.command(
@@ -2363,6 +2403,10 @@ def get_instance_env(
     reveal: Annotated[
         bool,
         typer.Option("--reveal", help="Show unmasked values for KEY/TOKEN/SECRET/PASSWORD entries. Off by default."),
+    ] = False,
+    table_output: Annotated[
+        bool,
+        typer.Option("--table", help="Render output as a grouped table instead of KEY=VALUE lines."),
     ] = False,
     json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
@@ -2387,6 +2431,32 @@ def get_instance_env(
         return
     if not display_values:
         console.print("No environment variables configured.")
+        return
+    if table_output:
+        table = Table(show_header=True, box=None, pad_edge=False)
+        table.add_column("KEY", style="bold", no_wrap=True)
+        table.add_column("VALUE", overflow="fold")
+        groups: dict[str, list[tuple[str, str]]] = {}
+        for key, displayed in display_values.items():
+            group = _env_group_for_key(key)
+            groups.setdefault(group, []).append((key, displayed))
+        first_group = True
+        for group_name in ("A2A", "Sensitive", "General"):
+            rows = groups.get(group_name, [])
+            if not rows:
+                continue
+            if not first_group:
+                table.add_row("─" * 18, "─" * 42)
+            first_group = False
+            for key, displayed in rows:
+                table.add_row(key, displayed)
+        console.print(table)
+        masked_count = sum(1 for k in display_values if _is_sensitive_env_key(k))
+        suffix = ""
+        if masked_any and not reveal:
+            plural = "s" if masked_count != 1 else ""
+            suffix = f" ({masked_count} sensitive value{plural} masked)"
+        console.print(f"[dim]{len(display_values)} env var(s){suffix}[/dim]")
         return
     for key, displayed in display_values.items():
         console.print(f"{key}={displayed}")
@@ -2606,7 +2676,14 @@ def configure_instance(
             "config",
             "This command runs the service-native setup or configuration flow inside the managed instance container.",
             [
-                "clawcu config <instance>",
+                "# OpenClaw — interactive configuration",
+                "clawcu config writer",
+                "",
+                "# Hermes — setup wizard",
+                "clawcu config analyst",
+                "",
+                "# Pass extra arguments to the service config command",
+                "clawcu config writer -- --non-interactive",
                 "clawcu config <instance> -- --help",
             ],
         )
@@ -2746,6 +2823,21 @@ def tui_instance(
             marker = " [dim](default)[/dim]" if agent_name == "main" else ""
             console.print(f"- {agent_name}{marker}")
         return
+
+    # Check instance status before launching TUI.
+    # Do not auto-start: machine resources are limited and the user may need
+    # to stop other instances first. Surface a clear, actionable message.
+    try:
+        record = service.store.load_record(name)
+        status = getattr(record, "status", "")
+        if status == "stopped":
+            _exit_with_error(
+                f"Instance '{name}' is stopped.\n"
+                f"Run `clawcu start {name}` to start it before entering the TUI.\n"
+                f"Tip: check available resources with `clawcu list` if you need to stop other instances first."
+            )
+    except Exception:
+        pass  # Best-effort; let tui_instance raise its own error if the record is unreadable
 
     try:
         service.tui_instance(name, agent=agent)
@@ -3053,20 +3145,28 @@ def _print_upgradable_versions(payload: dict, *, show_all: bool = False) -> None
         # Already communicated inline on the Image repo row above — no
         # separate Remote section needed when the flag disabled the
         # registry query entirely.
-        pass
+        console.print(
+            "[dim]Remote query skipped by --no-remote. Showing local images only.[/dim]"
+        )
     elif remote is None:
         # Remote was asked for but failed. Show the reason so the user
         # knows why they are only seeing local/history.
         if remote_error:
             console.print(
-                f"[bold]Remote:[/bold] [yellow]fetch failed: {remote_error}[/yellow]"
+                f"[bold yellow]Remote fetch failed:[/bold yellow] {remote_error}\n"
+                f"[green]Fallback:[/green] Showing local Docker images below. "
+                f"You can still upgrade using a local image, or retry with "
+                f"`clawcu upgrade {payload.get('instance', '<name>')} --version <local-tag>`."
             )
         else:
             console.print(
-                "[bold]Remote:[/bold] [yellow]fetch failed (no details)[/yellow]"
+                "[bold yellow]Remote fetch failed:[/bold yellow] (no details)\n"
+                f"[green]Fallback:[/green] Showing local Docker images below. "
+                f"You can still upgrade using a local image, or retry with "
+                f"`clawcu upgrade {payload.get('instance', '<name>')} --version <local-tag>`."
             )
         console.print(
-            "[dim]  try --no-remote to skip the registry query, "
+            "[dim]  tip: pass --no-remote to skip the registry query, "
             "or check network / mirror configuration[/dim]"
         )
     elif not remote:
@@ -3669,6 +3769,11 @@ def logs_instance(
         except TypeError:
             # Support older ClawCUService builds that don't accept tail/since.
             service.stream_logs(name, follow=follow)
+    except KeyboardInterrupt:
+        # Reset terminal colors after following Docker logs to avoid
+        # residual ANSI color codes in the prompt.
+        console.print("\x1b[0m", end="")
+        raise
     except Exception as exc:
         _exit_with_error(str(exc))
 
@@ -3715,10 +3820,24 @@ def remove_instance(
     _confirm_destructive(summary, yes)
     try:
         service = get_service()
-        if removed:
-            service.remove_removed_instance(name)
-        else:
+        if not removed:
+            # Auto-stop if running before removal.
+            # Best-effort: inspect failure should not block removal.
+            try:
+                info = service.inspect_instance(name)
+                container = info.get("container") or {}
+                state = container.get("State") or {}
+                status = state.get("Status") or container.get("Status", "")
+                if status == "running":
+                    console.print(
+                        f"[yellow]Instance '{name}' is running; stopping first (10s grace).[/yellow]"
+                    )
+                    service.stop_instance(name, timeout=10)
+            except Exception:
+                pass
             service.remove_instance(name, delete_data=delete_data)
+        else:
+            service.remove_removed_instance(name)
     except Exception as exc:
         _exit_with_error(str(exc))
     if removed:
@@ -3726,6 +3845,62 @@ def remove_instance(
     else:
         action = "and data directory" if delete_data else "but kept data directory"
         console.print(f"[green]Removed instance:[/green] {name} {action}")
+
+
+@snapshots_app.command("list", help="List snapshots for an instance.")
+def list_snapshots(
+    name: Annotated[str | None, typer.Argument(help="Instance name. Omit to list all instances.")] = None,
+) -> None:
+    service = get_service()
+    if name:
+        records = [service.inspect_instance(name).get("instance", {})]
+    else:
+        records = [r.to_dict() for r in service.list_instances()]
+    total = 0
+    for rec in records:
+        instance_name = rec.get("name")
+        if not instance_name:
+            continue
+        snaps = service.store.list_snapshots(instance_name)
+        if not snaps:
+            continue
+        console.print(f"[bold]{instance_name}[/bold] ({len(snaps)} snapshot(s))")
+        for snap in snaps:
+            console.print(f"  {snap.name}")
+        total += len(snaps)
+    if total == 0:
+        console.print("No snapshots found.")
+    else:
+        console.print(f"[dim]{total} total snapshot(s)[/dim]")
+
+
+@snapshots_app.command("clean", help="Delete old snapshots, keeping the most recent N per instance.")
+def clean_snapshots(
+    name: Annotated[str | None, typer.Argument(help="Instance name. Omit to clean all instances.")] = None,
+    keep_last: Annotated[
+        int,
+        typer.Option("--keep-last", help="Number of recent snapshots to retain per instance.", min=1),
+    ] = 10,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip the confirmation prompt.")] = False,
+) -> None:
+    service = get_service()
+    targets: list[str] = [name] if name else [r.name for r in service.list_instances()]
+    if not yes:
+        scope = f"'{name}'" if name else "all instances"
+        _confirm_destructive(
+            f"About to prune old snapshots for {scope}, keeping the last {keep_last} per instance.",
+            yes=False,
+        )
+    total_removed = 0
+    for target in targets:
+        removed = service._prune_old_snapshots(target, keep=keep_last)
+        if removed:
+            console.print(f"[green]Pruned {len(removed)} snapshot(s) for '{target}'.[/green]")
+            total_removed += len(removed)
+    if total_removed == 0:
+        console.print("No old snapshots to prune.")
+    else:
+        console.print(f"[green]Total pruned: {total_removed} snapshot(s).[/green]")
 
 
 def _register_command_aliases() -> None:

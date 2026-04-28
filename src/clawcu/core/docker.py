@@ -286,6 +286,12 @@ class DockerManager:
             timeout_seconds=self.RESTART_TIMEOUT_SECONDS,
         )
 
+    def signal_container(self, container_name: str, signal: str) -> None:
+        self.runner(
+            ["docker", "kill", "--signal", signal, container_name],
+            timeout_seconds=self.STOP_TIMEOUT_SECONDS,
+        )
+
     def remove_container(self, container_name: str, *, missing_ok: bool = False) -> None:
         try:
             self.runner(

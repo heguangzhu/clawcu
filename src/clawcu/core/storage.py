@@ -295,6 +295,35 @@ class StateStore:
     def snapshot_env_path(self, snapshot_dir: Path) -> Path:
         return snapshot_dir.with_name(f"{snapshot_dir.name}.env")
 
+    def list_snapshots(self, name: str) -> list[Path]:
+        """Return all snapshot directories for an instance, oldest first."""
+        root = self.paths.snapshots_dir / name
+        if not root.exists():
+            return []
+        dirs = [p for p in root.iterdir() if p.is_dir()]
+        # Sort by timestamp prefix (YYYYmmddTHHMMSSZ)
+        return sorted(dirs, key=lambda p: p.name)
+
+    def prune_snapshots(self, name: str, *, keep: int = 10) -> list[Path]:
+        """Delete old snapshots for an instance, keeping the most recent *keep*.
+
+        Returns the list of removed snapshot paths.
+        """
+        snapshots = self.list_snapshots(name)
+        if len(snapshots) <= keep:
+            return []
+        removed: list[Path] = []
+        for old in snapshots[:-keep]:
+            env_file = self.snapshot_env_path(old)
+            try:
+                if env_file.exists():
+                    env_file.unlink()
+                shutil.rmtree(old)
+                removed.append(old)
+            except OSError:
+                pass  # best-effort cleanup
+        return removed
+
     def append_log(self, message: str) -> None:
         log_file = self.paths.logs_dir / "clawcu.log"
         timestamp = datetime.now(UTC).replace(microsecond=0).isoformat()

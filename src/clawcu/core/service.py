@@ -1291,6 +1291,10 @@ class ClawCUService:
         record = self._persist_live_status(self.store.load_record(name))
         self.adapter_for_record(record).tui_instance(self, name, agent=agent)
 
+    def signal_instance(self, name: str, signal: str) -> None:
+        record = self.store.load_record(name)
+        self.docker.signal_container(record.container_name, signal)
+
     def start_instance(self, name: str) -> InstanceRecord:
         record = self.store.load_record(name)
         adapter = self.adapter_for_record(record)
@@ -2148,6 +2152,11 @@ class ClawCUService:
             f"Upgrade snapshot retained at {snapshot_dir}. "
             f"Run 'clawcu rollback {upgraded.name}' if you want to restore {previous.version}."
         )
+        pruned = self._prune_old_snapshots(upgraded.name, keep=10)
+        if pruned:
+            self.reporter(
+                f"Pruned {len(pruned)} old snapshot(s) for '{upgraded.name}'."
+            )
         self.reporter(self._lifecycle_summary("upgraded", upgraded))
         return upgraded
 
@@ -3367,6 +3376,41 @@ class ClawCUService:
                 target = event.get("to_version") or "-"
                 return f"upgrade {source} -> {target}"
         return "-"
+
+    def _referenced_snapshot_dirs(self, record: InstanceRecord) -> set[str]:
+        """Return snapshot paths that are still referenced by history."""
+        referenced: set[str] = set()
+        for event in record.history or []:
+            if isinstance(event, dict):
+                snap = event.get("snapshot_dir")
+                if snap:
+                    referenced.add(str(snap))
+        return referenced
+
+    def _prune_old_snapshots(self, name: str, keep: int = 10) -> list[Path]:
+        """Delete old snapshots for an instance, keeping the most recent *keep*.
+
+        Snapshots referenced by the instance history are never deleted,
+        even if they fall outside the *keep* window.
+        """
+        record = self.store.load_record(name)
+        referenced = self._referenced_snapshot_dirs(record)
+        all_snapshots = self.store.list_snapshots(name)
+        if len(all_snapshots) <= keep:
+            return []
+        removed: list[Path] = []
+        for old in all_snapshots[:-keep]:
+            if str(old) in referenced or str(old.resolve()) in referenced:
+                continue
+            env_file = self.store.snapshot_env_path(old)
+            try:
+                if env_file.exists():
+                    env_file.unlink()
+                shutil.rmtree(old)
+                removed.append(old)
+            except OSError:
+                pass  # best-effort cleanup
+        return removed
 
     def _lifecycle_summary(self, action: str, record: InstanceRecord) -> str:
         return self.adapter_for_record(record).lifecycle_summary(self, action, record)
