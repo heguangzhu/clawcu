@@ -71,6 +71,29 @@ def test_snapshot_restore_replaces_directory(temp_clawcu_home, tmp_path) -> None
     assert (datadir / "state.txt").read_text(encoding="utf-8") == "before"
 
 
+def test_snapshot_restore_preserves_dangling_symlinks(temp_clawcu_home, tmp_path) -> None:
+    store = StateStore(get_paths())
+    datadir = tmp_path / "writer-data"
+    profile_dir = datadir / ".hermes" / "profiles"
+    profile_dir.mkdir(parents=True)
+    link = profile_dir / "main"
+    link.symlink_to("/opt/data")
+
+    snapshot = store.create_snapshot("writer", datadir, "upgrade-test")
+    snap_link = snapshot / ".hermes" / "profiles" / "main"
+    assert snap_link.is_symlink()
+    assert snap_link.readlink() == Path("/opt/data")
+
+    link.unlink()
+    (profile_dir / "main").mkdir()
+
+    store.restore_snapshot(snapshot, datadir)
+
+    restored_link = datadir / ".hermes" / "profiles" / "main"
+    assert restored_link.is_symlink()
+    assert restored_link.readlink() == Path("/opt/data")
+
+
 def test_snapshot_restore_replaces_directory_and_instance_env(temp_clawcu_home, tmp_path) -> None:
     store = StateStore(get_paths())
     datadir = tmp_path / "writer-data"

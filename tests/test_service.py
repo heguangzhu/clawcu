@@ -4332,6 +4332,34 @@ def test_clone_instance_without_version_override_omits_source_version(
     assert cloned_event["secrets_included"] is True
 
 
+def test_clone_instance_preserves_dangling_symlinks(temp_clawcu_home, tmp_path) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+    source_dir = tmp_path / "writer"
+    source_dir.mkdir()
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(source_dir),
+        port=3000,
+        cpu="1",
+        memory="2g",
+    )
+    profile_dir = source_dir / ".hermes" / "profiles"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "main").symlink_to("/opt/data")
+
+    service.clone_instance(
+        "writer",
+        name="writer-exp",
+        datadir=str(tmp_path / "writer-exp"),
+        port=3001,
+    )
+
+    cloned_link = tmp_path / "writer-exp" / ".hermes" / "profiles" / "main"
+    assert cloned_link.is_symlink()
+    assert cloned_link.readlink() == Path("/opt/data")
+
+
 def test_clone_instance_exclude_secrets_skips_env_copy(
     temp_clawcu_home, tmp_path
 ) -> None:
