@@ -352,7 +352,7 @@ class FakeService:
         *,
         primary: str | None = None,
         fallbacks: list[str] | None = None,
-        persist: bool = False,
+        persist: bool = True,
     ) -> dict:
         self._record(
             "apply_provider",
@@ -2192,7 +2192,7 @@ def test_provider_apply_command_defaults_agent_to_main(monkeypatch) -> None:
             "provider": "openai-main",
             "instance": "writer",
             "agent": "main",
-            "persist": False,
+            "persist": True,
             "primary": None,
             "fallbacks": None,
         },
@@ -2214,7 +2214,7 @@ def test_provider_apply_command_accepts_explicit_agent(monkeypatch) -> None:
             "provider": "openai-main",
             "instance": "writer",
             "agent": "chat",
-            "persist": False,
+            "persist": True,
             "primary": None,
             "fallbacks": None,
         },
@@ -2253,7 +2253,7 @@ def test_provider_apply_command_accepts_primary_and_fallbacks(monkeypatch) -> No
             "provider": "openai-main",
             "instance": "writer",
             "agent": "chat",
-            "persist": False,
+            "persist": True,
             "primary": "openai/gpt-5",
             "fallbacks": ["anthropic/claude-sonnet-4.5", "openai/gpt-4.1"],
         },
@@ -2807,6 +2807,7 @@ def test_create_command_skips_recreate_when_apply_persist_off(monkeypatch) -> No
             "2026.4.1",
             "--apply-provider",
             "openai-main",
+            "--no-apply-persist",
         ],
     )
 
@@ -2821,7 +2822,7 @@ def test_create_command_skips_recreate_when_apply_persist_off(monkeypatch) -> No
 
 def test_create_command_surfaces_apply_provider_failure_without_aborting(monkeypatch) -> None:
     class FlakyService(FakeService):
-        def apply_provider(self, provider, instance, agent="main", *, persist=False, **kwargs):  # type: ignore[override]
+        def apply_provider(self, provider, instance, agent="main", *, persist=True, **kwargs):  # type: ignore[override]
             self._record("apply_provider", provider=provider, instance=instance, agent=agent, persist=persist)
             raise RuntimeError("collected bundle is invalid")
 
