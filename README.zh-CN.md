@@ -102,6 +102,12 @@ clawcu tui analyst
 clawcu config writer
 ```
 
+打开 web dashboard，一览所有实例、provider 和可升级版本（以 Docker 容器常驻后台运行）：
+
+```bash
+clawcu dashboard
+```
+
 用 A2A 让实例之间对话（opt-in，`v0.3.0`）：
 
 ```bash

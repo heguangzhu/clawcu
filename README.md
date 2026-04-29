@@ -102,6 +102,12 @@ Configure providers / models inside an instance via its service-native flow (Ope
 clawcu config writer
 ```
 
+Open the web dashboard to see all instances, providers, and upgrade candidates at a glance (runs as a persistent Docker container):
+
+```bash
+clawcu dashboard
+```
+
 Make instances talk to each other with A2A (opt-in, `v0.3.0`):
 
 ```bash
