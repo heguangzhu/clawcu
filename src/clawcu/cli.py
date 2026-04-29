@@ -550,6 +550,7 @@ _API_KEY_STATE_LABELS = {
     "env-ref": "[cyan]env-ref[/cyan] = ${ENV_VAR} placeholder",
     "empty": "[yellow]empty[/yellow] = source had the field but it was blank",
     "missing": "unset = no apiKey field in the source",
+    "oauth": "[blue]oauth[/blue] = OAuth-based authentication",
 }
 
 
@@ -580,6 +581,8 @@ def _provider_api_key_cell(
             return "- [dim](empty)[/dim]"
         if state == "missing":
             return "- [dim](unset)[/dim]"
+        if state == "oauth":
+            return "- [dim](oauth)[/dim]"
         if state == "env-ref":
             # raw_key should not normally be blank when the state is
             # env-ref, but guard for the pathological case.
@@ -591,6 +594,8 @@ def _provider_api_key_cell(
         return "[yellow]empty[/yellow]"
     if state == "missing":
         return "[dim]unset[/dim]"
+    if state == "oauth":
+        return "[blue]oauth[/blue]"
     if state == "set":
         return "[green]set[/green]" if not wide else (_mask_secret(raw_key) or "-")
     # Fallback: derive from raw_key alone (used by tests that predate
@@ -600,6 +605,24 @@ def _provider_api_key_cell(
     if _API_KEY_ENV_REF.match(raw_key.strip()):
         return "[cyan]env-ref[/cyan]"
     return "[green]set[/green]" if not wide else (_mask_secret(raw_key) or "-")
+
+
+def _format_in_use(in_use: list[dict[str, str]] | None) -> str:
+    if not in_use:
+        return "-"
+    parts: list[str] = []
+    for row in in_use:
+        instance = row.get("instance") or ""
+        agent = row.get("agent") or ""
+        if instance == "local":
+            parts.append("local")
+        elif instance and agent and agent != "main":
+            parts.append(f"{instance}/{agent}")
+        elif instance:
+            parts.append(instance)
+        else:
+            parts.append(agent)
+    return ", ".join(parts)
 
 
 def _print_provider_stacked(records: list[dict], *, reveal: bool) -> None:
@@ -631,6 +654,7 @@ def _print_provider_stacked(records: list[dict], *, reveal: bool) -> None:
         detail.add_row("  endpoint", record.get("endpoint") or "-")
         models = record.get("models") or []
         detail.add_row("  models", ", ".join(models) if models else "-")
+        detail.add_row("  in_use", _format_in_use(record.get("in_use")))
         console.print(detail)
         if idx != len(records) - 1:
             console.print()
@@ -689,6 +713,7 @@ def _print_provider_table(records: list[dict], *, wide: bool = False, reveal: bo
     if effective_wide:
         table.add_column("ENDPOINT", overflow="fold")
     table.add_column("MODELS", overflow="fold")
+    table.add_column("IN_USE", overflow="fold")
     for record in records:
         raw_key = str(record.get("api_key") or "")
         state = record.get("api_key_state")
@@ -709,6 +734,7 @@ def _print_provider_table(records: list[dict], *, wide: bool = False, reveal: bo
         if effective_wide:
             row.append(record.get("endpoint") or "-")
         row.append(models_cell)
+        row.append(_format_in_use(record.get("in_use")))
         table.add_row(*row)
     console.print(table)
     # Legend line — only print it when the table actually uses one of
@@ -911,7 +937,7 @@ def root_callback(
         typer.Option(
             "--json",
             help=(
-                "Emit machine-readable JSON where supported (list, inspect, token, getenv, provider list/models). "
+                "Emit machine-readable JSON where supported (list, inspect, token, getenv, provider list). "
                 "Also accepted as a per-command flag (e.g. `clawcu inspect <name> --json`)."
             ),
         ),
@@ -1610,35 +1636,80 @@ def remove_provider(
     console.print(f"[yellow]Removed provider:[/yellow] {name}")
 
 
-def _list_provider_models_impl(name: str, json_output: bool) -> None:
-    _set_json_mode(json_output)
+@provider_app.command(
+    "ai",
+    help="Invoke Claude to help configure providers interactively.",
+)
+def ai_provider() -> None:
+    """Load current environment into Claude and ask what to configure."""
+    import shutil
+    import subprocess
+
+    from clawcu.llm.renderer import _call_claude
+
+    service = get_service()
+
+    # Gather environment info
+    instances = service.list_instances()
+    providers = service.list_providers()
+    home = str(service.store.paths.home)
+
+    instance_lines = []
+    for inst in instances:
+        instance_lines.append(
+            f"  - {inst.name} ({inst.service}, {inst.status}, port={inst.port}, datadir={inst.datadir})"
+        )
+    if not instance_lines:
+        instance_lines.append("  (none)")
+
+    provider_lines = []
+    for p in providers:
+        models = ", ".join(p.get("models") or [])
+        provider_lines.append(
+            f"  - {p.get('name', '-')} ({p.get('service', '-')}, endpoint={p.get('endpoint') or '-'}, models=[{models}])"
+        )
+    if not provider_lines:
+        provider_lines.append("  (none)")
+
+    # Build the prompt for the initial Claude greeting
+    prompt = (
+        "你是 ClawCU 配置助手。请根据下面的环境信息，用中文向用户打招呼，"
+        "简要总结有哪些实例和模型配置，然后问用户想做什么样的配置。\n\n"
+        "## 实例\n"
+        + "\n".join(instance_lines)
+        + "\n\n## 模型配置\n"
+        + "\n".join(provider_lines)
+        + f"\n\n## 配置目录\n{home}\n"
+    )
+
+    claude_path = shutil.which("claude")
+    if claude_path is None:
+        _exit_with_error(
+            "The 'claude' CLI was not found on PATH. "
+            "Install it with: npm install -g @anthropic-ai/claude-code"
+        )
+
+    # Step 1: Use claude -p to get the initial greeting without user interaction
     try:
-        models = get_service().list_provider_models(name)
+        greeting = _call_claude(
+            prompt,
+            system_prompt="You are a helpful ClawCU configuration assistant. Respond in Chinese.",
+        )
     except Exception as exc:
         _exit_with_error(str(exc))
-    if _json_mode():
-        _print_json({"provider": name, "models": models})
-        return
-    if not models:
-        console.print("No models configured.")
-        return
-    for model in models:
-        console.print(model)
+
+    console.print(greeting)
+    console.print("\n[dim]--- Entering interactive Claude session ---[/dim]\n")
+
+    # Step 2: Launch Claude interactive mode with cwd set to ClawCU home
+    try:
+        subprocess.run([claude_path], cwd=home, check=False)
+    except KeyboardInterrupt:
+        pass
+    except Exception as exc:
+        _exit_with_error(str(exc))
 
 
-@provider_app.command(
-    "models",
-    help=(
-        "List the models stored in a collected provider. "
-        "Replaces the older `clawcu provider models list <name>` form — "
-        "the trailing `list` level is no longer required."
-    ),
-)
-def list_provider_models(
-    name: Annotated[str, typer.Argument(help="Provider name.")],
-    json_output: Annotated[bool, _JSON_OPTION] = False,
-) -> None:
-    _list_provider_models_impl(name, json_output)
 _LIST_SOURCES = ("managed", "local", "removed", "all")
 
 

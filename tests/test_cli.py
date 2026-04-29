@@ -937,16 +937,6 @@ def test_provider_help_lists_subcommands() -> None:
     assert "models" in result.stdout
 
 
-def test_provider_models_help_is_a_leaf_command() -> None:
-    """v0.2: the trailing `list` level was removed — `provider models`
-    is now a direct leaf command that takes a provider name."""
-    result = runner.invoke(app, ["provider", "models", "--help"])
-
-    assert result.exit_code == 0
-    assert "List the models stored in a collected provider." in result.stdout
-    assert "NAME" in result.stdout
-
-
 def test_setup_command_reports_success(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
@@ -1200,14 +1190,6 @@ def test_empty_service_groups_show_help_instead_of_error() -> None:
     assert "provider [OPTIONS] COMMAND [ARGS]..." in provider_result.stdout
     assert "Missing command" not in create_result.stdout
 
-    # `provider models` is a leaf command that takes a provider name
-    # directly (v0.2 dropped the trailing `list` level). Bare invocation
-    # with no args shows help (exit 0) — the user is asking "what does
-    # this take?", not invoking.
-    provider_models_result = runner.invoke(app, ["provider", "models"])
-    assert provider_models_result.exit_code == 0
-    assert "Usage:" in provider_models_result.output
-
 
 def test_bare_invoke_with_required_params_shows_help() -> None:
     """`clawcu <cmd>` with no args shows help when the command requires args.
@@ -1225,7 +1207,6 @@ def test_bare_invoke_with_required_params_shows_help() -> None:
         "token",
         "provider show",
         "provider remove",
-        "provider models",
         "start",
         "stop",
         "restart",
@@ -2311,21 +2292,6 @@ def test_provider_remove_force_deletes_even_when_in_use(monkeypatch) -> None:
     assert result.exit_code == 0
     remove_calls = [c for c in service.calls if c[0] == "remove_provider"]
     assert remove_calls == [("remove_provider", (), {"name": "openai-main", "force": True})]
-
-
-def test_provider_models_list_command_forwards_arguments(monkeypatch) -> None:
-    """v0.2: `clawcu provider models <name>` replaces the older
-    `clawcu provider models list <name>` form — the trailing `list` level
-    was dropped per design review.
-    """
-    service = FakeService()
-    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
-
-    list_result = runner.invoke(app, ["provider", "models", "openai-main"])
-
-    assert list_result.exit_code == 0
-    assert "gpt-5" in list_result.stdout
-    assert service.calls[0] == ("list_provider_models", (), {"name": "openai-main"})
 
 
 def test_create_command_uses_defaults(monkeypatch) -> None:

@@ -218,6 +218,7 @@ class ServiceAdapter(ABC):
         agent: str = "main",
         persist: bool = False,
         dry_run: bool = False,
+        use_ai: bool = False,
     ) -> dict[str, str]:
         """Render canonical into this service's instance files.
 
@@ -227,6 +228,10 @@ class ServiceAdapter(ABC):
         is unsupported by this service. When ``dry_run=True`` no files
         are written; the result dict still lists planned paths so
         ``plan_apply_provider`` can render them.
+
+        When ``use_ai=True`` the adapter may call an LLM to generate the
+        config instead of using hard-coded templates.  This is opt-in
+        because it requires the ``anthropic`` package and an API key.
         """
         raise NotImplementedError
 

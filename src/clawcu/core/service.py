@@ -262,10 +262,60 @@ class ClawCUService:
 
     def list_providers(self) -> list[dict]:
         providers: list[dict] = []
+        # Pre-load local home configs so we can tag providers that originate
+        # from the unmanaged local directories.
+        local_oc_config: dict = {}
+        local_oc = self._local_openclaw_home()
+        if local_oc.exists():
+            local_oc_config = self._load_json_file(local_oc / "openclaw.json")
+        local_oc_providers: dict = (
+            local_oc_config.get("models", {}).get("providers", {})
+            if isinstance(local_oc_config, dict)
+            else {}
+        )
+
+        local_hm_provider: str | None = None
+        local_hm = self._local_hermes_home()
+        if local_hm.exists():
+            config_path = local_hm / "config.yaml"
+            if config_path.exists():
+                import yaml
+
+                try:
+                    hm_config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+                    if isinstance(hm_config, dict):
+                        local_hm_provider = str(hm_config.get("model", {}).get("provider") or "").strip() or None
+                except Exception:
+                    pass
+
         for service_name, name in self.store.list_provider_refs():
             bundle = self.store.load_provider_bundle(service_name, name)
             metadata = bundle.get("metadata", {})
             endpoint = metadata.get("endpoint") if isinstance(metadata, dict) else None
+            # Find managed instances using this provider name across all services
+            # so a Hermes openai-codex bundle still shows OpenClaw instances that
+            # reference the same provider name.
+            in_use: list[dict[str, str]] = []
+            for row in self.list_agent_summaries():
+                providers_field = str(row.get("providers") or "")
+                for candidate in self._split_summary_values(providers_field):
+                    if candidate == name:
+                        in_use.append(
+                            {
+                                "instance": str(row.get("instance") or ""),
+                                "agent": str(row.get("agent") or ""),
+                                "service": str(row.get("service") or ""),
+                            }
+                        )
+                        break
+            if service_name == "openclaw" and name in local_oc_providers:
+                in_use.append(
+                    {"instance": "local", "agent": str(local_oc), "service": "openclaw"}
+                )
+            elif service_name == "hermes" and local_hm_provider == name:
+                in_use.append(
+                    {"instance": "local", "agent": str(local_hm), "service": "hermes"}
+                )
             providers.append(
                 {
                     "service": service_name,
@@ -276,6 +326,7 @@ class ClawCUService:
                     "api_key_state": self._provider_bundle_api_key_state(bundle),
                     "endpoint": endpoint if isinstance(endpoint, str) else None,
                     "models": self.adapter_for_service(service_name).provider_models(self, bundle),
+                    "in_use": in_use,
                 }
             )
         return providers
@@ -363,6 +414,7 @@ class ClawCUService:
         primary: str | None = None,
         fallbacks: list[str] | None = None,
         persist: bool = False,
+        use_ai: bool = False,
     ) -> dict[str, str]:
         from clawcu.core.provider_models import apply_overrides
 
@@ -376,7 +428,7 @@ class ClawCUService:
         canonical = apply_overrides(canonical, primary=primary, fallbacks=fallbacks)
         dst_adapter = self.adapter_for_record(record)
         return dst_adapter.write_canonical(
-            self, canonical, record, agent=agent, persist=persist,
+            self, canonical, record, agent=agent, persist=persist, use_ai=use_ai,
         )
 
     def plan_apply_provider(
@@ -388,6 +440,7 @@ class ClawCUService:
         primary: str | None = None,
         fallbacks: list[str] | None = None,
         persist: bool = False,
+        use_ai: bool = False,
     ) -> dict[str, object]:
         """Compute an apply_provider plan without touching disk.
 
@@ -409,7 +462,7 @@ class ClawCUService:
         return dst_adapter.write_canonical(
             self, canonical, record,
             agent=(agent or "main").strip() or "main",
-            persist=persist, dry_run=True,
+            persist=persist, dry_run=True, use_ai=use_ai,
         )
 
     def list_provider_models(self, name: str) -> list[str]:
@@ -2614,12 +2667,10 @@ class ClawCUService:
             if isinstance(mode, str) and mode.strip() and "type" not in profile:
                 profile["type"] = mode.strip()
             if provider_api_key and profile.get("type") == "api_key":
-                existing_key = profile.get("key")
-                existing_api_key = profile.get("apiKey")
-                if not (isinstance(existing_key, str) and existing_key.strip()) and not (
-                    isinstance(existing_api_key, str) and existing_api_key.strip()
-                ):
-                    profile["key"] = provider_api_key
+                # Root model payload apiKey always takes precedence over
+                # any agent-level key so collect reflects the authoritative
+                # root openclaw.json configuration.
+                profile["key"] = provider_api_key
 
         if not filtered_profiles and provider_api_key:
             synthesized_name = f"{provider_name}:default"
@@ -2871,10 +2922,9 @@ class ClawCUService:
                 if overwrite:
                     self.store.save_provider_bundle(service_name, candidate, bundle)
                     return candidate, "overwritten"
-                if service_name == "openclaw":
-                    merged = self._merge_service_provider_bundles(existing, bundle)
-                    self.store.save_provider_bundle(service_name, candidate, merged)
-                    return candidate, "merged"
+                merged = self._merge_service_provider_bundles(existing, bundle)
+                self.store.save_provider_bundle(service_name, candidate, merged)
+                return candidate, "merged"
 
         suffix = 2
         while True:
@@ -2899,6 +2949,12 @@ class ClawCUService:
             raw_endpoint = metadata.get("endpoint")
             if isinstance(raw_endpoint, str) and raw_endpoint.strip():
                 endpoint = raw_endpoint.strip()
+        service_name = str(bundle.get("service") or "")
+        if service_name == "hermes":
+            # Hermes .env may contain keys for many providers; signature should
+            # reflect the provider identity, not which other keys happen to be
+            # present in .env.
+            return provider_name, api_style, endpoint, None
         return provider_name, api_style, endpoint, self._provider_bundle_api_key(bundle)
 
     def _bundle_api_key(self, auth_payload: dict, models_payload: dict) -> str | None:
@@ -2941,8 +2997,44 @@ class ClawCUService:
         """Classify the api_key source so the list view can distinguish
         ``set`` (literal key present), ``env-ref`` (placeholder like
         ``${OPENAI_API_KEY}``), ``empty`` (field present but blank — a
-        captured template), and ``missing`` (no source at all).
+        captured template), ``missing`` (no source at all), and
+        ``oauth`` (OAuth-based authentication).
         """
+        service_name = str(bundle.get("service") or "")
+
+        # Detect OAuth first
+        if service_name == "openclaw":
+            auth_payload = bundle.get("auth_profiles", {})
+            if isinstance(auth_payload, dict):
+                profiles = auth_payload.get("profiles") or {}
+                if isinstance(profiles, dict):
+                    for profile in profiles.values():
+                        if not isinstance(profile, dict):
+                            continue
+                        if profile.get("type") == "oauth" or profile.get("mode") == "oauth":
+                            return "oauth"
+        elif service_name == "hermes" and bundle.get("auth_json"):
+            # Hermes Codex-style OAuth carries auth.json
+            try:
+                auth_data = json.loads(str(bundle["auth_json"]))
+                if isinstance(auth_data, dict):
+                    # Use metadata.provider (the canonical provider name) rather
+                    # than bundle["name"] which may have a -2/-3 suffix added by
+                    # _store_collected_provider_bundle.
+                    metadata = bundle.get("metadata", {})
+                    provider_name = str(
+                        metadata.get("provider") if isinstance(metadata, dict) else ""
+                    ) or str(bundle.get("name") or "")
+                    providers = auth_data.get("providers", {})
+                    if isinstance(providers, dict) and provider_name:
+                        provider_auth = providers.get(provider_name)
+                        if isinstance(provider_auth, dict) and provider_auth.get("tokens"):
+                            return "oauth"
+                    if auth_data.get("tokens"):
+                        return "oauth"
+            except (json.JSONDecodeError, TypeError):
+                pass
+
         key = self._provider_bundle_api_key(bundle)
         if isinstance(key, str) and key.strip():
             stripped = key.strip()
@@ -2954,7 +3046,6 @@ class ClawCUService:
         # No usable key value came back. Tell apart "the source had the
         # field but it was blank" (captured empty) from "no apiKey field
         # anywhere in the source" (missing).
-        service_name = str(bundle.get("service") or "")
         if service_name == "openclaw":
             models_payload = bundle.get("models", {})
             if isinstance(models_payload, dict):

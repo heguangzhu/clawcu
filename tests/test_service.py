@@ -1011,17 +1011,23 @@ def test_provider_models_list_reads_collected_bundle(temp_clawcu_home, tmp_path)
     assert models == ["gpt-5", "gpt-4.1"]
 
 
-def test_collect_providers_ignores_agent_only_providers_not_declared_in_root_openclaw(temp_clawcu_home, tmp_path) -> None:
+def test_collect_providers_falls_back_to_agent_models_when_root_openclaw_has_no_providers(
+    temp_clawcu_home, tmp_path
+) -> None:
     service, _, _, store = make_service(temp_clawcu_home)
     root = tmp_path / ".openclaw"
     write_provider_source(root, provider_name="anthropic", profile_name="anthropic:default", api_key="sk-ant")
 
     result = service.collect_providers(path=str(root))
 
-    assert result["saved"] == []
+    # Agent-level providers are now collected when root openclaw.json lacks
+    # provider definitions, so configs stored in agents/<name>/agent/models.json
+    # are not lost.
+    assert result["saved"] == [f"anthropic (path:{root})"]
     assert result["merged"] == []
-    assert result["skipped"] == []
-    assert store.list_provider_names() == []
+    assert not store.provider_exists("anthropic-2")
+    bundle = store.load_provider_bundle("openclaw", "anthropic")
+    assert bundle["auth_profiles"]["profiles"]["anthropic:default"]["key"] == "sk-ant"
 
 
 def test_collect_providers_requires_exactly_one_source_selector(temp_clawcu_home) -> None:

@@ -675,6 +675,11 @@ class HermesAdapter(ServiceAdapter):
             oauth_blob = None  # only carry oauth_blob when we'll use it
 
         if auth_type == "api_key" and not api_key:
+            if is_oauth_provider:
+                raise MissingCredentialError(
+                    f"Provider {provider_name!r} uses OAuth authentication. "
+                    f"Please run `hermes auth` to authorize it before applying."
+                )
             raise MissingCredentialError(
                 f"Hermes bundle for provider {provider_name!r} has no api_key "
                 f"(checked env var {info.api_key_env_var if info else '<derived>'} "
@@ -711,8 +716,15 @@ class HermesAdapter(ServiceAdapter):
             extras={},
         )
 
-    def write_canonical(self, service, canonical, record, *, agent="main", persist=False, dry_run=False):
+    def write_canonical(self, service, canonical, record, *, agent="main", persist=False, dry_run=False, use_ai=False):
         from clawcu.hermes.providers import info_for
+
+        # ── AI path (opt-in) ──────────────────────────────────────────
+        if use_ai:
+            return self._write_canonical_ai(
+                service, canonical, record,
+                agent=agent, persist=persist, dry_run=dry_run,
+            )
 
         datadir = Path(record.datadir)
         config_path = datadir / "config.yaml"
@@ -785,6 +797,66 @@ class HermesAdapter(ServiceAdapter):
             "persist": "yes" if persist else "no",
             "primary": canonical.default_model_id or "-",
             "fallbacks": ", ".join(canonical.fallback_model_ids) if canonical.fallback_model_ids else "-",
+        }
+
+    def _write_canonical_ai(self, service, canonical, record, *, agent="main", persist=False, dry_run=False):
+        from clawcu.llm.renderer import render_hermes
+
+        datadir = Path(record.datadir)
+        config_path = datadir / "config.yaml"
+        env_path = self.env_path(service, record)
+        auth_path = datadir / "auth.json"
+
+        if dry_run:
+            return {
+                "provider": canonical.name,
+                "service": self.service_name,
+                "instance": record.name,
+                "agent": agent,
+                "config_path": str(config_path),
+                "env_path": str(env_path),
+                "auth_path": str(auth_path) if canonical.auth_type == "oauth" else "-",
+                "env_key": "-",
+                "persist": "yes" if persist else "no",
+                "primary": canonical.default_model_id or "-",
+                "fallbacks": ", ".join(canonical.fallback_model_ids) if canonical.fallback_model_ids else "-",
+                "ai": "planned",
+            }
+
+        result = render_hermes(canonical, version_hint=record.version)
+        datadir.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(result["config_yaml"], encoding="utf-8")
+
+        env_key = result.get("env_key")
+        env_value = result.get("env_value")
+        if env_key and env_value:
+            env_path.parent.mkdir(parents=True, exist_ok=True)
+            env_values = service._load_env_file(env_path)
+            env_values[env_key] = env_value
+            env_path.write_text(service._dump_env_file(env_values), encoding="utf-8")
+
+        if result.get("needs_auth_json") and canonical.oauth_blob:
+            auth_path.write_text(canonical.oauth_blob, encoding="utf-8")
+
+        service.store.append_log(
+            f"provider apply (ai) provider={canonical.name} "
+            f"instance={record.name} agent={agent} primary={canonical.default_model_id or '-'} "
+            f"fallbacks={','.join(canonical.fallback_model_ids) or '-'} "
+            f"config_path={config_path}"
+        )
+        return {
+            "provider": canonical.name,
+            "service": self.service_name,
+            "instance": record.name,
+            "agent": agent,
+            "config_path": str(config_path),
+            "env_path": str(env_path),
+            "auth_path": str(auth_path) if canonical.auth_type == "oauth" else "-",
+            "env_key": env_key or "-",
+            "persist": "yes" if persist else "no",
+            "primary": canonical.default_model_id or "-",
+            "fallbacks": ", ".join(canonical.fallback_model_ids) if canonical.fallback_model_ids else "-",
+            "ai": "rendered",
         }
 
     def provider_models(self, service, bundle: dict[str, object]) -> list[str]:
