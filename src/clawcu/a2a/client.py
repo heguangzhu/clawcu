@@ -309,12 +309,36 @@ def post_message(
     body = {"from": sender, "to": target, "message": message}
     status, payload = _http_json(endpoint, method="POST", body=body, timeout=timeout)
     if status >= 400 or not isinstance(payload, dict):
-        # Review-11 P2-C2: the endpoint URL + a parsed hint make a CLI
-        # failure actionable (the old format rendered as "send failed (502):
-        # None" when an upstream returned no body). Keep the status so
-        # callers can still string-match for test purposes.
         hint = _summarize_error_payload(payload)
         raise A2AClientError(f"send failed ({status}) at {endpoint}: {hint}")
+    return payload
+
+
+def post_message_jsonrpc(
+    endpoint: str,
+    *,
+    message: str,
+    timeout: float = DEFAULT_SEND_TIMEOUT,
+) -> dict[str, Any]:
+    """Send a message via the standard A2A JSON-RPC ``message/send`` method."""
+    rpc_body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "message/send",
+        "params": {
+            "message": {
+                "role": "user",
+                "parts": [{"type": "text", "text": message}],
+            },
+        },
+    }
+    status, payload = _http_json(endpoint, method="POST", body=rpc_body, timeout=timeout)
+    if status >= 400 or not isinstance(payload, dict):
+        hint = _summarize_error_payload(payload)
+        raise A2AClientError(f"json-rpc send failed ({status}) at {endpoint}: {hint}")
+    # JSON-RPC result is nested under "result".
+    if "result" in payload and isinstance(payload["result"], dict):
+        return payload["result"]
     return payload
 
 
@@ -328,17 +352,15 @@ def send_via_registry(
     send_timeout: float = DEFAULT_SEND_TIMEOUT,
 ) -> dict[str, Any]:
     card = lookup_agent(registry_url, target, timeout=lookup_timeout)
-    # Review-11 P1-C1: registry endpoints use the container-advertise host
-    # so peer sidecars can reach each other through docker DNS. The CLI
-    # runs on the host and that hostname doesn't resolve there; rewrite it
-    # to loopback (override via CLAWCU_A2A_HOST_HOSTNAME) so `clawcu a2a
-    # send` just works. No-op for any endpoint that doesn't match a known
-    # container-only alias.
     endpoint = localize_endpoint_for_host(card.endpoint)
-    return post_message(
-        endpoint,
-        sender=sender,
-        target=target,
-        message=message,
-        timeout=send_timeout,
-    )
+    try:
+        return post_message_jsonrpc(endpoint, message=message, timeout=send_timeout)
+    except A2AClientError:
+        # Fallback to legacy protocol for old sidecars.
+        return post_message(
+            endpoint,
+            sender=sender,
+            target=target,
+            message=message,
+            timeout=send_timeout,
+        )
