@@ -4039,16 +4039,20 @@ def remove_instance(
                 service.remove_instance(name, delete_data=delete_data)
             except (FileNotFoundError, ValueError) as exc:
                 # The instance record is gone.  Check whether an orphaned
-                # datadir still exists so we can guide the user to the
-                # correct flag instead of a raw "not found" error.
+                # datadir still exists and offer one-shot deletion.
                 if hasattr(service, "_find_removed_instance_root"):
                     orphan_root = service._find_removed_instance_root(name)
                     if orphan_root is not None:
-                        _exit_with_error(
+                        summary = (
                             f"Instance '{name}' has already been removed, but its data directory "
-                            f"is still present at {orphan_root}.\n"
-                            f"Use `clawcu remove --removed {name}` to permanently delete it."
+                            f"is still present. Permanently delete it?"
                         )
+                        _confirm_destructive(summary, yes)
+                        service.remove_removed_instance(name)
+                        console.print(
+                            f"[green]Removed orphaned instance data:[/green] {name}"
+                        )
+                        raise typer.Exit(code=0)
                 raise exc
         else:
             service.remove_removed_instance(name)
