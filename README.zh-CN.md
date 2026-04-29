@@ -117,7 +117,7 @@ clawcu a2a send --to analyst --message "summarize yesterday"
 clawcu list --no-cache
 ```
 
-A2A sidecar 深度指南（架构 / 协议 / 运维 / 排障）：[docs/a2a-sidecar.zh-CN.md](docs/a2a-sidecar.zh-CN.md)。完整命令参考（`list` / `inspect` / `exec` / `upgrade` / `provider` / `a2a` …）见 [USAGE_latest.zh-CN.md](release/USAGE_latest.zh-CN.md)。
+A2A adapter 深度指南（架构 / 协议 / 运维 / 排障）：[docs/a2a-protocol.zh-CN.md](docs/a2a-protocol.zh-CN.md)。完整命令参考（`list` / `inspect` / `exec` / `upgrade` / `provider` / `a2a` …）见 [USAGE_latest.zh-CN.md](release/USAGE_latest.zh-CN.md)。
 
 ## 安全升级流程
 

@@ -16,9 +16,7 @@ from clawcu.a2a.card import (
     card_from_record,
     plugin_port_candidates,
 )
-from clawcu.a2a.sidecar_plugin import resolve_advertise_host
-from clawcu.a2a.sidecar_plugin._common import streams as _streams
-from clawcu.a2a.sidecar_plugin._common.http_response import write_json_response as _write_json
+from clawcu.a2a._util import resolve_advertise_host, write_json_response as _write_json
 
 CardProvider = Callable[[], Iterable[AgentCard]]
 
@@ -57,8 +55,8 @@ A2A_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 # bytes even if ``Content-Length`` claims a huge number. Alias the shared
 # ``ResponseTooLarge`` as ``_ResponseTooLarge`` so the single ``except``
 # arm below keeps matching without rewriting call sites.
-_ResponseTooLarge = _streams.ResponseTooLarge
-_read_capped = _streams.read_capped_bytes
+from clawcu.a2a._util import ResponseTooLarge as _ResponseTooLarge
+from clawcu.a2a._util import read_capped_bytes as _read_capped
 
 
 def _fetch_card_at(url: str, timeout: float) -> AgentCard | None:

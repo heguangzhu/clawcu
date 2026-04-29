@@ -11,7 +11,7 @@ from pathlib import Path
 import yaml
 
 from clawcu import __version__ as clawcu_version
-from clawcu.a2a.sidecar_plugin import resolve_advertise_host
+from clawcu.a2a._util import resolve_advertise_host
 from clawcu.core.adapters import ServiceAdapter
 from clawcu.core.models import AccessInfo, ContainerRunSpec, InstanceRecord, InstanceSpec
 from clawcu.core.validation import (

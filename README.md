@@ -117,7 +117,7 @@ Need the versions footer to ignore today's cache and fetch fresh tags immediatel
 clawcu list --no-cache
 ```
 
-Deep-dive on the A2A sidecar (architecture, protocol, operations, troubleshooting): [docs/a2a-sidecar.md](docs/a2a-sidecar.md). For the full command reference (`list` / `inspect` / `exec` / `upgrade` / `provider` / `a2a` …), see [USAGE_latest.md](release/USAGE_latest.md).
+Deep-dive on the A2A adapter (architecture, protocol, operations, troubleshooting): [docs/a2a-protocol.md](docs/a2a-protocol.md). For the full command reference (`list` / `inspect` / `exec` / `upgrade` / `provider` / `a2a` …), see [USAGE_latest.md](release/USAGE_latest.md).
 
 ## Safe Upgrade Workflow
 

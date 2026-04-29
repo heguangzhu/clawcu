@@ -11,7 +11,7 @@ import urllib.request
 from typing import Any
 
 from clawcu.a2a.card import AgentCard
-from clawcu.a2a.sidecar_plugin._common import streams as _streams
+from clawcu.a2a._util import ResponseTooLarge, read_capped_bytes
 
 DEFAULT_TIMEOUT = 5.0
 # Library default: generous cap for long agent turns (tool use + big LLM
@@ -170,30 +170,13 @@ A2A_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
 
 class _ResponseTooLarge(A2AClientError):
-    """Raised when an outbound response exceeds ``A2A_MAX_RESPONSE_BYTES``.
-
-    Review-21 P2-M1: ``resp.read()`` with no byte bound let a compromised
-    registry or peer stream GBs into the CLI process (loopback reads
-    ~3 GB/s; 30 s of budget is ~90 GB) and OOM it before the timeout
-    fires. The cap is deliberately a compile-time constant so an
-    attacker who can flip env vars cannot widen it.
-
-    Subclasses ``A2AClientError`` (not the neutral ``_streams.ResponseTooLarge``)
-    so the CLI's ``except A2AClientError`` arm still catches a cap violation
-    and renders a clean error instead of dumping a traceback.
-    """
+    """Raised when an outbound response exceeds ``A2A_MAX_RESPONSE_BYTES``."""
 
 
 def _read_capped(response, cap: int = A2A_MAX_RESPONSE_BYTES) -> bytes:
-    # Batch 24: delegate to the shared chunked reader so a peer claiming
-    # ``Content-Length: 10GB`` aborts after the first 64 KiB chunk instead
-    # of pre-allocating ``cap+1`` bytes in one shot. Translate the neutral
-    # ``streams.ResponseTooLarge`` to ``_ResponseTooLarge`` so the
-    # ``A2AClientError`` inheritance — and therefore the CLI catch arm —
-    # is preserved.
     try:
-        return _streams.read_capped_bytes(response, cap=cap)
-    except _streams.ResponseTooLarge as exc:
+        return read_capped_bytes(response, cap=cap)
+    except ResponseTooLarge as exc:
         raise _ResponseTooLarge(str(exc)) from exc
 
 

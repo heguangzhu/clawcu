@@ -131,3 +131,39 @@ def send_command(
         console.print(f"[bold red]Error:[/bold red] {exc}")
         raise typer.Exit(code=1)
     console.print_json(json.dumps(reply))
+
+
+@a2a_app.command("migrate")
+def migrate_command(
+    name: Annotated[
+        str | None,
+        typer.Option("--name", help="Migrate a specific instance. Omit to migrate all."),
+    ] = None,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Skip confirmation prompt."),
+    ] = False,
+) -> None:
+    """Migrate baked-sidecar instances to companion containers."""
+    service = _get_service()
+    records = service.list_instances()
+    baked = [r for r in records if r.a2a_enabled and "-a2a:" in r.image_tag]
+    if name:
+        baked = [r for r in baked if r.name == name]
+    if not baked:
+        console.print("No baked-sidecar instances found to migrate.")
+        return
+
+    for r in baked:
+        console.print(f"  {r.name} ({r.service}, image={r.image_tag})")
+    if not yes:
+        confirmed = typer.confirm(f"Migrate {len(baked)} instance(s)?")
+        if not confirmed:
+            raise typer.Exit(code=0)
+
+    for r in baked:
+        console.print(f"Migrating [bold]{r.name}[/bold]...")
+        service.recreate_instance(r.name, a2a=True)
+        console.print(f"  [green]done[/green]")
+
+    console.print(f"Migration complete: {len(baked)} instance(s).")

@@ -26,10 +26,8 @@ class InstanceSpec:
     auth_mode: str
     dashboard_port: int | None = None
     image_tag_override: str | None = None
-    # When True the service is deployed using the a2a-flavored variant
-    # of its base image — the stock gateway plus an A2A sidecar baked in
-    # via clawcu.a2a.sidecar_plugin.<service>. The base image tag is stored in
-    # image_tag_override; adapters add the extra port and env vars.
+    # When True the instance is deployed with an A2A companion container
+    # alongside the service container.
     a2a_enabled: bool = False
     # Hostname a peer (running in another container on the same host) will
     # use to reach this sidecar. None = let the adapter auto-detect based on

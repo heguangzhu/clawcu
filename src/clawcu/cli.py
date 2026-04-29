@@ -1147,10 +1147,8 @@ _APPLY_PERSIST_OPTION = typer.Option(
 _A2A_OPTION = typer.Option(
     "--a2a",
     help=(
-        "Bake the A2A sidecar into the instance image so it speaks the A2A v0 "
-        "protocol (AgentCard + /a2a/send) on a neighbor port. The base image "
-        "is wrapped with the clawcu.a2a.sidecar_plugin assets for the service; the "
-        "result is tagged clawcu/{service}-a2a:{base}-plugin{clawcu-version}."
+        "Launch an A2A companion container alongside the service that speaks "
+        "the standard A2A protocol (AgentCard + JSON-RPC message/send)."
     ),
 )
 _A2A_HOP_BUDGET_OPTION = typer.Option(
