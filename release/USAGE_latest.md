@@ -240,7 +240,31 @@ clawcu tui <name> [--agent <agent>]
 
 Launch the native interactive flow. OpenClaw uses its TUI; Hermes uses its interactive chat flow.
 
-## 6. Service-Specific Access Commands
+## 6. Dashboard
+
+### `clawcu dashboard`
+
+```
+clawcu dashboard [--host HOST] [--port PORT]
+                 [--open/--no-open]
+                 [--stop] [--restart] [--status] [--rebuild]
+```
+
+Manage the ClawCU dashboard as a Docker container that stays running in the background.
+
+- Default (no flags) — ensures the dashboard image exists (builds automatically on first run), starts the container if it is not running, then opens the browser
+- `--stop` — stops and removes the dashboard container
+- `--restart` — stops then starts the container again (useful after config changes)
+- `--status` — prints container state, image tag, URL, and health
+- `--rebuild` — forces a rebuild of the dashboard Docker image (use after upgrading ClawCU)
+- `--host` / `--port` — control which local interface and port the dashboard is published on (default `127.0.0.1:8765`)
+
+The dashboard container mounts the following host paths:
+- `~/.clawcu` → container StateStore data
+- `~/.openclaw` / `~/.hermes` → local instance detection
+- `/var/run/docker.sock` → container introspection and logs
+
+## 7. Service-Specific Access Commands
 
 ### `clawcu token` _(OpenClaw only)_
 

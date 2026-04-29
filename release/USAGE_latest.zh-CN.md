@@ -240,7 +240,31 @@ clawcu tui <name> [--agent <agent>]
 
 启动原生交互流程。OpenClaw 用其 TUI，Hermes 用其交互 chat。
 
-## 6. 服务相关访问命令
+## 6. Dashboard
+
+### `clawcu dashboard`
+
+```
+clawcu dashboard [--host HOST] [--port PORT]
+                 [--open/--no-open]
+                 [--stop] [--restart] [--status] [--rebuild]
+```
+
+将 ClawCU dashboard 作为 Docker 容器在后台常驻运行和管理。
+
+- 默认（无 flag）— 确保 dashboard 镜像存在（首次运行自动构建），如未运行则启动容器，然后打开浏览器
+- `--stop` — 停止并删除 dashboard 容器
+- `--restart` — 停止后重新启动容器（配置变更后可用）
+- `--status` — 打印容器状态、镜像标签、URL 和健康检查
+- `--rebuild` — 强制重建 dashboard Docker 镜像（升级 ClawCU 后使用）
+- `--host` / `--port` — 控制 dashboard 发布的本地接口和端口（默认 `127.0.0.1:8765`）
+
+Dashboard 容器会挂载以下宿主机路径：
+- `~/.clawcu` → 容器内 StateStore 数据
+- `~/.openclaw` / `~/.hermes` → 本地实例检测
+- `/var/run/docker.sock` → 容器内省和日志读取
+
+## 7. 服务相关访问命令
 
 ### `clawcu token` _(仅 OpenClaw)_
 

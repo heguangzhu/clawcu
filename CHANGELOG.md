@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provider bundle provenance via `.clawcu-instance.json` metadata.
 - Active provider as a first-class field.
 
+### Added
+- **Dashboard Docker container** — `clawcu dashboard` now runs as a persistent Docker container instead of a local Python process:
+  - Auto-builds `clawcu-dashboard:<version>` image on first run.
+  - Container runs with `--restart unless-stopped` for always-on availability.
+  - Mounts `~/.clawcu`, `~/.openclaw`, `~/.hermes`, and `/var/run/docker.sock`.
+  - Publishes on `127.0.0.1:8765` by default (LAN-safe).
+  - New flags: `--stop`, `--restart`, `--status`, `--rebuild`.
+  - Dashboard actions (`open_cli`, `open_config`, `open_tui`) gracefully degrade inside the container with host-side command hints.
+  - Health endpoint (`/health`) for Docker HEALTHCHECK and startup polling.
+
 ## [0.4.1] - 2026-04-29
 
 ### Changed
