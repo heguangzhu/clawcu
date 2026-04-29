@@ -120,6 +120,7 @@ class HermesAdapter(ServiceAdapter):
     a2a_plugin_port_offsets = (0,)
     a2a_internal_port = 9119  # companion adapter binds the dashboard internal port
     gateway_ready_path = "/health"
+    a2a_gateway_auth_env_keys = ("API_SERVER_KEY", "HERMES_TOKEN")
 
     def __init__(self, manager: HermesManager):
         self.manager = manager

@@ -789,12 +789,21 @@ class ClawCUService:
         gateway_token = ""
         env_path = adapter.env_path(self, record)
         registry_url = "http://host.docker.internal:9100"
+        gateway_timeout_seconds = 86400
         if env_path.exists():
-            for line in env_path.read_text().splitlines():
-                if line.startswith("OPENCLAW_TOKEN=") or line.startswith("HERMES_TOKEN="):
-                    gateway_token = line.split("=", 1)[1].strip()
-                elif line.startswith("A2A_REGISTRY_URL="):
-                    registry_url = line.split("=", 1)[1].strip() or registry_url
+            env_values = self._load_env_file(env_path)
+            for key in adapter.a2a_gateway_auth_env_keys:
+                value = env_values.get(key, "").strip()
+                if value:
+                    gateway_token = value
+                    break
+            registry_url = env_values.get("A2A_REGISTRY_URL", "").strip() or registry_url
+            timeout_value = env_values.get("A2A_GATEWAY_TIMEOUT", "").strip()
+            if timeout_value:
+                try:
+                    gateway_timeout_seconds = max(1, int(float(timeout_value)))
+                except ValueError:
+                    gateway_timeout_seconds = 86400
         if not gateway_token:
             try:
                 gateway_token = adapter.token(self, record.name)
@@ -808,6 +817,7 @@ class ClawCUService:
             gateway_url=f"http://127.0.0.1:{gateway_port}",
             gateway_auth_token=gateway_token,
             gateway_ready_path=adapter.gateway_ready_path,
+            gateway_timeout_seconds=gateway_timeout_seconds,
             agent_url=agent_url,
             agent_role=adapter.a2a_role,
             agent_skills=",".join(adapter.a2a_skills),
@@ -1398,7 +1408,11 @@ class ClawCUService:
                     f"Detected env drift for instance '{record.name}'; promoting restart to recreate so the new env file takes effect."
                 )
                 return self.recreate_instance(name, prepare_artifact=False)
+        if record.a2a_enabled:
+            stop_companion(self.docker, record.name)
         self.docker.restart_container(record.container_name)
+        if record.a2a_enabled:
+            self._start_a2a_companion(record)
         self.store.append_log(f"restart instance name={record.name}")
         return self._persist_live_status(record)
 

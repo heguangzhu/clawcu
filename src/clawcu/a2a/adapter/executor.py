@@ -21,7 +21,7 @@ log = logging.getLogger("clawcu-a2a-adapter")
 
 _GATEWAY_URL = os.environ.get("A2A_GATEWAY_URL", "http://127.0.0.1:18789")
 _GATEWAY_AUTH_TOKEN = os.environ.get("A2A_GATEWAY_AUTH_TOKEN", "")
-_GATEWAY_TIMEOUT = float(os.environ.get("A2A_GATEWAY_TIMEOUT", "120"))
+_GATEWAY_TIMEOUT = float(os.environ.get("A2A_GATEWAY_TIMEOUT", "86400"))
 _GATEWAY_READY_PATH = os.environ.get("A2A_GATEWAY_READY_PATH", "/healthz")
 
 

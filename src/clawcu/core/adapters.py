@@ -26,6 +26,7 @@ class ServiceAdapter(ABC):
     a2a_plugin_port_offsets: tuple[int, ...] = (0,)
     a2a_internal_port: int = 18790  # port the companion adapter binds inside the container
     gateway_ready_path: str = "/healthz"  # readiness probe path for the native gateway
+    a2a_gateway_auth_env_keys: tuple[str, ...] = ()
 
     @abstractmethod
     def prepare_artifact(self, version: str) -> str:

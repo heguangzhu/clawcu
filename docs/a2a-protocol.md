@@ -172,13 +172,16 @@ Standard A2A task lifecycle methods are supported via `a2a-sdk`'s `InMemoryTaskS
 The adapter probes the service gateway's readiness path (`/healthz` for OpenClaw, `/health` for Hermes) before forwarding messages. If the gateway isn't ready, the task fails with a clear message.
 
 * * *
-## LLM-facing MCP tool
+## LLM-facing MCP tools
 
-The adapter also serves MCP over JSON-RPC at `POST /mcp`, exposing one tool:
+The adapter also serves MCP over JSON-RPC at `POST /mcp`, exposing two tools:
 
 - `a2a_call_peer(to, message, registry_url?, timeout_seconds?)`
+- `a2a_list_peers(registry_url?, timeout_seconds?)`
 
-The tool looks up `to` in the A2A registry, sends a standard A2A `message/send` request to that peer, and returns both text content and structured task data. When an instance is created with `--a2a`, ClawCU writes `mcp.servers.a2a = {"url": "http://127.0.0.1:<adapter_port>/mcp"}` into the service config so the local agent can call peers during a conversation.
+`a2a_call_peer` looks up `to` in the A2A registry, sends a standard A2A `message/send` request to that peer, and returns both text content and structured task data. `a2a_list_peers` lists the registry names, roles, skills, and endpoints so the local agent can discover that a peer might be named `a2a-smoke-analyst` instead of `analyst`.
+
+When an instance is created with `--a2a`, ClawCU writes `mcp.servers.a2a = {"url": "http://127.0.0.1:<adapter_port>/mcp", "transport": "streamable-http"}` into the service config so the local agent can call peers during a conversation.
 
 * * *
 ## The A2A registry
@@ -271,4 +274,5 @@ The old sidecar (v0.3.x) was baked into the service Docker image at create time 
 See also:
 
 - [USAGE_latest.md](../release/USAGE_latest.md) — `clawcu a2a` command reference
+- [a2a-gateway.md](a2a-gateway.md) — 0.5.x gateway/router design note
 - [CHANGELOG.md](../CHANGELOG.md) — full version history

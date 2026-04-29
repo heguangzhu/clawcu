@@ -28,6 +28,8 @@ class CompanionSpec:
     agent_role: str = ""
     agent_skills: str = "chat"
     adapter_port: int = 18790
+    gateway_timeout_seconds: int = 86400
+    send_timeout_seconds: int = 86400
     registry_url: str = "http://host.docker.internal:9100"
     extra_hosts: list[tuple[str, str]] = field(default_factory=list)
 
@@ -93,6 +95,8 @@ def start_companion(docker, spec: CompanionSpec, main_container: str) -> None:
         "A2A_GATEWAY_URL": spec.gateway_url,
         "A2A_GATEWAY_AUTH_TOKEN": spec.gateway_auth_token,
         "A2A_GATEWAY_READY_PATH": spec.gateway_ready_path,
+        "A2A_GATEWAY_TIMEOUT": str(spec.gateway_timeout_seconds),
+        "A2A_SEND_TIMEOUT": str(spec.send_timeout_seconds),
         "A2A_REGISTRY_URL": spec.registry_url,
     }
 

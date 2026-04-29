@@ -92,3 +92,5 @@ class TestCompanionHelpers:
         assert "--network" in command
         assert "container:clawcu-openclaw-writer" in command
         assert "--add-host" not in command
+        assert "-eA2A_GATEWAY_TIMEOUT=86400" in command
+        assert "-eA2A_SEND_TIMEOUT=86400" in command
