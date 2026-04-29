@@ -22,12 +22,19 @@ Rapha loop Round 2 is complete and verified:
 - Verified with `uv run --extra a2a pytest` (`509 passed`).
 - Redis smoke verified against `clawcu-a2a-redis`: task snapshots/events and worker completion round-trip through real Redis.
 
+Rapha loop Round 3 is complete and verified:
+
+- Change async API/MCP tools to default-on by setting `A2A_ASYNC_ENABLED`'s default to true.
+- Preserve `A2A_DEFAULT_MODE=sync`, so plain JSON-RPC calls and `a2a_call_peer` still block unless the caller explicitly requests async.
+- Preserve `A2A_ASYNC_ENABLED=false` as the explicit rollback switch that hides async MCP tools and rejects non-blocking submissions.
+- Verified with `uv run --extra a2a pytest` (`511 passed`).
+
 Final rollout state:
 
-- Async remains opt-in via `A2A_ASYNC_ENABLED=true`.
+- Async is enabled by default for A2A instances; set `A2A_ASYNC_ENABLED=false` to disable the async surface.
 - Default JSON-RPC mode remains `sync`.
 - CLI task subcommands are deferred; HTTP task endpoints and MCP async tools are the supported operator/user surfaces for this rollout.
-- Local commit: `Add Redis-backed A2A async tasks`.
+- Local commits: `Add Redis-backed A2A async tasks`; `Enable A2A async by default`.
 
 ## Goal
 
@@ -470,7 +477,7 @@ Phase 1: Hidden async plumbing
 
 - Add arq worker and task facade.
 - Keep default mode sync.
-- Do not expose async MCP tools unless `A2A_ASYNC_ENABLED=true`.
+- Initially keep async MCP tools behind `A2A_ASYNC_ENABLED=true`.
 
 Phase 2: Opt-in async
 
@@ -478,15 +485,15 @@ Phase 2: Opt-in async
 - Keep sync tool behavior unchanged.
 - Add inspect output showing async status and Redis URL.
 
-Phase 3: Default-ready
+Phase 3: Default-on async
 
-- Decide whether `A2A_ASYNC_ENABLED` should default to true for new A2A instances.
+- Make `A2A_ASYNC_ENABLED` default to true for new A2A instances.
 - Keep `A2A_DEFAULT_MODE=sync` unless there is a strong compatibility reason to flip it.
 
 ## Risks
 
 1. Redis becomes required for async.
-   - Mitigation: async stays disabled if Redis is unavailable; sync path still works.
+   - Mitigation: sync path still works; operators can set `A2A_ASYNC_ENABLED=false` to hide the async surface if Redis is unavailable.
 
 2. arq jobs can rerun after worker cancellation.
    - Mitigation: single try by default, snapshot idempotency guard, no gateway call if task is terminal.

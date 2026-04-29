@@ -378,7 +378,7 @@ def test_inspect_instance_includes_a2a_defaults_when_enabled(temp_clawcu_home, t
     assert a2a["hop_budget"] is None  # default path
     assert a2a["hop_budget_default"] == 8
     assert a2a["mcp_url"] == "http://127.0.0.1:3001/mcp"
-    assert a2a["async_enabled"] is False
+    assert a2a["async_enabled"] is True
     assert a2a["default_mode"] == "sync"
     assert a2a["redis_url"] == "redis://host.docker.internal:6379/0"
     assert a2a["queue_name"] == "clawcu:a2a:writer"

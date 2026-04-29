@@ -114,7 +114,7 @@ Async task execution uses the same adapter image plus Redis-backed task storage:
 - Each A2A instance has a worker container named `clawcu-a2a-worker-<instance>`.
 - Each instance uses its own queue, `clawcu:a2a:<instance>` by default.
 
-The async API surface is gated by `A2A_ASYNC_ENABLED=true`. With the default `A2A_ASYNC_ENABLED=false`, `message/send` still works in blocking mode, and async MCP tools are hidden.
+The async API surface is enabled by default with `A2A_ASYNC_ENABLED=true`. Set `A2A_ASYNC_ENABLED=false` to force `message/send` into blocking-only operation and hide async MCP tools.
 
 * * *
 ## Protocol surface
@@ -221,7 +221,7 @@ Async response:
 }
 ```
 
-Async submission requires `A2A_ASYNC_ENABLED=true`; otherwise the adapter returns a JSON-RPC error telling the caller to enable async A2A.
+Async submission requires `A2A_ASYNC_ENABLED` to be unset or true; if explicitly disabled, the adapter returns a JSON-RPC error telling the caller to re-enable async A2A.
 
 ### Task endpoints
 
@@ -249,7 +249,7 @@ Always exposed:
 - `a2a_call_peer(to, message, registry_url?, timeout_seconds?)`
 - `a2a_list_peers(registry_url?, timeout_seconds?)`
 
-Exposed only when `A2A_ASYNC_ENABLED=true`:
+Exposed unless `A2A_ASYNC_ENABLED=false`:
 
 - `a2a_call_peer_async(to, message, registry_url?, timeout_seconds?)`
 - `a2a_get_task(to, task_id, registry_url?, timeout_seconds?)`

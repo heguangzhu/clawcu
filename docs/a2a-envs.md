@@ -75,7 +75,7 @@ Scope legend: **CP** = control plane (`clawcu a2a` CLI, builder, registry). **HS
 
 | Name | Default | Scope | Purpose |
 | --- | --- | --- | --- |
-| `A2A_ASYNC_ENABLED` | `false` | Adapter/Worker | Enables async `message/send` submission and exposes async MCP tools. When `false`, non-blocking JSON-RPC requests fail with a clear error and async MCP tools are hidden. |
+| `A2A_ASYNC_ENABLED` | `true` | Adapter/Worker | Enables async `message/send` submission and exposes async MCP tools by default. Set to `false` to reject non-blocking JSON-RPC requests and hide async MCP tools. |
 | `A2A_DEFAULT_MODE` | `sync` | Adapter | Default `message/send` mode when the request does not set `configuration.blocking` or `metadata.mode`. Valid values: `sync`, `async`. |
 | `A2A_REDIS_URL` | `redis://host.docker.internal:6379/0` | Adapter/Worker | Redis or Redis TLS DSN used for task snapshots, task event streams, and arq jobs. |
 | `A2A_QUEUE_NAME` | `clawcu:a2a:<instance>` | Adapter/Worker | Per-instance arq queue used by the adapter to enqueue work and by the worker to consume it. |

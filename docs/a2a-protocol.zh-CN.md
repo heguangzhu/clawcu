@@ -114,7 +114,7 @@ Async 任务执行使用同一个 adapter 镜像，加上 Redis-backed 任务存
 - 每个 A2A 实例有自己的 worker 容器，名字是 `clawcu-a2a-worker-<instance>`。
 - 每个实例默认使用自己的队列：`clawcu:a2a:<instance>`。
 
-Async API 表面由 `A2A_ASYNC_ENABLED=true` 开启。默认 `A2A_ASYNC_ENABLED=false` 时，`message/send` 仍然以 blocking 模式工作，async MCP 工具不会暴露。
+Async API 表面默认开启，相当于 `A2A_ASYNC_ENABLED=true`。如需强制只允许 blocking 调用，可设置 `A2A_ASYNC_ENABLED=false`，此时 async MCP 工具不会暴露。
 
 * * *
 ## 协议表面
@@ -221,7 +221,7 @@ Async 响应：
 }
 ```
 
-Async 提交要求 `A2A_ASYNC_ENABLED=true`；否则 adapter 返回 JSON-RPC 错误，提示调用方启用 async A2A。
+Async 提交要求 `A2A_ASYNC_ENABLED` 未设置或为 true；如果显式禁用，adapter 会返回 JSON-RPC 错误，提示调用方重新启用 async A2A。
 
 ### 任务端点
 
@@ -249,7 +249,7 @@ Adapter 也在 `POST /mcp` 上通过 JSON-RPC 提供 MCP。
 - `a2a_call_peer(to, message, registry_url?, timeout_seconds?)`
 - `a2a_list_peers(registry_url?, timeout_seconds?)`
 
-仅当 `A2A_ASYNC_ENABLED=true` 时暴露：
+除非 `A2A_ASYNC_ENABLED=false`，否则暴露：
 
 - `a2a_call_peer_async(to, message, registry_url?, timeout_seconds?)`
 - `a2a_get_task(to, task_id, registry_url?, timeout_seconds?)`

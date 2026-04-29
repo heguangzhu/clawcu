@@ -504,7 +504,7 @@ async def handle_mcp(request: Request) -> Response:
             return _rpc_error(
                 rpc_id,
                 -32000,
-                "async A2A tools are disabled; set A2A_ASYNC_ENABLED=true",
+                "async A2A tools are disabled; unset A2A_ASYNC_ENABLED or set it to true",
             )
         if tool_name == LIST_TOOL_NAME:
             try:

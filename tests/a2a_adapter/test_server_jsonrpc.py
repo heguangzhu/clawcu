@@ -160,7 +160,7 @@ def test_handle_jsonrpc_async_disabled_returns_error(monkeypatch):
 
     assert payload["id"] == 4
     assert payload["error"]["code"] == -32000
-    assert "A2A_ASYNC_ENABLED=true" in payload["error"]["message"]
+    assert "set it to true" in payload["error"]["message"]
 
 
 def test_task_get_returns_task_result(monkeypatch):

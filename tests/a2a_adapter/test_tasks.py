@@ -48,12 +48,12 @@ def _id_gt(left, right):
     return (left_a, left_b) > (right_a, right_b)
 
 
-def test_config_from_env_defaults_to_sync_and_disabled():
+def test_config_from_env_defaults_to_sync_and_async_enabled():
     from clawcu.a2a.adapter.tasks import DEFAULT_REDIS_URL, config_from_env
 
     cfg = config_from_env({})
 
-    assert cfg.enabled is False
+    assert cfg.enabled is True
     assert cfg.redis_url == DEFAULT_REDIS_URL
     assert cfg.default_mode == "sync"
     assert cfg.queue_name == "clawcu:a2a:agent"
@@ -85,6 +85,15 @@ def test_config_from_env_reads_async_settings():
     assert cfg.default_mode == "async"
     assert cfg.progress_interval_s == 2
     assert cfg.events_idle_timeout_s == 9
+
+
+def test_config_from_env_can_disable_async():
+    from clawcu.a2a.adapter.tasks import config_from_env
+
+    cfg = config_from_env({"A2A_ASYNC_ENABLED": "false"})
+
+    assert cfg.enabled is False
+    assert cfg.default_mode == "sync"
 
 
 def test_config_from_env_accepts_legacy_arq_queue_name_alias():

@@ -227,10 +227,31 @@ def test_jsonrpc_endpoint_removes_legacy_non_openclaw_send_path():
     assert endpoint == "http://host.docker.internal:9129"
 
 
-def test_mcp_tools_list_hides_async_tools_by_default(monkeypatch):
+def test_mcp_tools_list_exposes_async_tools_by_default(monkeypatch):
     from clawcu.a2a.adapter import mcp_bridge
 
     monkeypatch.delenv("A2A_ASYNC_ENABLED", raising=False)
+    request = _FakeRequest(
+        {"jsonrpc": "2.0", "id": 6, "method": "tools/list", "params": {}}
+    )
+
+    response = asyncio.run(mcp_bridge.handle_mcp(request))
+    payload = json.loads(response.body)
+    tool_names = [tool["name"] for tool in payload["result"]["tools"]]
+
+    assert tool_names == [
+        "a2a_call_peer",
+        "a2a_call_peer_async",
+        "a2a_get_task",
+        "a2a_cancel_task",
+        "a2a_list_peers",
+    ]
+
+
+def test_mcp_tools_list_hides_async_tools_when_disabled(monkeypatch):
+    from clawcu.a2a.adapter import mcp_bridge
+
+    monkeypatch.setenv("A2A_ASYNC_ENABLED", "false")
     request = _FakeRequest(
         {"jsonrpc": "2.0", "id": 6, "method": "tools/list", "params": {}}
     )

@@ -9,7 +9,7 @@
 
 - A2A async task 支持：JSON-RPC `message/send` 可通过 `configuration.blocking=false` 或 `metadata.mode=async` 非阻塞提交，并立即返回 submitted task。
 - 新增任务端点：`GET /tasks/{task_id}`、`POST /tasks/{task_id}/cancel`、`GET /tasks/{task_id}/events`，SSE 支持 replay、heartbeat 和终态 `end` 事件。取消是 best-effort。
-- MCP async 工具由 `A2A_ASYNC_ENABLED=true` 开启：`a2a_call_peer_async`、`a2a_get_task`、`a2a_cancel_task`。现有 `a2a_call_peer` 保持同步，并强制 blocking send。
+- MCP async 工具默认开启：`a2a_call_peer_async`、`a2a_get_task`、`a2a_cancel_task`。设置 `A2A_ASYNC_ENABLED=false` 可隐藏它们。现有 `a2a_call_peer` 保持同步，并强制 blocking send。
 - Async 部署默认使用共享 Redis 容器 `clawcu-a2a-redis`、每实例 worker `clawcu-a2a-worker-<instance>`，以及队列 `clawcu:a2a:<instance>`。
 
 ## 配置

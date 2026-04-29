@@ -9,7 +9,7 @@ Release Date: TBD
 
 - A2A async task support: non-blocking JSON-RPC `message/send` can be requested with `configuration.blocking=false` or `metadata.mode=async`, returning a submitted task immediately.
 - New task endpoints: `GET /tasks/{task_id}`, `POST /tasks/{task_id}/cancel`, and `GET /tasks/{task_id}/events` with SSE replay, heartbeat, and terminal `end` events. Cancellation is best-effort.
-- MCP async tools are opt-in behind `A2A_ASYNC_ENABLED=true`: `a2a_call_peer_async`, `a2a_get_task`, and `a2a_cancel_task`. The existing `a2a_call_peer` remains synchronous and forces blocking sends.
+- MCP async tools are enabled by default: `a2a_call_peer_async`, `a2a_get_task`, and `a2a_cancel_task`. Set `A2A_ASYNC_ENABLED=false` to hide them. The existing `a2a_call_peer` remains synchronous and forces blocking sends.
 - Async deployment uses shared Redis container `clawcu-a2a-redis`, per-instance worker `clawcu-a2a-worker-<instance>`, and queue `clawcu:a2a:<instance>` by default.
 
 ## Configuration

@@ -88,7 +88,10 @@ async def _task_store() -> TaskStore:
 async def _enqueue_async_task(text: str, rpc_id: Any, params: Any) -> dict[str, Any]:
     cfg = config_from_env()
     if not cfg.enabled:
-        raise TaskError("async A2A is disabled; set A2A_ASYNC_ENABLED=true", http_status=503)
+        raise TaskError(
+            "async A2A is disabled; unset A2A_ASYNC_ENABLED or set it to true",
+            http_status=503,
+        )
 
     redis = await _redis_pool()
     store = TaskStore(redis, retain_s=cfg.retain_s)

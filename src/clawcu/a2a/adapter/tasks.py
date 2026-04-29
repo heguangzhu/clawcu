@@ -27,6 +27,7 @@ VALID_TRANSITIONS = {
 }
 
 DEFAULT_REDIS_URL = "redis://host.docker.internal:6379/0"
+DEFAULT_ASYNC_ENABLED = True
 DEFAULT_RETAIN_S = 86400
 DEFAULT_EVENTS_IDLE_TIMEOUT_S = 60
 DEFAULT_PROGRESS_INTERVAL_S = 3
@@ -59,7 +60,7 @@ class RedisDsn:
 class AsyncTaskConfig:
     """Environment-derived async task settings."""
 
-    enabled: bool
+    enabled: bool = DEFAULT_ASYNC_ENABLED
     redis_url: str = DEFAULT_REDIS_URL
     queue_name: str = ""
     retain_s: int = DEFAULT_RETAIN_S
@@ -156,7 +157,7 @@ def config_from_env(env: dict[str, str] | None = None) -> AsyncTaskConfig:
     instance = source.get("A2A_AGENT_NAME") or source.get("A2A_SELF_NAME") or "agent"
     queue_name = source.get("A2A_QUEUE_NAME") or source.get("A2A_ARQ_QUEUE_NAME")
     return AsyncTaskConfig(
-        enabled=parse_bool(source.get("A2A_ASYNC_ENABLED"), default=False),
+        enabled=parse_bool(source.get("A2A_ASYNC_ENABLED"), default=DEFAULT_ASYNC_ENABLED),
         redis_url=(source.get("A2A_REDIS_URL") or DEFAULT_REDIS_URL).strip()
         or DEFAULT_REDIS_URL,
         queue_name=(queue_name or queue_name_for(instance)).strip(),
@@ -385,6 +386,7 @@ def _field_get(fields: Any, key: str) -> Any:
 __all__ = [
     "AsyncTaskConfig",
     "a2a_state_from_arq_status",
+    "DEFAULT_ASYNC_ENABLED",
     "DEFAULT_EVENTS_IDLE_TIMEOUT_S",
     "DEFAULT_PROGRESS_INTERVAL_S",
     "DEFAULT_QUEUE_PREFIX",

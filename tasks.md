@@ -6,9 +6,10 @@ Rapha loop 恢复点（2026-04-30）：
 
 - Round 1 已完成：TaskStore、worker、HTTP async/task routes、MCP async tools、Docker companion orchestration 已实现。
 - Round 2 已完成：inspect/getenv/operator surface、SSE heartbeat、docs/release notes、Redis smoke、CLI 测试已补齐。
-- 已验证：`uv run --extra a2a pytest`，结果 `509 passed`。
+- Round 3 已完成：按最新决策将 async API/MCP 工具默认开启，同时保留 `A2A_ASYNC_ENABLED=false` 作为显式禁用开关。
+- 已验证：`uv run --extra a2a pytest`，结果 `511 passed`。
 - Redis smoke：`docker exec clawcu-a2a-redis redis-cli ping` 返回 `PONG`；真实 Redis TaskStore + worker smoke 完成 `submitted -> working -> progress -> completed`。
-- 提交：`Add Redis-backed A2A async tasks`。
+- 提交：`Add Redis-backed A2A async tasks`；`Enable A2A async by default`。
 
 ## Phase 0: 准备工作
 
@@ -17,7 +18,7 @@ Rapha loop 恢复点（2026-04-30）：
 | T00 | 测试通过 | 启动本地 Redis 测试服务 | `clawcu-a2a-redis` 容器，`redis://127.0.0.1:6379/0` 可用 | `docker exec clawcu-a2a-redis redis-cli ping` 返回 `PONG` |
 | T01 | 测试通过 | 确认 arq 依赖策略 | `pyproject.toml` 的 `a2a` optional dependency 增加 `arq` | `uv run --extra a2a pytest tests/a2a_adapter` 通过 |
 | T02 | 测试通过 | 确认 Redis 连接配置入口 | 统一解析 `A2A_REDIS_URL`、默认值、错误提示 | `tests/a2a_adapter/test_tasks.py` 覆盖默认值、显式值、非法值 |
-| T03 | 测试通过 | 明确 async feature flag | `A2A_ASYNC_ENABLED` 与 `A2A_DEFAULT_MODE` 行为写入代码和文档 | 代码、测试、文档均已完成 |
+| T03 | 测试通过 | 明确 async feature flag | `A2A_ASYNC_ENABLED` 默认开启、`A2A_DEFAULT_MODE` 默认 sync 的行为写入代码和文档 | 代码、测试、文档均已完成 |
 
 ## Phase 1: Redis Task Facade
 
@@ -65,7 +66,7 @@ Rapha loop 恢复点（2026-04-30）：
 
 | ID | 状态 | 任务 | 产出 | 验证 |
 | --- | --- | --- | --- | --- |
-| T40 | 测试通过 | 新增 `a2a_call_peer_async` 工具描述 | MCP `tools/list` 暴露 async dispatch 工具 | enabled/disabled tools/list 测试通过 |
+| T40 | 测试通过 | 新增 `a2a_call_peer_async` 工具描述 | MCP `tools/list` 默认暴露 async dispatch 工具，显式禁用时隐藏 | enabled/disabled tools/list 测试通过 |
 | T41 | 测试通过 | 新增 `a2a_get_task` 工具描述 | MCP `tools/list` 暴露 task poll 工具 | enabled tools/list 测试通过 |
 | T42 | 测试通过 | 新增 `a2a_cancel_task` 工具描述 | MCP `tools/list` 暴露 cancel 工具 | enabled tools/list 测试通过 |
 | T43 | 测试通过 | 实现 async peer call | registry lookup 后向 peer 发送 async `message/send` | MCP async call 测试通过 |
@@ -115,7 +116,7 @@ Rapha loop 恢复点（2026-04-30）：
 | --- | --- | --- | --- | --- |
 | T80 | 已完成 | 更新 A2A 协议文档 | async dispatch、task get、cancel、events | `docs/a2a-protocol*.md` 已更新 |
 | T81 | 已完成 | 更新 env 文档 | Redis/arq/task retention/env defaults | `docs/a2a-envs.md` 已更新 |
-| T82 | 已完成 | 更新 release notes 草稿 | 说明 Redis 依赖、默认 sync、async opt-in | `release/RELEASE_latest*.md` 已更新 |
+| T82 | 已完成 | 更新 release notes 草稿 | 说明 Redis 依赖、默认 sync、async 默认开启 | `release/RELEASE_latest*.md` 已更新 |
 | T83 | 已完成 | 更新 troubleshooting | Redis 不可用、worker missing、task stuck、cancel best-effort | protocol/env/release docs 已覆盖 |
 
 ## Phase 9: Rollout / Commit Tracking
@@ -123,6 +124,7 @@ Rapha loop 恢复点（2026-04-30）：
 | ID | 状态 | 任务 | 产出 | 验证 |
 | --- | --- | --- | --- | --- |
 | T90 | 已提交 | Phase 1 hidden plumbing commit | task facade + worker 基础，不默认暴露 async | 合并提交覆盖 |
-| T91 | 已提交 | Phase 2 opt-in async commit | feature flag 下暴露 async MCP/API | 合并提交覆盖 |
+| T91 | 已提交 | Phase 2 async API commit | feature flag 下暴露 async MCP/API | 合并提交覆盖 |
 | T92 | 已提交 | Phase 3 orchestration commit | Redis/worker companion 管理 | 合并提交覆盖 |
 | T93 | 已提交 | Phase 4 docs/tests commit | 文档和测试补齐 | 合并提交覆盖 |
+| T94 | 已提交 | Phase 5 default-on async commit | 将 async API/MCP 工具默认开启，保留 `A2A_ASYNC_ENABLED=false` 作为回退开关 | `uv run --extra a2a pytest` 通过，提交覆盖 |

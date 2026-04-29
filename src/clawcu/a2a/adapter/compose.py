@@ -37,7 +37,7 @@ class CompanionSpec:
     gateway_timeout_seconds: int = 86400
     send_timeout_seconds: int = 86400
     registry_url: str = "http://host.docker.internal:9100"
-    async_enabled: bool = False
+    async_enabled: bool = tasks.DEFAULT_ASYNC_ENABLED
     default_mode: str = "sync"
     redis_url: str = tasks.DEFAULT_REDIS_URL
     queue_name: str = ""
@@ -73,7 +73,7 @@ class WorkerCompanionSpec:
     gateway_timeout_seconds: int = 86400
     send_timeout_seconds: int = 86400
     registry_url: str = "http://host.docker.internal:9100"
-    async_enabled: bool = False
+    async_enabled: bool = tasks.DEFAULT_ASYNC_ENABLED
     default_mode: str = "sync"
     task_workers: int = 4
     task_deadline_seconds: int = tasks.DEFAULT_RETAIN_S
