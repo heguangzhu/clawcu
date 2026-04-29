@@ -24,6 +24,8 @@ class ServiceAdapter(ABC):
     a2a_skills: tuple[str, ...] = ("chat",)
     a2a_role: str = ""  # empty → card.py templates "{service} local agent"
     a2a_plugin_port_offsets: tuple[int, ...] = (0,)
+    a2a_internal_port: int = 18790  # port the companion adapter binds inside the container
+    gateway_ready_path: str = "/healthz"  # readiness probe path for the native gateway
 
     @abstractmethod
     def prepare_artifact(self, version: str) -> str:

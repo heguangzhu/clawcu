@@ -37,6 +37,9 @@ class InstanceSpec:
     # → 127.0.0.1). Persisted so `clawcu recreate` stays stable across
     # host environment changes. Review-9 P1-A3.
     a2a_advertise_host: str | None = None
+    # Host port mapped to the A2A adapter container. Set during create when
+    # a2a_enabled is True and the companion-container model is used.
+    a2a_adapter_port: int | None = None
 
 
 @dataclass(kw_only=True)

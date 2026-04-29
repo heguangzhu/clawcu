@@ -118,6 +118,8 @@ class HermesAdapter(ServiceAdapter):
     a2a_skills = ("chat", "analysis")
     a2a_role = "Hermes local analyst"
     a2a_plugin_port_offsets = (0,)
+    a2a_internal_port = 9119  # companion adapter binds the dashboard internal port
+    gateway_ready_path = "/health"
 
     def __init__(self, manager: HermesManager):
         self.manager = manager

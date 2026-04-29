@@ -15,7 +15,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 from clawcu import __version__ as clawcu_version
-from clawcu.a2a.builder import A2AImageBuilder, a2a_image_tag
+from clawcu.a2a.adapter.compose import (
+    CompanionSpec,
+    build_adapter_image,
+    start_companion,
+    stop_companion,
+    companion_status,
+)
 from clawcu.core.adapters import ServiceAdapter
 from clawcu.core.docker import DockerManager
 from clawcu.core.models import AccessInfo, InstanceRecord, InstanceSpec
@@ -677,7 +683,7 @@ class ClawCUService:
         else:
             prepared_image = adapter.prepare_artifact(spec.version)
         if spec.a2a_enabled:
-            prepared_image = self._bake_a2a_image(spec.service, spec.version, prepared_image)
+            prepared_image = self._ensure_adapter_image(prepared_image)
         spec = replace(spec, image_tag_override=prepared_image)
         datadir_path = Path(spec.datadir)
         self.reporter("Step 4/5: Preparing the local data directory and runtime metadata. This usually takes a few seconds.")
@@ -762,14 +768,43 @@ class ClawCUService:
             a2a_advertise_host=a2a_advertise_host,
         )
 
-    def _bake_a2a_image(self, service: str, base_version: str, base_image: str) -> str:
-        """Build (or reuse) the a2a variant of ``base_image`` for ``service``."""
-        builder = A2AImageBuilder(
-            docker=self.docker,
-            clawcu_version=clawcu_version,
-            reporter=self.reporter,
+    def _ensure_adapter_image(self, base_image: str) -> str:
+        """Build the companion A2A adapter image (once per clawcu version)."""
+        build_adapter_image(self.docker, clawcu_version, reporter=self.reporter)
+        return base_image
+
+    def _start_a2a_companion(self, record: InstanceRecord) -> None:
+        """Start the A2A companion container for an A2A-enabled instance."""
+        adapter = self.adapter_for_record(record)
+        from clawcu.a2a.adapter.compose import adapter_image_tag
+
+        gateway_port = adapter.internal_port
+        a2a_internal_port = adapter.a2a_internal_port
+        advertise_host = record.a2a_advertise_host or "127.0.0.1"
+        agent_url = f"http://{advertise_host}:{record.port}"
+
+        # Read the gateway auth token from the env file.
+        gateway_token = ""
+        env_path = Path(record.datadir) / "env"
+        if env_path.exists():
+            for line in env_path.read_text().splitlines():
+                if line.startswith("OPENCLAW_TOKEN=") or line.startswith("HERMES_TOKEN="):
+                    gateway_token = line.split("=", 1)[1].strip()
+                    break
+
+        spec = CompanionSpec(
+            name=record.name,
+            instance_name=record.name,
+            adapter_image=adapter_image_tag(clawcu_version),
+            gateway_url=f"http://127.0.0.1:{gateway_port}",
+            gateway_auth_token=gateway_token,
+            gateway_ready_path=adapter.gateway_ready_path,
+            agent_url=agent_url,
+            agent_role=adapter.a2a_role,
+            agent_skills=",".join(adapter.a2a_skills),
+            adapter_port=a2a_internal_port,
         )
-        return builder.ensure_image(service, base_version, base_image)
+        start_companion(self.docker, spec, record.container_name)
 
     def list_instances(self, *, running_only: bool = False) -> list[InstanceRecord]:
         records = self.store.list_records()
@@ -1286,6 +1321,8 @@ class ClawCUService:
         )
         try:
             self.docker.start_container(record.container_name)
+            if record.a2a_enabled:
+                self._start_a2a_companion(record)
         except Exception as exc:
             failed = updated_record(
                 record,
@@ -1322,6 +1359,8 @@ class ClawCUService:
 
     def stop_instance(self, name: str, *, timeout: int | None = None) -> InstanceRecord:
         record = self.store.load_record(name)
+        if record.a2a_enabled:
+            stop_companion(self.docker, record.name)
         self.docker.stop_container(record.container_name, timeout=timeout)
         suffix = f" timeout={timeout}" if timeout is not None else ""
         self.store.append_log(f"stop instance name={record.name}{suffix}")
@@ -2354,6 +2393,8 @@ class ClawCUService:
         record = self.store.load_record(name)
         adapter = self.adapter_for_record(record)
         try:
+            if record.a2a_enabled:
+                stop_companion(self.docker, record.name)
             self.docker.remove_container(record.container_name, missing_ok=True)
         except Exception as exc:
             message = (
@@ -2450,6 +2491,8 @@ class ClawCUService:
                 if env_overrides:
                     self._apply_env_overrides(adapter, record, env_overrides)
                 self._run_container(record)
+                if record.a2a_enabled:
+                    self._start_a2a_companion(record)
             except Exception as exc:
                 failure = updated_record(
                     record,
