@@ -4052,7 +4052,7 @@ def remove_instance(
                         console.print(
                             f"[green]Removed orphaned instance data:[/green] {name}"
                         )
-                        raise typer.Exit(code=0)
+                        return
                 raise exc
         else:
             service.remove_removed_instance(name)
