@@ -37,6 +37,11 @@ def _adapter_source_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
+def _project_root() -> Path:
+    """Return the repository root used as the adapter Docker build context."""
+    return Path(__file__).resolve().parents[4]
+
+
 def adapter_image_tag(clawcu_version: str) -> str:
     """Canonical tag for the adapter image."""
     return f"{_ADAPTER_IMAGE}:{clawcu_version}"
@@ -53,11 +58,12 @@ def build_adapter_image(docker, clawcu_version: str, reporter=None) -> str:
 
     if reporter:
         reporter(f"Building A2A adapter image {tag} ...")
-    source_dir = _adapter_source_dir()
+    source_dir = _project_root()
+    dockerfile = _adapter_source_dir() / "Dockerfile"
     docker.build_image(
         source_dir,
         tag,
-        dockerfile=str(source_dir / "Dockerfile"),
+        dockerfile=str(dockerfile),
     )
     if reporter:
         reporter(f"Built {tag}")
