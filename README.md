@@ -32,7 +32,7 @@
 - **Snapshots before every upgrade** — datadir and env both captured; `rollback` restores from real backups
 - **Clone-first experiments** — copy an instance, upgrade the copy, leave the original running
 - **Agent-to-agent messaging (`v0.3.0`)** — opt-in `--a2a` bakes an A2A v0 sidecar into the managed image, exposing `/.well-known/agent-card.json` + `POST /a2a/send` on a neighbor port. Stock instances are unaffected.
-- **Available versions with cache-aware refresh** — `clawcu list` is fast by default, and `clawcu list --no-cache` forces a fresh registry read when you want to see the latest tags now
+- **Available versions with cache-aware refresh** — `clawcu list --versions` shows upgrade candidates from the configured registries, served from a day-cache by default. Add `--no-cache` to force a fresh registry read when you want the latest tags now.
 
 ```text
 $ clawcu list
@@ -117,10 +117,11 @@ clawcu a2a registry serve                                 # start the discovery 
 clawcu a2a send --to analyst --message "summarize yesterday"
 ```
 
-Need the versions footer to ignore today's cache and fetch fresh tags immediately?
+See what versions are available for upgrade (cached per day; add `--no-cache` to force a fresh fetch):
 
 ```bash
-clawcu list --no-cache
+clawcu list --versions
+clawcu list --versions --no-cache
 ```
 
 Deep-dive on the A2A sidecar (architecture, protocol, operations, troubleshooting): [docs/a2a-sidecar.md](docs/a2a-sidecar.md). For the full command reference (`list` / `inspect` / `exec` / `upgrade` / `provider` / `a2a` …), see [USAGE_latest.md](release/USAGE_latest.md).
