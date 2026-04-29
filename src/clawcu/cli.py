@@ -22,7 +22,7 @@ from typer.main import get_command
 
 from clawcu import __version__
 from clawcu.a2a.cli import a2a_app
-from clawcu.dashboard.server import _dashboard_is_healthy, serve_dashboard
+from clawcu.dashboard.server import _dashboard_is_healthy
 from clawcu.core.registry import is_semver_release_tag
 from clawcu.service import ClawCUService
 
@@ -774,6 +774,104 @@ def _detect_shell_name() -> str | None:
     if shell_name in {"zsh", "bash", "fish"}:
         return shell_name
     return None
+
+
+def _dashboard_image_tag(version: str) -> str:
+    return f"clawcu-dashboard:{version}"
+
+
+def _dashboard_container_name() -> str:
+    return "clawcu-dashboard"
+
+
+def _find_project_root() -> Path:
+    """Return the project root directory (where pyproject.toml lives)."""
+    # clawcu package is under src/clawcu/; go up two levels.
+    pkg_dir = Path(__file__).parent
+    return pkg_dir.parent.parent
+
+
+def _docker_image_exists(image_tag: str) -> bool:
+    try:
+        subprocess.run(
+            ["docker", "image", "inspect", image_tag],
+            capture_output=True,
+            check=True,
+        )
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
+def _build_dashboard_image(image_tag: str, project_root: Path) -> None:
+    typer.echo(f"Building dashboard image {image_tag}...")
+    dockerfile = project_root / "src" / "clawcu" / "dashboard" / "Dockerfile"
+    subprocess.run(
+        ["docker", "build", "-f", str(dockerfile), "-t", image_tag, "."],
+        cwd=project_root,
+        check=True,
+    )
+    typer.echo(f"Dashboard image {image_tag} built.")
+
+
+def _dashboard_container_info() -> dict | None:
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", _dashboard_container_name(), "--format", "{{json .}}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return json.loads(result.stdout)
+    except (subprocess.CalledProcessError, FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def _start_dashboard_container(host: str, port: int, image_tag: str) -> None:
+    container_name = _dashboard_container_name()
+    clawcu_home = os.environ.get("CLAWCU_HOME") or str(Path.home() / ".clawcu")
+    home = Path.home()
+    openclaw_home = str(home / ".openclaw")
+    hermes_home = str(home / ".hermes")
+    cmd = [
+        "docker",
+        "run",
+        "-d",
+        "--name",
+        container_name,
+        "--restart",
+        "unless-stopped",
+        "--label",
+        "com.clawcu.managed=true",
+        "--label",
+        "com.clawcu.component=dashboard",
+        "-p",
+        f"{host}:{port}:8765",
+        "-v",
+        f"{clawcu_home}:/root/.clawcu",
+        "-v",
+        f"{openclaw_home}:/root/.openclaw",
+        "-v",
+        f"{hermes_home}:/root/.hermes",
+        "-v",
+        "/var/run/docker.sock:/var/run/docker.sock",
+        "--add-host",
+        "host.docker.internal:host-gateway",
+        image_tag,
+    ]
+    subprocess.run(cmd, check=True)
+
+
+def _stop_dashboard_container() -> None:
+    container_name = _dashboard_container_name()
+    subprocess.run(
+        ["docker", "stop", "--time", "5", container_name],
+        capture_output=True,
+    )
+    subprocess.run(
+        ["docker", "rm", "-f", container_name],
+        capture_output=True,
+    )
 
 
 def _completion_check(service: ClawCUService) -> dict[str, str | bool]:
@@ -1779,77 +1877,108 @@ def _apply_list_filters(
 
 @app.command(
     "dashboard",
-    help="Serve the local dashboard for managed, local, and removed instances.",
+    help="Manage the ClawCU dashboard Docker container.",
     rich_help_panel=_PANEL_INFO,
 )
 def dashboard(
     host: Annotated[
         str,
-        typer.Option("--host", help="Host interface to bind the dashboard server to."),
+        typer.Option("--host", help="Host interface to publish the dashboard on."),
     ] = "127.0.0.1",
     port: Annotated[
         int,
-        typer.Option("--port", min=1, max=65535, help="Port to bind the dashboard server to."),
+        typer.Option("--port", min=1, max=65535, help="Host port to publish the dashboard on."),
     ] = 8765,
     open_browser: Annotated[
         bool,
-        typer.Option("--open/--no-open", help="Open the dashboard URL in the default browser after starting."),
+        typer.Option("--open/--no-open", help="Open the dashboard URL in the default browser."),
     ] = True,
-    foreground: Annotated[
+    stop: Annotated[
         bool,
-        typer.Option(
-            "--foreground/--background",
-            help="Run the dashboard server in the current terminal instead of detaching it.",
-        ),
+        typer.Option("--stop", help="Stop the dashboard container."),
+    ] = False,
+    restart: Annotated[
+        bool,
+        typer.Option("--restart", help="Restart the dashboard container."),
+    ] = False,
+    status: Annotated[
+        bool,
+        typer.Option("--status", help="Show the dashboard container status."),
+    ] = False,
+    rebuild: Annotated[
+        bool,
+        typer.Option("--rebuild", help="Force rebuild the dashboard image."),
     ] = False,
 ) -> None:
     try:
-        if foreground:
-            serve_dashboard(host=host, port=port, open_browser=open_browser)
-            return
+        image_tag = _dashboard_image_tag(__version__)
+        container_name = _dashboard_container_name()
+        url = f"http://{host}:{port}"
 
-        primary_url = f"http://{host}:{port}"
-        if _dashboard_is_healthy(primary_url):
-            typer.echo(f"ClawCU dashboard is already running at {primary_url}")
-            if open_browser:
-                webbrowser.open(primary_url)
-            return
+        if status:
+            info = _dashboard_container_info()
+            if info is None:
+                typer.echo("Dashboard container is not running.")
+                raise typer.Exit(code=0)
+            state = info.get("State", {})
+            status_text = state.get("Status", "unknown")
+            started_at = state.get("StartedAt", "unknown")
+            image = info.get("Config", {}).get("Image", "unknown")
+            typer.echo(f"Container : {container_name} ({status_text})")
+            typer.echo(f"Image     : {image}")
+            typer.echo(f"URL       : {url}")
+            typer.echo(f"Started   : {started_at}")
+            if status_text == "running" and _dashboard_is_healthy(url):
+                typer.echo("Health    : healthy")
+            elif status_text == "running":
+                typer.echo("Health    : starting")
+            raise typer.Exit(code=0)
 
-        clawcu_bin = shutil.which("clawcu") or sys.argv[0]
-        cmd = [clawcu_bin, "dashboard", "--host", host, "--port", str(port), "--foreground", "--no-open"]
-        subprocess.Popen(  # noqa: S603
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        if stop:
+            _stop_dashboard_container()
+            typer.echo(f"Dashboard container {container_name} stopped.")
+            raise typer.Exit(code=0)
 
-        candidate_ports = [port]
-        if port == 8765:
-            candidate_ports.extend(range(port + 1, port + 21))
+        if restart:
+            _stop_dashboard_container()
+            # Fall through to start logic below.
 
-        healthy_url = None
-        deadline = time.time() + 12.0
+        # Ensure image exists (build if needed).
+        if rebuild or not _docker_image_exists(image_tag):
+            project_root = _find_project_root()
+            _build_dashboard_image(image_tag, project_root)
+
+        # Check if container already exists.
+        info = _dashboard_container_info()
+        if info is not None:
+            container_state = info.get("State", {})
+            if container_state.get("Status") == "running":
+                if _dashboard_is_healthy(url):
+                    typer.echo(f"ClawCU dashboard is already running at {url}")
+                    if open_browser:
+                        webbrowser.open(url)
+                    raise typer.Exit(code=0)
+            # Container exists but not running — remove and recreate.
+            _stop_dashboard_container()
+
+        _start_dashboard_container(host, port, image_tag)
+
+        # Wait for health.
+        deadline = time.time() + 30.0
         while time.time() < deadline:
-            for candidate_port in candidate_ports:
-                candidate_url = f"http://{host}:{candidate_port}"
-                if _dashboard_is_healthy(candidate_url):
-                    healthy_url = candidate_url
-                    break
-            if healthy_url:
-                break
-            time.sleep(0.2)
+            if _dashboard_is_healthy(url):
+                typer.echo(f"ClawCU dashboard is running at {url}")
+                if open_browser:
+                    webbrowser.open(url)
+                raise typer.Exit(code=0)
+            time.sleep(0.3)
 
-        if healthy_url:
-            typer.echo(f"ClawCU dashboard is running at {healthy_url}")
-            if open_browser:
-                webbrowser.open(healthy_url)
-        else:
-            typer.echo(
-                "ClawCU dashboard is starting in the background. "
-                f"Check http://{host}:{port} in a moment if the browser does not open automatically."
-            )
+        typer.echo(
+            "ClawCU dashboard container started, but health check is pending. "
+            f"Check {url} in a moment."
+        )
+    except typer.Exit:
+        raise
     except Exception as exc:
         typer.secho(str(exc), err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1) from exc

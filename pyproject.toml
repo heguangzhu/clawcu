@@ -54,7 +54,7 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-"clawcu.dashboard" = ["static/*"]
+"clawcu.dashboard" = ["static/*", "Dockerfile"]
 "clawcu.a2a.sidecar_plugin._common" = ["*.py"]
 "clawcu.a2a.sidecar_plugin.openclaw" = ["Dockerfile", "entrypoint.sh"]
 "clawcu.a2a.sidecar_plugin.openclaw.sidecar" = ["*.py"]
