@@ -47,3 +47,21 @@ class TestBuildAgentCard:
         monkeypatch.delenv("A2A_AGENT_NAME", raising=False)
         with pytest.raises(KeyError):
             build_agent_card()
+
+
+def test_control_plane_card_accepts_standard_a2a_card():
+    from clawcu.a2a.card import AgentCard
+
+    card = AgentCard.from_dict(
+        {
+            "name": "writer",
+            "description": "OpenClaw writer",
+            "supported_interfaces": [{"url": "http://127.0.0.1:18800", "protocol_version": "0.1"}],
+            "skills": [{"name": "chat", "tags": ["chat", "tools"]}],
+        }
+    )
+
+    assert card.name == "writer"
+    assert card.endpoint == "http://127.0.0.1:18800"
+    assert card.role == "OpenClaw writer"
+    assert card.skills == ["chat", "tools"]

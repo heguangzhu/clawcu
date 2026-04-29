@@ -9,7 +9,7 @@
 ## TL;DR
 
 - `clawcu create openclaw|hermes --a2a ...` launches a **companion container** running the A2A adapter alongside the service.
-- The adapter speaks the standard **Google A2A protocol** (JSON-RPC 2.0) and exposes `GET /.well-known/agent-card.json` (discovery) and `POST /` (JSON-RPC messaging).
+- The adapter speaks the standard **Google A2A protocol** (JSON-RPC 2.0) and exposes `GET /.well-known/agent-card.json` (discovery), `POST /` (JSON-RPC messaging), and `POST /mcp` (`a2a_call_peer`).
 - Stock instances (no `--a2a`) are unchanged. A2A is strictly opt-in and additive.
 - `clawcu a2a registry serve` runs the aggregate registry so instances can discover each other.
 - `clawcu a2a send --to <name> --message "..."` is the smoke test.
@@ -21,9 +21,9 @@
 - [Architecture](#architecture)
 - [Opt-in: enabling A2A on an instance](#opt-in-enabling-a2a-on-an-instance)
 - [Protocol surface](#protocol-surface)
+- [LLM-facing MCP tool](#llm-facing-mcp-tool)
 - [The A2A registry](#the-a2a-registry)
 - [Two-instance walkthrough](#two-instance-walkthrough)
-- [Migrating from baked sidecar instances](#migrating-from-baked-sidecar-instances)
 - [Enabling A2A on an existing instance](#enabling-a2a-on-an-existing-instance)
 - [Troubleshooting](#troubleshooting)
 - [Current limits](#current-limits)
@@ -172,6 +172,15 @@ Standard A2A task lifecycle methods are supported via `a2a-sdk`'s `InMemoryTaskS
 The adapter probes the service gateway's readiness path (`/healthz` for OpenClaw, `/health` for Hermes) before forwarding messages. If the gateway isn't ready, the task fails with a clear message.
 
 * * *
+## LLM-facing MCP tool
+
+The adapter also serves MCP over JSON-RPC at `POST /mcp`, exposing one tool:
+
+- `a2a_call_peer(to, message, registry_url?, timeout_seconds?)`
+
+The tool looks up `to` in the A2A registry, sends a standard A2A `message/send` request to that peer, and returns both text content and structured task data. When an instance is created with `--a2a`, ClawCU writes `mcp.servers.a2a = {"url": "http://127.0.0.1:<adapter_port>/mcp"}` into the service config so the local agent can call peers during a conversation.
+
+* * *
 ## The A2A registry
 
 The registry aggregates AgentCards from all running managed instances and exposes them at `GET /agents` and `GET /agents/{name}`. Start it with:
@@ -198,25 +207,6 @@ clawcu a2a registry serve
 # 3. From another terminal: send a message.
 clawcu a2a send --to analyst --message "summarize yesterday"
 ```
-
-* * *
-## Migrating from baked sidecar instances
-
-If you have instances created with v0.3.x (baked sidecar images), migrate them to companion containers:
-
-```bash
-clawcu a2a migrate
-```
-
-This command:
-
-1. Detects all instances using baked sidecar images (`clawcu/*-a2a:*` tags).
-2. Stops the old container.
-3. Recreates it with the original service image + a companion adapter container.
-4. Preserves datadir, ports, and environment variables.
-
-To migrate a specific instance: `clawcu a2a migrate --name writer`.
-To skip confirmation: `clawcu a2a migrate -y`.
 
 * * *
 ## Enabling A2A on an existing instance

@@ -9,7 +9,7 @@
 ## TL;DR
 
 - `clawcu create openclaw|hermes --a2a ...` 启动一个**同伴容器**运行 A2A adapter。
-- Adapter 说标准 **Google A2A 协议**（JSON-RPC 2.0），暴露 `GET /.well-known/agent-card.json`（发现）和 `POST /`（JSON-RPC 消息）。
+- Adapter 说标准 **Google A2A 协议**（JSON-RPC 2.0），暴露 `GET /.well-known/agent-card.json`（发现）、`POST /`（JSON-RPC 消息）和 `POST /mcp`（`a2a_call_peer`）。
 - 不加 `--a2a` 的普通实例一丝不变。A2A 严格 opt-in、纯加法。
 - `clawcu a2a registry serve` 启动聚合 registry，让实例之间可以互相发现。
 - `clawcu a2a send --to <name> --message "..."` 是冒烟测试命令。
@@ -21,9 +21,9 @@
 - [架构一览](#架构一览)
 - [Opt-in：启用 A2A](#opt-in启用-a2a)
 - [协议表面](#协议表面)
+- [面向 LLM 的 MCP 工具](#面向-llm-的-mcp-工具)
 - [A2A registry](#a2a-registry)
 - [双实例完整演练](#双实例完整演练)
-- [从烘焙 sidecar 实例迁移](#从烘焙-sidecar-实例迁移)
 - [给已有实例开启 A2A](#给已有实例开启-a2a)
 - [排障](#排障)
 - [当前限制](#当前限制)
@@ -172,6 +172,15 @@ Adapter 接受标准 A2A JSON-RPC 方法：
 Adapter 在转发消息前先探服务的就绪路径（OpenClaw 的 `/healthz`，Hermes 的 `/health`）。网关未就绪时，任务会以明确的错误信息失败。
 
 * * *
+## 面向 LLM 的 MCP 工具
+
+Adapter 也在 `POST /mcp` 上通过 JSON-RPC 提供 MCP，暴露一个工具：
+
+- `a2a_call_peer(to, message, registry_url?, timeout_seconds?)`
+
+这个工具会在 A2A registry 里查找 `to`，向对端发送标准 A2A `message/send` 请求，并返回文本内容与结构化 task 数据。实例用 `--a2a` 创建时，ClawCU 会把 `mcp.servers.a2a = {"url": "http://127.0.0.1:<adapter_port>/mcp"}` 写入服务配置，让本地 agent 能在对话中调用其他 agent。
+
+* * *
 ## A2A registry
 
 Registry 聚合所有运行中受管实例的 AgentCard，通过 `GET /agents` 和 `GET /agents/{name}` 暴露。启动命令：
@@ -198,25 +207,6 @@ clawcu a2a registry serve
 # 3. 另开一个终端：发消息。
 clawcu a2a send --to analyst --message "总结昨天的站会"
 ```
-
-* * *
-## 从烘焙 sidecar 实例迁移
-
-如果你有 v0.3.x 创建的烘焙 sidecar 实例，可以用迁移命令转到同伴容器：
-
-```bash
-clawcu a2a migrate
-```
-
-这个命令：
-
-1. 检测所有使用烘焙 sidecar 镜像的实例（`clawcu/*-a2a:*` tag）。
-2. 停止旧容器。
-3. 用原始服务镜像 + 同伴 adapter 容器重建。
-4. 保留 datadir、端口、环境变量。
-
-迁移特定实例：`clawcu a2a migrate --name writer`。
-跳过确认：`clawcu a2a migrate -y`。
 
 * * *
 ## 给已有实例开启 A2A

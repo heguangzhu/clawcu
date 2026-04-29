@@ -1155,7 +1155,7 @@ _A2A_HOP_BUDGET_OPTION = typer.Option(
     "--a2a-hop-budget",
     min=1,
     help=(
-        "Maximum number of A2A hops the sidecar will forward a single outbound "
+        "Maximum number of A2A hops the adapter will forward a single outbound "
         "call through before returning 508 Loop Detected. Persisted to the "
         "instance env file as A2A_HOP_BUDGET; defaults to 8 when unset. Requires "
         "--a2a."
@@ -1164,7 +1164,7 @@ _A2A_HOP_BUDGET_OPTION = typer.Option(
 _A2A_ADVERTISE_HOST_OPTION = typer.Option(
     "--a2a-advertise-host",
     help=(
-        "Hostname peers will use to reach this sidecar. Default: "
+        "Hostname peers will use to reach this A2A adapter. Default: "
         "host.docker.internal on macOS/Windows (Docker Desktop), 127.0.0.1 on "
         "Linux. Override when peers live on a different host or a named "
         "docker network. Requires --a2a."
@@ -1174,7 +1174,7 @@ _A2A_TRISTATE_OPTION = typer.Option(
     "--a2a/--no-a2a",
     help=(
         "Toggle the A2A flavor when recreating. Omit to preserve the instance's "
-        "current flavor; pass --a2a to switch to the baked a2a image, or "
+        "current flavor; pass --a2a to add the companion adapter, or "
         "--no-a2a to drop back to the stock image. Flipping the flag re-runs "
         "artifact preparation."
     ),

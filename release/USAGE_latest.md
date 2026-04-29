@@ -1,11 +1,11 @@
-# ClawCU Usage v0.3.0
+# ClawCU Usage Latest
 
 🌐 Language:
-[English](USAGE_v0.3.0.md) | [中文](USAGE_v0.3.0.zh-CN.md)
+[English](USAGE_latest.md) | [中文](USAGE_latest.zh-CN.md)
 
-Release Scope: `v0.3.0`
+Release Scope: current
 
-Command reference for `ClawCU v0.3.0`. Covers the shared command surface, OpenClaw / Hermes service differences, the orphan-instance lifecycle (introduced in `v0.2.6`), the `v0.2.9`–`v0.2.10` list-footer polish, the **`v0.3.0` A2A v0 surface** (`--a2a` opt-in at create time, `clawcu a2a` subcommand tree, `clawcu hermes identity set`), and the operational defaults.
+Command reference for the current `ClawCU` command surface. Covers shared OpenClaw / Hermes lifecycle commands, provider management, orphan-instance recovery, A2A companion adapters, and operational defaults.
 
 ## 1. Setup and Artifact Preparation
 
@@ -41,7 +41,7 @@ Create and start an OpenClaw instance.
 - `datadir` defaults to `~/.clawcu/<name>`
 - managed host port defaults to `18799`; probes by `+10` on conflict
 - writes `.clawcu-instance.json` into the datadir so the instance is recoverable from its datadir alone
-- `--a2a` — bake the A2A sidecar into the image (see §11). Publishes an extra neighbor port for `GET /.well-known/agent-card.json` + `POST /a2a/send`. Stock behaviour unchanged; sidecar speaks A2A v0 via stdlib Node `http`
+- `--a2a` — start a companion A2A adapter container (see §11). Publishes an extra local port for `GET /.well-known/agent-card.json`, JSON-RPC `message/send`, and `POST /mcp`. Stock behaviour unchanged.
 
 ### `clawcu create hermes`
 
@@ -58,7 +58,7 @@ Create and start a Hermes instance.
 - managed API port defaults to `8652`; managed dashboard port starts from `9129`
 - both probe by `+10` on conflict
 - writes the same `.clawcu-instance.json` sidecar
-- `--a2a` — bake the A2A sidecar into the image (see §11). Python stdlib sidecar on `A2A_BIND_PORT` (default 9119)
+- `--a2a` — start a companion A2A adapter container (see §11). The adapter shares the service container's network and exposes AgentCard, JSON-RPC messaging, and `POST /mcp`.
 
 ## 3. Shared Lifecycle Commands
 
@@ -390,26 +390,27 @@ Apply a collected asset to the selected instance. Writeback is service-native.
 - Orphan recovery:
   - `list --removed` → `recreate <orphan>` (port / version auto-restored from `.clawcu-instance.json`)
 
-## 11. Agent-to-Agent Messaging (`v0.3.0`)
+## 11. Agent-to-Agent Messaging
 
-`v0.3.0` introduces an A2A v0 surface. All A2A behaviour is opt-in via `--a2a` at create time; existing instances are unaffected.
+All A2A behaviour is opt-in via `--a2a` at create time; existing instances are unaffected.
 
 ### Opt-in at create time
 
-Pass `--a2a` to `clawcu create openclaw` or `clawcu create hermes` to bake the sidecar into the instance's image. The baked image is tagged `clawcu/{service}-a2a:{base}-plugin{clawcu_version}.{sha}`, where `sha` fingerprints the on-disk sidecar sources so editable installs transparently rebake when the sidecar code changes.
+Pass `--a2a` to `clawcu create openclaw` or `clawcu create hermes` to run a companion A2A adapter container alongside the service container. The adapter image is shared as `clawcu/a2a-adapter:<clawcu_version>`.
 
-A running A2A-enabled instance exposes, on a neighbor port next to its native gateway:
+A running A2A-enabled instance exposes, on a local adapter port:
 
-- `GET /.well-known/agent-card.json` — `{name, role, skills, endpoint}`
-- `POST /a2a/send` — `{"from": ..., "to": ..., "message": ...}` → `{"from": ..., "message": ...}`
+- `GET /.well-known/agent-card.json` — standard Google A2A AgentCard
+- `POST /` — JSON-RPC 2.0 A2A `message/send`
+- `POST /mcp` — MCP JSON-RPC tool surface exposing `a2a_call_peer`
 
-Optional request field: `thread_id` (uuid v7). When present, the sidecar persists `{peer, message, timestamp}` as JSONL under `<datadir>/threads/<peer>.jsonl`; subsequent turns with the same `thread_id` get prior context prepended.
+When A2A is enabled, ClawCU also writes an `mcp.servers.a2a` entry into the service config so the local agent can call peers through the `a2a_call_peer` MCP tool.
 
-Operational knobs baked into the sidecar (no user-tuneable flags today):
+Operational notes:
 
-- Per-peer token-bucket rate limit (keyed on the `from` field)
-- Readiness probe — `/healthz` only flips to `ok` after the native gateway responds
-- Log tee — sidecar stdout/stderr also written to `<datadir>/a2a-sidecar.log`
+- The adapter forwards inbound A2A messages to the co-located service gateway's `/v1/chat/completions`.
+- The registry aggregates cards through `GET /agents` and `GET /agents/<name>`.
+- `clawcu inspect <instance>` shows the A2A port, registry URL, hop budget, and MCP URL.
 
 ### `clawcu a2a card`
 
@@ -422,7 +423,7 @@ Print the AgentCard JSON for a local clawcu instance (derived from its record). 
 ### `clawcu a2a registry serve`
 
 ```
-clawcu a2a registry serve [--port 8765] [--host 127.0.0.1]
+clawcu a2a registry serve [--port 9100] [--host 127.0.0.1]
 ```
 
 Run the aggregator: serves `GET /agents` (array) and `GET /agents/<name>` (single card) over HTTP, stdlib-only. One process for N instances.
@@ -431,11 +432,11 @@ Run the aggregator: serves `GET /agents` (array) and `GET /agents/<name>` (singl
 
 ```
 clawcu a2a send --to <target> --message <text>
-                [--registry http://127.0.0.1:8765]
+                [--registry http://127.0.0.1:9100]
                 [--from clawcu-cli] [--timeout 60]
 ```
 
-Look up `TARGET` in the registry and POST a message to its endpoint. Prints the reply JSON. `--timeout` is the LLM reply wait window.
+Look up `TARGET` in the registry and send an A2A JSON-RPC `message/send` request to its endpoint. Prints the reply JSON. `--timeout` is the LLM reply wait window.
 
 ### `clawcu hermes identity set`
 
@@ -447,6 +448,6 @@ Install a user-authored `SOUL.md` into a Hermes instance's datadir. `prompt_buil
 
 ## 12. Notes
 
-- This usage guide describes the command surface for `v0.3.0`.
-- For release context, see [RELEASE_v0.3.0.md](RELEASE_v0.3.0.md).
+- This usage guide describes the current command surface.
+- For release context, see [RELEASE_latest.md](RELEASE_latest.md).
 - Shortcut: [USAGE_latest.md](USAGE_latest.md) always points at the current release.

@@ -786,11 +786,13 @@ class ClawCUService:
         # Read the gateway auth token from the env file.
         gateway_token = ""
         env_path = Path(record.datadir) / "env"
+        registry_url = "http://host.docker.internal:9100"
         if env_path.exists():
             for line in env_path.read_text().splitlines():
                 if line.startswith("OPENCLAW_TOKEN=") or line.startswith("HERMES_TOKEN="):
                     gateway_token = line.split("=", 1)[1].strip()
-                    break
+                elif line.startswith("A2A_REGISTRY_URL="):
+                    registry_url = line.split("=", 1)[1].strip() or registry_url
 
         spec = CompanionSpec(
             name=record.name,
@@ -803,6 +805,8 @@ class ClawCUService:
             agent_role=adapter.a2a_role,
             agent_skills=",".join(adapter.a2a_skills),
             adapter_port=a2a_internal_port,
+            registry_url=registry_url,
+            extra_hosts=[("host.docker.internal", "host-gateway")],
         )
         start_companion(self.docker, spec, record.container_name)
 
@@ -990,7 +994,7 @@ class ClawCUService:
         """
         if not getattr(record, "a2a_enabled", False):
             return None
-        from clawcu.a2a.card import bridge_port_for
+        from clawcu.a2a.card import plugin_port_candidates
 
         env: dict[str, str] = {}
         try:
@@ -1003,7 +1007,8 @@ class ClawCUService:
             # guarantees env_path exists for A2A instances.
             env = {}
 
-        bridge_port = bridge_port_for(record)
+        ports = plugin_port_candidates(record, service=self)
+        bridge_port = ports[-1] if ports else record.port
         hop_budget_raw = env.get("A2A_HOP_BUDGET", "").strip()
         try:
             hop_budget: int | None = int(hop_budget_raw) if hop_budget_raw else None

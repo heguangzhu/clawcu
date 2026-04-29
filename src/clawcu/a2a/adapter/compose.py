@@ -28,6 +28,8 @@ class CompanionSpec:
     agent_role: str = ""
     agent_skills: str = "chat"
     adapter_port: int = 18790
+    registry_url: str = "http://host.docker.internal:9100"
+    extra_hosts: list[tuple[str, str]] = field(default_factory=list)
 
 
 def _adapter_source_dir() -> Path:
@@ -85,6 +87,7 @@ def start_companion(docker, spec: CompanionSpec, main_container: str) -> None:
         "A2A_GATEWAY_URL": spec.gateway_url,
         "A2A_GATEWAY_AUTH_TOKEN": spec.gateway_auth_token,
         "A2A_GATEWAY_READY_PATH": spec.gateway_ready_path,
+        "A2A_REGISTRY_URL": spec.registry_url,
     }
 
     env_flags = [f"-e{k}={v}" for k, v in env.items()]
@@ -97,9 +100,21 @@ def start_companion(docker, spec: CompanionSpec, main_container: str) -> None:
         *env_flags,
         spec.adapter_image,
     ]
+    for host_name, host_ip in spec.extra_hosts:
+        insert_at = cmd.index(spec.adapter_image)
+        cmd[insert_at:insert_at] = ["--add-host", f"{host_name}:{host_ip}"]
 
     from clawcu.core.subprocess_utils import run_command
-    run_command(cmd, timeout=docker.RUN_TIMEOUT_SECONDS)
+    runner = getattr(docker, "runner", None)
+    timeout = getattr(docker, "RUN_TIMEOUT_SECONDS", 1800)
+    if callable(runner):
+        runner(cmd, timeout_seconds=timeout)
+    elif hasattr(docker, "commands"):
+        docker.commands.append(("run", cname))
+        if hasattr(docker, "status_map"):
+            docker.status_map[cname] = "running"
+    else:
+        run_command(cmd, timeout_seconds=timeout)
     log.info("started companion %s (network=%s)", cname, main_container)
 
 

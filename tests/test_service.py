@@ -300,6 +300,8 @@ def test_create_openclaw_without_a2a_hop_budget_does_not_set_env(temp_clawcu_hom
     env_path = service.store.instance_env_path("writer")
     values = service._load_env_file(env_path)
     assert "A2A_HOP_BUDGET" not in values
+    config = json.loads((datadir / "openclaw.json").read_text(encoding="utf-8"))
+    assert config["mcp"]["servers"]["a2a"] == {"url": "http://127.0.0.1:18790/mcp"}
 
 
 def test_create_service_rejects_hop_budget_without_a2a(temp_clawcu_home, tmp_path) -> None:
@@ -369,10 +371,10 @@ def test_inspect_instance_includes_a2a_defaults_when_enabled(temp_clawcu_home, t
     payload = service.inspect_instance("writer")
     a2a = payload["a2a"]
     assert a2a["enabled"] is True
-    assert a2a["port"] == 4000  # port (3000) + 1000
+    assert a2a["port"] == 3001
     assert a2a["hop_budget"] is None  # default path
     assert a2a["hop_budget_default"] == 8
-    assert a2a["mcp_url"] == "http://127.0.0.1:4000/mcp"
+    assert a2a["mcp_url"] == "http://127.0.0.1:3001/mcp"
     # Registry URL falls back to the container default; adapter may or
     # may not have written the explicit value to the env file.
     assert a2a["registry_url"].startswith("http://")
@@ -392,7 +394,7 @@ def test_inspect_instance_includes_a2a_explicit_hop_budget(temp_clawcu_home, tmp
     )
     payload = service.inspect_instance("writer")
     assert payload["a2a"]["hop_budget"] == 4
-    assert payload["a2a"]["mcp_url"] == "http://127.0.0.1:4000/mcp"
+    assert payload["a2a"]["mcp_url"] == "http://127.0.0.1:3001/mcp"
 
 
 def test_inspect_instance_reads_user_set_registry_url_from_env(temp_clawcu_home, tmp_path) -> None:

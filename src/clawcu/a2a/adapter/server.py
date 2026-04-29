@@ -8,9 +8,11 @@ from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
 from a2a.server.tasks import InMemoryTaskStore
 from starlette.applications import Starlette
+from starlette.routing import Route
 
 from .card import build_agent_card
 from .executor import GatewayExecutor
+from .mcp_bridge import handle_mcp
 
 log = logging.getLogger("clawcu-a2a-adapter")
 
@@ -29,6 +31,7 @@ def create_app() -> Starlette:
     routes = [
         *create_agent_card_routes(agent_card),
         *create_jsonrpc_routes(handler, rpc_url="/"),
+        Route("/mcp", handle_mcp, methods=["POST"]),
     ]
 
     return Starlette(routes=routes)

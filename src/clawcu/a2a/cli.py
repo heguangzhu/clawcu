@@ -97,7 +97,7 @@ def send_command(
         typer.Option(
             "--timeout",
             help=(
-                "Seconds to wait for the LLM reply (POST /a2a/send). "
+                "Seconds to wait for the LLM reply (A2A JSON-RPC message/send). "
                 "Does not affect the registry lookup; see --lookup-timeout. "
                 "Raise this for long agent turns (tool use, large outputs)."
             ),
@@ -131,5 +131,4 @@ def send_command(
         console.print(f"[bold red]Error:[/bold red] {exc}")
         raise typer.Exit(code=1)
     console.print_json(json.dumps(reply))
-
 

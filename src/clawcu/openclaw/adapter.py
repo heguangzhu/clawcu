@@ -219,6 +219,8 @@ class OpenClawAdapter(ServiceAdapter):
                 endpoints = http_cfg.setdefault("endpoints", {})
                 chat_completions = endpoints.setdefault("chatCompletions", {})
                 chat_completions["enabled"] = True
+                mcp_servers = config.setdefault("mcp", {}).setdefault("servers", {})
+                mcp_servers["a2a"] = {"url": f"http://127.0.0.1:{self.a2a_internal_port}/mcp"}
             config_path.write_text(
                 json.dumps(config, indent=2, ensure_ascii=False),
                 encoding="utf-8",

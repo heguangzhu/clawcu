@@ -264,6 +264,11 @@ class HermesAdapter(ServiceAdapter):
                 },
             }
             config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+        if getattr(record, "a2a_enabled", False):
+            config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            mcp_servers = config.setdefault("mcp", {}).setdefault("servers", {})
+            mcp_servers["a2a"] = {"url": f"http://127.0.0.1:{self.a2a_internal_port}/mcp"}
+            config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
         env_path = self.env_path(service, record)
         env_path.parent.mkdir(parents=True, exist_ok=True)
         env_values = service._load_env_file(env_path)
