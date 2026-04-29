@@ -380,6 +380,32 @@ def test_inspect_instance_includes_a2a_defaults_when_enabled(temp_clawcu_home, t
     assert a2a["registry_url"].startswith("http://")
 
 
+def test_a2a_companion_advertises_adapter_endpoint(temp_clawcu_home, tmp_path, monkeypatch) -> None:
+    service, _, _, _ = make_service(temp_clawcu_home)
+    captured = []
+
+    def fake_start_companion(docker, spec, main_container):
+        captured.append((spec, main_container))
+
+    monkeypatch.setattr("clawcu.core.service.start_companion", fake_start_companion)
+
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=3000,
+        cpu="1",
+        memory="2g",
+        a2a=True,
+        a2a_advertise_host="peer.local",
+    )
+
+    spec, main_container = captured[0]
+    assert main_container == "clawcu-openclaw-writer"
+    assert spec.agent_url == "http://peer.local:3001"
+    assert spec.gateway_auth_token
+
+
 def test_inspect_instance_includes_a2a_explicit_hop_budget(temp_clawcu_home, tmp_path) -> None:
     service, _, _, _ = make_service(temp_clawcu_home)
     service.create_openclaw(

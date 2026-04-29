@@ -106,10 +106,6 @@ def start_companion(docker, spec: CompanionSpec, main_container: str) -> None:
         *env_flags,
         spec.adapter_image,
     ]
-    for host_name, host_ip in spec.extra_hosts:
-        insert_at = cmd.index(spec.adapter_image)
-        cmd[insert_at:insert_at] = ["--add-host", f"{host_name}:{host_ip}"]
-
     from clawcu.core.subprocess_utils import run_command
     runner = getattr(docker, "runner", None)
     timeout = getattr(docker, "RUN_TIMEOUT_SECONDS", 1800)

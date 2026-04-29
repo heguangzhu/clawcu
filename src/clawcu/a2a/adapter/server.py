@@ -3,34 +3,89 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
-from a2a.server.request_handlers import DefaultRequestHandler
-from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
-from a2a.server.tasks import InMemoryTaskStore
+from a2a.server.routes import create_agent_card_routes
 from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from .card import build_agent_card
-from .executor import GatewayExecutor
+from .executor import _GATEWAY_AUTH_TOKEN, _call_gateway, _check_gateway_ready
 from .mcp_bridge import handle_mcp
 
 log = logging.getLogger("clawcu-a2a-adapter")
 
 
+def _rpc_error(rpc_id: Any, code: int, message: str) -> JSONResponse:
+    return JSONResponse(
+        {"jsonrpc": "2.0", "id": rpc_id, "error": {"code": code, "message": message}}
+    )
+
+
+def _extract_message_text(params: Any) -> str:
+    if not isinstance(params, dict):
+        return ""
+    message = params.get("message")
+    if not isinstance(message, dict):
+        return ""
+    parts = message.get("parts")
+    if not isinstance(parts, list):
+        return ""
+    text_parts: list[str] = []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        text = part.get("text")
+        if isinstance(text, str) and text:
+            text_parts.append(text)
+    return "\n".join(text_parts).strip()
+
+
+async def handle_jsonrpc(request: Request) -> JSONResponse:
+    try:
+        payload = await request.json()
+    except Exception:
+        return _rpc_error(None, -32700, "Parse error")
+
+    if not isinstance(payload, dict):
+        return _rpc_error(None, -32600, "Invalid request")
+
+    rpc_id = payload.get("id")
+    method = payload.get("method")
+    if method not in {"message/send", "SendMessage"}:
+        return _rpc_error(rpc_id, -32601, "Method not found")
+
+    text = _extract_message_text(payload.get("params"))
+    if not text:
+        return _rpc_error(rpc_id, -32602, "Empty message")
+
+    if not await _check_gateway_ready():
+        return _rpc_error(rpc_id, -32000, "Gateway not ready")
+
+    try:
+        reply = await _call_gateway(text, _GATEWAY_AUTH_TOKEN)
+    except Exception as exc:
+        log.exception("gateway call failed")
+        return _rpc_error(rpc_id, -32000, f"Gateway error: {exc}")
+
+    result = {
+        "id": f"task-{rpc_id}",
+        "status": {"state": "completed"},
+        "artifacts": [{"parts": [{"type": "text", "text": reply}]}],
+        "message": {"role": "agent", "parts": [{"type": "text", "text": reply}]},
+    }
+    return JSONResponse({"jsonrpc": "2.0", "id": rpc_id, "result": result})
+
+
 def create_app() -> Starlette:
     """Build the Starlette application with JSON-RPC and agent-card routes."""
     agent_card = build_agent_card()
-    executor = GatewayExecutor()
-    task_store = InMemoryTaskStore()
-    handler = DefaultRequestHandler(
-        agent_executor=executor,
-        task_store=task_store,
-        agent_card=agent_card,
-    )
 
     routes = [
         *create_agent_card_routes(agent_card),
-        *create_jsonrpc_routes(handler, rpc_url="/"),
+        Route("/", handle_jsonrpc, methods=["POST"]),
         Route("/mcp", handle_mcp, methods=["POST"]),
     ]
 

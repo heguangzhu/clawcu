@@ -180,6 +180,8 @@ def build_instance_record(spec: InstanceSpec, *, status: str, history: list[dict
         memory=spec.memory,
         auth_mode=spec.auth_mode,
         a2a_enabled=getattr(spec, "a2a_enabled", False),
+        a2a_advertise_host=getattr(spec, "a2a_advertise_host", None),
+        a2a_adapter_port=getattr(spec, "a2a_adapter_port", None),
         status=status,
         created_at=timestamp,
         updated_at=timestamp,

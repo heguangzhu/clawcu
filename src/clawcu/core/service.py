@@ -776,16 +776,18 @@ class ClawCUService:
     def _start_a2a_companion(self, record: InstanceRecord) -> None:
         """Start the A2A companion container for an A2A-enabled instance."""
         adapter = self.adapter_for_record(record)
+        from clawcu.a2a._util import resolve_advertise_host
+        from clawcu.a2a.card import plugin_endpoint_for
         from clawcu.a2a.adapter.compose import adapter_image_tag
 
         gateway_port = adapter.internal_port
         a2a_internal_port = adapter.a2a_internal_port
-        advertise_host = record.a2a_advertise_host or "127.0.0.1"
-        agent_url = f"http://{advertise_host}:{record.port}"
+        advertise_host = resolve_advertise_host(record)
+        agent_url = plugin_endpoint_for(record, service=self, host=advertise_host)
 
         # Read the gateway auth token from the env file.
         gateway_token = ""
-        env_path = Path(record.datadir) / "env"
+        env_path = adapter.env_path(self, record)
         registry_url = "http://host.docker.internal:9100"
         if env_path.exists():
             for line in env_path.read_text().splitlines():
@@ -793,6 +795,11 @@ class ClawCUService:
                     gateway_token = line.split("=", 1)[1].strip()
                 elif line.startswith("A2A_REGISTRY_URL="):
                     registry_url = line.split("=", 1)[1].strip() or registry_url
+        if not gateway_token:
+            try:
+                gateway_token = adapter.token(self, record.name)
+            except Exception:
+                gateway_token = ""
 
         spec = CompanionSpec(
             name=record.name,
@@ -1518,6 +1525,8 @@ class ClawCUService:
             dashboard_port=record.dashboard_port,
             image_tag_override=prepared_image,
             a2a_enabled=effective_a2a,
+            a2a_advertise_host=record.a2a_advertise_host,
+            a2a_adapter_port=record.a2a_adapter_port,
         )
         history = copy.deepcopy(record.history)
         history.append(

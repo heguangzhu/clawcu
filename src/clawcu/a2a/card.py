@@ -59,9 +59,12 @@ class AgentCard:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AgentCard":
-        if "supported_interfaces" in data:
+        interfaces = data.get("supported_interfaces")
+        if interfaces is None:
+            interfaces = data.get("supportedInterfaces")
+        if interfaces is not None:
             name = data.get("name")
-            interfaces = data.get("supported_interfaces") or []
+            interfaces = interfaces or []
             endpoint = ""
             if interfaces and isinstance(interfaces[0], dict):
                 endpoint = interfaces[0].get("url") or ""

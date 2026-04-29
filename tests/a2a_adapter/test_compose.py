@@ -1,7 +1,17 @@
 """Tests for clawcu.a2a.adapter.compose — companion container helpers."""
 
+from pathlib import Path
+
 import pytest
 from unittest.mock import MagicMock, patch
+
+
+def test_adapter_dockerfile_installs_after_package_sources_are_copied():
+    dockerfile = Path("src/clawcu/a2a/adapter/Dockerfile").read_text(encoding="utf-8")
+
+    assert dockerfile.index("COPY src/clawcu/ ./src/clawcu/") < dockerfile.index(
+        'RUN pip install --no-cache-dir ".[a2a]"'
+    )
 
 
 class TestCompanionHelpers:
@@ -54,3 +64,31 @@ class TestCompanionHelpers:
         docker.container_status.return_value = "running"
         assert companion_status(docker, "writer") == "running"
         docker.container_status.assert_called_once_with("clawcu-a2a-writer")
+
+    def test_start_companion_omits_add_host_with_container_network(self):
+        from clawcu.a2a.adapter.compose import CompanionSpec, start_companion
+
+        commands = []
+        docker = MagicMock()
+        docker.RUN_TIMEOUT_SECONDS = 30
+        docker.runner = lambda cmd, timeout_seconds: commands.append(cmd)
+
+        start_companion(
+            docker,
+            CompanionSpec(
+                name="writer",
+                instance_name="writer",
+                adapter_image="clawcu/a2a-adapter:test",
+                gateway_url="http://127.0.0.1:18789",
+                gateway_auth_token="",
+                gateway_ready_path="/healthz",
+                agent_url="http://127.0.0.1:18790",
+                extra_hosts=[("host.docker.internal", "host-gateway")],
+            ),
+            "clawcu-openclaw-writer",
+        )
+
+        command = commands[0]
+        assert "--network" in command
+        assert "container:clawcu-openclaw-writer" in command
+        assert "--add-host" not in command

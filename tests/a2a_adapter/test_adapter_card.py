@@ -65,3 +65,21 @@ def test_control_plane_card_accepts_standard_a2a_card():
     assert card.endpoint == "http://127.0.0.1:18800"
     assert card.role == "OpenClaw writer"
     assert card.skills == ["chat", "tools"]
+
+
+def test_control_plane_card_accepts_camel_case_a2a_card():
+    from clawcu.a2a.card import AgentCard
+
+    card = AgentCard.from_dict(
+        {
+            "name": "writer",
+            "description": "OpenClaw writer",
+            "supportedInterfaces": [
+                {"url": "http://127.0.0.1:18800", "protocolVersion": "0.1"}
+            ],
+            "skills": [{"name": "chat", "tags": ["drafting"]}],
+        }
+    )
+
+    assert card.endpoint == "http://127.0.0.1:18800"
+    assert card.skills == ["drafting", "chat"]
