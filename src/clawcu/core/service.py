@@ -1483,7 +1483,7 @@ class ClawCUService:
             adapter = self.adapter_for_record(record)
             prepared_image = adapter.prepare_artifact(record.version)
             if effective_a2a:
-                prepared_image = self._bake_a2a_image(record.service, record.version, prepared_image)
+                self._ensure_adapter_image(prepared_image)
         else:
             prepared_image = record.image_tag
             self.reporter(
@@ -1561,11 +1561,11 @@ class ClawCUService:
         elif prepare_artifact:
             prepared_image = adapter.prepare_artifact(spec.version)
             if effective_a2a:
-                prepared_image = self._bake_a2a_image(spec.service, spec.version, prepared_image)
+                self._ensure_adapter_image(prepared_image)
         else:
             prepared_image = spec.image_tag_override or image_tag_for_service(spec.service, spec.version)
             if effective_a2a:
-                prepared_image = a2a_image_tag(spec.service, spec.version, clawcu_version)
+                self._ensure_adapter_image(prepared_image)
             self.reporter(
                 f"Reusing the existing image tag {prepared_image} without re-running artifact preparation."
             )
