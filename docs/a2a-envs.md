@@ -2,7 +2,7 @@
 
 Canonical reference for every `A2A_*` / `HERMES_*` / `CLAWCU_A2A_*` env variable read anywhere in `src/clawcu/a2a/`. The three old sources (two sidecars' config/ctx constructors + Adapter injection + control-plane) are consolidated here so operators can grep one place. Review-2 §15.
 
-Scope legend: **CP** = control plane (`clawcu a2a` CLI, builder, registry). **HS** = Hermes sidecar. **OS** = OpenClaw sidecar. **Both** = identical semantics on both sidecars. **Adapter** = set by `a2a/adapter.py` into the container environment.
+Scope legend: **CP** = control plane (`clawcu a2a` CLI, builder, registry). **HS** = Hermes sidecar. **OS** = OpenClaw sidecar. **Both** = identical semantics on both sidecars. **Adapter** = set by `a2a/adapter.py` into the container environment. **Worker** = per-instance async task worker.
 
 ---
 
@@ -71,6 +71,27 @@ Scope legend: **CP** = control plane (`clawcu a2a` CLI, builder, registry). **HS
 | `A2A_REGISTRY_TOKEN` | "" | All | Optional bearer token. When set, the registry requires `Authorization: Bearer <token>` on reads, and clients send it automatically. |
 | `A2A_ALLOW_CLIENT_REGISTRY_URL` | `false` | Both | Whether `/a2a/outbound` accepts a client-supplied `registry_url` in the body. `false` = strict, safer default. |
 
+## Async tasks
+
+| Name | Default | Scope | Purpose |
+| --- | --- | --- | --- |
+| `A2A_ASYNC_ENABLED` | `false` | Adapter/Worker | Enables async `message/send` submission and exposes async MCP tools. When `false`, non-blocking JSON-RPC requests fail with a clear error and async MCP tools are hidden. |
+| `A2A_DEFAULT_MODE` | `sync` | Adapter | Default `message/send` mode when the request does not set `configuration.blocking` or `metadata.mode`. Valid values: `sync`, `async`. |
+| `A2A_REDIS_URL` | `redis://host.docker.internal:6379/0` | Adapter/Worker | Redis or Redis TLS DSN used for task snapshots, task event streams, and arq jobs. |
+| `A2A_QUEUE_NAME` | `clawcu:a2a:<instance>` | Adapter/Worker | Per-instance arq queue used by the adapter to enqueue work and by the worker to consume it. |
+| `A2A_ARQ_QUEUE_NAME` | — | Adapter/Worker | Backward-compatible alias for `A2A_QUEUE_NAME` only. Prefer `A2A_QUEUE_NAME`; if both are set, `A2A_QUEUE_NAME` wins. |
+| `A2A_TASK_WORKERS` | `4` | Worker | Maximum concurrent arq jobs for the per-instance worker. |
+| `A2A_TASK_DEADLINE_S` | `86400` | Worker | Worker job timeout in seconds. |
+| `A2A_TASK_RETAIN_S` | `86400` | Adapter/Worker | Retention/TTL for task snapshots, events, and worker results. |
+| `A2A_TASK_PROGRESS_INTERVAL_S` | `3` | Adapter | SSE heartbeat cadence while `/tasks/{task_id}/events` is idle. |
+| `A2A_TASK_EVENTS_IDLE_TIMEOUT_S` | `60` | Adapter | Idle timeout before an SSE task-events stream emits `end` and closes. |
+
+Deployment defaults:
+
+- Redis runs as a shared container named `clawcu-a2a-redis`.
+- Each A2A instance gets a worker container named `clawcu-a2a-worker-<instance>`.
+- The default queue is `clawcu:a2a:<instance>`.
+
 ## MCP tool description
 
 | Name | Default | Scope | Purpose |
@@ -119,5 +140,6 @@ Deprecated / legacy aliases kept for one release; prefer the `_SECONDS` names:
 - `A2A_REQUEST_TIMEOUT_MS` → `A2A_REQUEST_TIMEOUT_SECONDS`
 - `A2A_GATEWAY_READY_DEADLINE_MS` → `A2A_GATEWAY_READY_DEADLINE_S`
 - `A2A_NAME` / `A2A_ROLE` / `A2A_SKILLS` → `A2A_SELF_*`
+- `A2A_ARQ_QUEUE_NAME` → `A2A_QUEUE_NAME` (compatibility alias only)
 
 When two forms of the same knob are set, the `_SECONDS` form wins.

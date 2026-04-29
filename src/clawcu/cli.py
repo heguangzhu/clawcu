@@ -124,6 +124,10 @@ _HINT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(r"has no rollback snapshot"),
         "Run `clawcu rollback <name> --list` to see available rollback targets.",
     ),
+    (
+        re.compile(r"A2A Redis companion"),
+        "Check Docker status and `docker logs clawcu-a2a-redis` if the Redis companion container exists.",
+    ),
 )
 
 
@@ -2039,6 +2043,17 @@ def _print_inspect_human(payload: dict, *, reveal: bool, show_history: bool) -> 
         a2a_table.add_row(
             "Registry URL", str(a2a.get("registry_url") or "-")
         )
+        a2a_table.add_row(
+            "Async", "enabled" if a2a.get("async_enabled") else "disabled"
+        )
+        a2a_table.add_row("Default mode", str(a2a.get("default_mode") or "-"))
+        a2a_table.add_row("Redis URL", str(a2a.get("redis_url") or "-"))
+        a2a_table.add_row("Queue", str(a2a.get("queue_name") or "-"))
+        a2a_table.add_row("Redis status", str(a2a.get("redis_status") or "-"))
+        a2a_table.add_row("Worker status", str(a2a.get("worker_status") or "-"))
+        async_warning = a2a.get("async_warning")
+        if async_warning:
+            a2a_table.add_row("Warning", f"[yellow]{async_warning}[/yellow]")
         budget = a2a.get("hop_budget")
         default_budget = a2a.get("hop_budget_default", 8)
         if budget is None:

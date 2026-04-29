@@ -378,9 +378,43 @@ def test_inspect_instance_includes_a2a_defaults_when_enabled(temp_clawcu_home, t
     assert a2a["hop_budget"] is None  # default path
     assert a2a["hop_budget_default"] == 8
     assert a2a["mcp_url"] == "http://127.0.0.1:3001/mcp"
+    assert a2a["async_enabled"] is False
+    assert a2a["default_mode"] == "sync"
+    assert a2a["redis_url"] == "redis://host.docker.internal:6379/0"
+    assert a2a["queue_name"] == "clawcu:a2a:writer"
+    assert a2a["redis_status"] == "running"
+    assert a2a["worker_status"] == "running"
     # Registry URL falls back to the container default; adapter may or
     # may not have written the explicit value to the env file.
     assert a2a["registry_url"].startswith("http://")
+
+
+def test_inspect_instance_warns_when_async_companions_are_missing(
+    temp_clawcu_home, tmp_path
+) -> None:
+    service, docker, _, store = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=3000,
+        cpu="1",
+        memory="2g",
+        a2a=True,
+    )
+    store.instance_env_path("writer").write_text(
+        "A2A_ASYNC_ENABLED=true\n", encoding="utf-8"
+    )
+    docker.status_map.pop("clawcu-a2a-redis", None)
+    docker.status_map.pop("clawcu-a2a-worker-writer", None)
+
+    a2a = service.inspect_instance("writer")["a2a"]
+
+    assert a2a["async_enabled"] is True
+    assert a2a["redis_status"] == "missing"
+    assert a2a["worker_status"] == "missing"
+    assert "Redis companion is missing" in a2a["async_warning"]
+    assert "worker companion is missing" in a2a["async_warning"]
 
 
 def test_a2a_companion_advertises_adapter_endpoint(temp_clawcu_home, tmp_path, monkeypatch) -> None:
@@ -407,6 +441,131 @@ def test_a2a_companion_advertises_adapter_endpoint(temp_clawcu_home, tmp_path, m
     assert main_container == "clawcu-openclaw-writer"
     assert spec.agent_url == "http://peer.local:3001"
     assert spec.gateway_auth_token
+
+
+def test_a2a_companion_stack_starts_after_main_and_receives_async_env(
+    temp_clawcu_home, tmp_path, monkeypatch
+) -> None:
+    service, docker, _, store = make_service(temp_clawcu_home)
+    env_path = store.instance_env_path("writer")
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    env_path.write_text(
+        "\n".join(
+            [
+                "A2A_ASYNC_ENABLED=true",
+                "A2A_DEFAULT_MODE=async",
+                "A2A_REDIS_URL=redis://clawcu-a2a-redis:6379/2",
+                "A2A_QUEUE_NAME=custom-queue",
+                "A2A_TASK_WORKERS=6",
+                "A2A_TASK_DEADLINE_S=30",
+                "A2A_TASK_RETAIN_S=60",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    events = []
+
+    def fake_start_redis(docker, spec, main_container):
+        events.append(("redis", spec, main_container))
+        docker.commands.append(("run", "clawcu-a2a-redis"))
+        docker.status_map["clawcu-a2a-redis"] = "running"
+
+    def fake_start_companion(docker, spec, main_container):
+        events.append(("adapter", spec, main_container))
+        docker.commands.append(("run", "clawcu-a2a-writer"))
+        docker.status_map["clawcu-a2a-writer"] = "running"
+
+    def fake_start_worker(docker, spec, main_container):
+        events.append(("worker", spec, main_container))
+        docker.commands.append(("run", "clawcu-a2a-worker-writer"))
+        docker.status_map["clawcu-a2a-worker-writer"] = "running"
+
+    monkeypatch.setattr("clawcu.core.service.start_redis_companion", fake_start_redis)
+    monkeypatch.setattr("clawcu.core.service.start_companion", fake_start_companion)
+    monkeypatch.setattr("clawcu.core.service.start_worker_companion", fake_start_worker)
+
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=3000,
+        cpu="1",
+        memory="2g",
+        a2a=True,
+    )
+
+    assert [event[0] for event in events] == ["redis", "adapter", "worker"]
+    assert {event[2] for event in events} == {"clawcu-openclaw-writer"}
+    assert docker.commands.index(("run", "clawcu-openclaw-writer")) < docker.commands.index(
+        ("run", "clawcu-a2a-redis")
+    )
+    assert docker.commands.index(("run", "clawcu-a2a-redis")) < docker.commands.index(
+        ("run", "clawcu-a2a-writer")
+    )
+    assert docker.commands.index(("run", "clawcu-a2a-writer")) < docker.commands.index(
+        ("run", "clawcu-a2a-worker-writer")
+    )
+    adapter_spec = events[1][1]
+    worker_spec = events[2][1]
+    for spec in (adapter_spec, worker_spec):
+        assert spec.async_enabled is True
+        assert spec.default_mode == "async"
+        assert spec.redis_url == "redis://clawcu-a2a-redis:6379/2"
+        assert spec.queue_name == "custom-queue"
+        assert spec.task_workers == 6
+        assert spec.task_deadline_seconds == 30
+        assert spec.task_retain_seconds == 60
+
+
+def test_create_a2a_reports_actionable_error_when_redis_companion_fails(
+    temp_clawcu_home, tmp_path, monkeypatch
+) -> None:
+    service, _, _, store = make_service(temp_clawcu_home)
+
+    def fail_start_redis(*_args, **_kwargs):
+        raise RuntimeError("port is already allocated")
+
+    monkeypatch.setattr("clawcu.core.service.start_redis_companion", fail_start_redis)
+
+    with pytest.raises(RuntimeError, match="A2A Redis companion.*clawcu-a2a-redis"):
+        service.create_openclaw(
+            name="writer",
+            version="2026.4.1",
+            datadir=str(tmp_path / "writer"),
+            port=3000,
+            cpu="1",
+            memory="2g",
+            a2a=True,
+        )
+
+    stored = store.load_record("writer")
+    assert stored.status == "create_failed"
+    assert "Async A2A tasks require Redis" in stored.last_error
+
+
+def test_restart_a2a_reports_actionable_error_when_redis_companion_fails(
+    temp_clawcu_home, tmp_path, monkeypatch
+) -> None:
+    service, docker, _, _ = make_service(temp_clawcu_home)
+    service.create_openclaw(
+        name="writer",
+        version="2026.4.1",
+        datadir=str(tmp_path / "writer"),
+        port=3000,
+        cpu="1",
+        memory="2g",
+        a2a=True,
+    )
+    docker.status_map.pop("clawcu-a2a-redis", None)
+
+    def fail_start_redis(*_args, **_kwargs):
+        raise RuntimeError("docker unavailable")
+
+    monkeypatch.setattr("clawcu.core.service.start_redis_companion", fail_start_redis)
+
+    with pytest.raises(RuntimeError, match="A2A Redis companion.*clawcu-a2a-redis"):
+        service.restart_instance("writer")
 
 
 def test_inspect_instance_includes_a2a_explicit_hop_budget(temp_clawcu_home, tmp_path) -> None:

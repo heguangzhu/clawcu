@@ -1,5 +1,34 @@
 # A2A Async Plan: arq-backed Task Execution
 
+## Implementation Status
+
+Last updated: 2026-04-30
+
+Rapha loop Round 1 is complete and verified:
+
+- Added arq/sse dependencies under the `a2a` extra.
+- Added Redis task facade, arq worker, async JSON-RPC dispatch, task get/cancel/events routes, and gated async MCP tools.
+- Standardized queue env on `A2A_QUEUE_NAME`, with `A2A_ARQ_QUEUE_NAME` kept as a compatibility alias.
+- Standardized the queue model on `clawcu:a2a:<instance-name>`.
+- Standardized deployment on shared Redis container `clawcu-a2a-redis` and default `A2A_REDIS_URL=redis://host.docker.internal:6379/0`.
+- Integrated lifecycle start order: main service -> Redis -> HTTP adapter -> worker.
+- Verified with `uv run --extra a2a pytest tests/a2a_adapter tests/test_service.py` (`227 passed`).
+
+Rapha loop Round 2 is complete and verified:
+
+- Surface async/Redis/queue/worker status in `inspect`.
+- Update env/protocol docs and release notes.
+- Run CLI and Redis smoke verification.
+- Verified with `uv run --extra a2a pytest` (`509 passed`).
+- Redis smoke verified against `clawcu-a2a-redis`: task snapshots/events and worker completion round-trip through real Redis.
+
+Final rollout state:
+
+- Async remains opt-in via `A2A_ASYNC_ENABLED=true`.
+- Default JSON-RPC mode remains `sync`.
+- CLI task subcommands are deferred; HTTP task endpoints and MCP async tools are the supported operator/user surfaces for this rollout.
+- Local commit: `Add Redis-backed A2A async tasks`.
+
 ## Goal
 
 Replace the old baked-sidecar async task implementation with an arq-backed design for the current companion adapter model.

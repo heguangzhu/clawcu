@@ -10,7 +10,12 @@ import httpx
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from .tasks import config_from_env
+
 CALL_TOOL_NAME = "a2a_call_peer"
+CALL_ASYNC_TOOL_NAME = "a2a_call_peer_async"
+GET_TASK_TOOL_NAME = "a2a_get_task"
+CANCEL_TASK_TOOL_NAME = "a2a_cancel_task"
 LIST_TOOL_NAME = "a2a_list_peers"
 MCP_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_SEND_TIMEOUT_SECONDS = 86400.0
@@ -130,6 +135,14 @@ def _jsonrpc_endpoint(card: dict[str, Any]) -> str:
     return parsed._replace(path="", query="", fragment="").geturl()
 
 
+def _task_endpoint(jsonrpc_endpoint: str, task_id: str, *, cancel: bool = False) -> str:
+    parsed = urllib.parse.urlsplit(jsonrpc_endpoint)
+    task_path = f"/tasks/{urllib.parse.quote(task_id, safe='')}"
+    if cancel:
+        task_path += "/cancel"
+    return parsed._replace(path=task_path, query="", fragment="").geturl()
+
+
 def _skill_names(raw_skills: Any) -> list[str]:
     skills: list[str] = []
     if not isinstance(raw_skills, list):
@@ -185,6 +198,23 @@ async def _list_peers(arguments: dict[str, Any]) -> dict[str, Any]:
     return {"registry_url": registry_url, "peers": peers}
 
 
+async def _get_peer_card(
+    client: httpx.AsyncClient,
+    registry_url: str,
+    target: str,
+) -> dict[str, Any]:
+    quoted_target = urllib.parse.quote(target.strip(), safe="")
+    card_resp = await client.get(
+        f"{registry_url}/agents/{quoted_target}",
+        headers=_registry_headers(),
+    )
+    card_resp.raise_for_status()
+    card = card_resp.json()
+    if not isinstance(card, dict):
+        raise RuntimeError(f"registry card for {target!r} is malformed")
+    return card
+
+
 def _peers_text(peers: list[dict[str, Any]]) -> str:
     if not peers:
         return "No A2A peers are registered."
@@ -213,15 +243,7 @@ async def _call_peer(arguments: dict[str, Any]) -> dict[str, Any]:
     registry_url = _registry_url(arguments)
     sender = os.environ.get("A2A_AGENT_NAME", "agent")
     async with httpx.AsyncClient(timeout=timeout) as client:
-        quoted_target = urllib.parse.quote(target.strip(), safe="")
-        card_resp = await client.get(
-            f"{registry_url}/agents/{quoted_target}",
-            headers=_registry_headers(),
-        )
-        card_resp.raise_for_status()
-        card = card_resp.json()
-        if not isinstance(card, dict):
-            raise RuntimeError(f"registry card for {target!r} is malformed")
+        card = await _get_peer_card(client, registry_url, target)
         endpoint = _jsonrpc_endpoint(card)
         if not endpoint:
             raise ValueError(f"registry card for {target!r} has no endpoint")
@@ -235,6 +257,7 @@ async def _call_peer(arguments: dict[str, Any]) -> dict[str, Any]:
                     "role": "user",
                     "parts": [{"type": "text", "text": message}],
                 },
+                "configuration": {"blocking": True},
             },
         }
         send_resp = await client.post(endpoint, json=rpc_body)
@@ -256,6 +279,100 @@ async def _call_peer(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def _call_peer_async(arguments: dict[str, Any]) -> dict[str, Any]:
+    target = arguments.get("to")
+    message = arguments.get("message")
+    if not isinstance(target, str) or not target.strip():
+        raise ValueError("argument 'to' is required")
+    if not isinstance(message, str) or not message:
+        raise ValueError("argument 'message' is required")
+
+    timeout = _send_timeout(arguments)
+    registry_url = _registry_url(arguments)
+    sender = os.environ.get("A2A_AGENT_NAME", "agent")
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        card = await _get_peer_card(client, registry_url, target)
+        endpoint = _jsonrpc_endpoint(card)
+        if not endpoint:
+            raise ValueError(f"registry card for {target!r} has no endpoint")
+
+        rpc_body = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "message/send",
+            "params": {
+                "message": {
+                    "role": "user",
+                    "parts": [{"type": "text", "text": message}],
+                },
+                "configuration": {"blocking": False},
+            },
+        }
+        send_resp = await client.post(endpoint, json=rpc_body)
+        send_resp.raise_for_status()
+        payload = send_resp.json()
+        if isinstance(payload.get("error"), dict):
+            raise RuntimeError(payload["error"].get("message") or "peer returned JSON-RPC error")
+        result = payload.get("result") if isinstance(payload.get("result"), dict) else payload
+        if not isinstance(result, dict):
+            raise RuntimeError("peer returned malformed JSON-RPC result")
+
+    task_id = result.get("id") or result.get("taskId")
+    return {
+        "from": target,
+        "to": target,
+        "caller": sender,
+        "task_id": task_id if isinstance(task_id, str) else "",
+        "task": result,
+    }
+
+
+async def _get_task(arguments: dict[str, Any]) -> dict[str, Any]:
+    target = arguments.get("to")
+    task_id = arguments.get("task_id")
+    if not isinstance(target, str) or not target.strip():
+        raise ValueError("argument 'to' is required")
+    if not isinstance(task_id, str) or not task_id.strip():
+        raise ValueError("argument 'task_id' is required")
+
+    timeout = _send_timeout(arguments)
+    registry_url = _registry_url(arguments)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        card = await _get_peer_card(client, registry_url, target)
+        endpoint = _jsonrpc_endpoint(card)
+        if not endpoint:
+            raise ValueError(f"registry card for {target!r} has no endpoint")
+        task_resp = await client.get(_task_endpoint(endpoint, task_id.strip()))
+        task_resp.raise_for_status()
+        task = task_resp.json()
+        if not isinstance(task, dict):
+            raise RuntimeError("peer returned malformed task")
+    return {"from": target, "task_id": task_id.strip(), "task": task}
+
+
+async def _cancel_task(arguments: dict[str, Any]) -> dict[str, Any]:
+    target = arguments.get("to")
+    task_id = arguments.get("task_id")
+    if not isinstance(target, str) or not target.strip():
+        raise ValueError("argument 'to' is required")
+    if not isinstance(task_id, str) or not task_id.strip():
+        raise ValueError("argument 'task_id' is required")
+
+    timeout = _send_timeout(arguments)
+    registry_url = _registry_url(arguments)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        card = await _get_peer_card(client, registry_url, target)
+        endpoint = _jsonrpc_endpoint(card)
+        if not endpoint:
+            raise ValueError(f"registry card for {target!r} has no endpoint")
+        task_resp = await client.post(_task_endpoint(endpoint, task_id.strip(), cancel=True), json={})
+        task_resp.raise_for_status()
+        task = task_resp.json()
+        if not isinstance(task, dict):
+            raise RuntimeError("peer returned malformed task")
+    return {"from": target, "task_id": task_id.strip(), "task": task}
+
+
 def _tool_descriptor() -> dict[str, Any]:
     return {
         "name": CALL_TOOL_NAME,
@@ -274,6 +391,42 @@ def _tool_descriptor() -> dict[str, Any]:
     }
 
 
+def _async_tool_descriptor() -> dict[str, Any]:
+    return {
+        "name": CALL_ASYNC_TOOL_NAME,
+        "description": "Start an asynchronous call to another local A2A agent and return the task metadata.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Target agent name in the A2A registry."},
+                "message": {"type": "string", "description": "Message to send to the target agent."},
+                "registry_url": {"type": "string", "description": "Optional registry URL override."},
+                "timeout_seconds": {"type": "number", "description": "Optional request timeout; values below the adapter's 24h floor are ignored."},
+            },
+            "required": ["to", "message"],
+            "additionalProperties": False,
+        },
+    }
+
+
+def _task_tool_descriptor(name: str, description: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "description": description,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Target agent name in the A2A registry."},
+                "task_id": {"type": "string", "description": "Peer task id."},
+                "registry_url": {"type": "string", "description": "Optional registry URL override."},
+                "timeout_seconds": {"type": "number", "description": "Optional request timeout; values below the adapter's 24h floor are ignored."},
+            },
+            "required": ["to", "task_id"],
+            "additionalProperties": False,
+        },
+    }
+
+
 def _list_tool_descriptor() -> dict[str, Any]:
     return {
         "name": LIST_TOOL_NAME,
@@ -287,6 +440,20 @@ def _list_tool_descriptor() -> dict[str, Any]:
             "additionalProperties": False,
         },
     }
+
+
+def _tool_descriptors() -> list[dict[str, Any]]:
+    tools = [_tool_descriptor()]
+    if config_from_env().enabled:
+        tools.extend(
+            [
+                _async_tool_descriptor(),
+                _task_tool_descriptor(GET_TASK_TOOL_NAME, "Fetch an asynchronous A2A peer task by id."),
+                _task_tool_descriptor(CANCEL_TASK_TOOL_NAME, "Cancel an asynchronous A2A peer task by id."),
+            ]
+        )
+    tools.append(_list_tool_descriptor())
+    return tools
 
 
 async def handle_mcp(request: Request) -> Response:
@@ -313,17 +480,32 @@ async def handle_mcp(request: Request) -> Response:
     if method == "ping":
         return _rpc_result(rpc_id, {})
     if method == "tools/list":
-        return _rpc_result(rpc_id, {"tools": [_tool_descriptor(), _list_tool_descriptor()]})
+        return _rpc_result(
+            rpc_id,
+            {"tools": _tool_descriptors()},
+        )
     if method == "tools/call":
         params = payload.get("params") or {}
         if not isinstance(params, dict):
             return _rpc_error(rpc_id, -32602, "tool params must be an object")
         tool_name = params.get("name")
-        if tool_name not in {CALL_TOOL_NAME, LIST_TOOL_NAME}:
+        if tool_name not in {
+            CALL_TOOL_NAME,
+            CALL_ASYNC_TOOL_NAME,
+            GET_TASK_TOOL_NAME,
+            CANCEL_TASK_TOOL_NAME,
+            LIST_TOOL_NAME,
+        }:
             return _rpc_error(rpc_id, -32602, f"unknown tool: {params.get('name') if isinstance(params, dict) else None}")
         arguments = params.get("arguments") or {}
         if not isinstance(arguments, dict):
             return _rpc_error(rpc_id, -32602, "tool arguments must be an object")
+        if tool_name in {CALL_ASYNC_TOOL_NAME, GET_TASK_TOOL_NAME, CANCEL_TASK_TOOL_NAME} and not config_from_env().enabled:
+            return _rpc_error(
+                rpc_id,
+                -32000,
+                "async A2A tools are disabled; set A2A_ASYNC_ENABLED=true",
+            )
         if tool_name == LIST_TOOL_NAME:
             try:
                 structured = await _list_peers(arguments)
@@ -339,6 +521,53 @@ async def handle_mcp(request: Request) -> Response:
                 rpc_id,
                 {
                     "content": [{"type": "text", "text": _peers_text(structured["peers"])}],
+                    "isError": False,
+                    "structuredContent": structured,
+                },
+            )
+        if tool_name == CALL_ASYNC_TOOL_NAME:
+            try:
+                structured = await _call_peer_async(arguments)
+            except ValueError as exc:
+                return _rpc_error(rpc_id, -32602, str(exc))
+            except httpx.HTTPStatusError as exc:
+                return _rpc_error(
+                    rpc_id,
+                    -32000,
+                    f"HTTP error from A2A peer or registry: {exc.response.status_code}",
+                )
+            except Exception as exc:
+                return _rpc_error(rpc_id, -32000, str(exc) or exc.__class__.__name__)
+            text = f"Submitted task {structured['task_id']}" if structured["task_id"] else "Submitted asynchronous A2A task"
+            return _rpc_result(
+                rpc_id,
+                {
+                    "content": [{"type": "text", "text": text}],
+                    "isError": False,
+                    "structuredContent": structured,
+                },
+            )
+        if tool_name in {GET_TASK_TOOL_NAME, CANCEL_TASK_TOOL_NAME}:
+            try:
+                structured = await (_get_task(arguments) if tool_name == GET_TASK_TOOL_NAME else _cancel_task(arguments))
+            except ValueError as exc:
+                return _rpc_error(rpc_id, -32602, str(exc))
+            except httpx.HTTPStatusError as exc:
+                return _rpc_error(
+                    rpc_id,
+                    -32000,
+                    f"HTTP error from A2A peer or registry: {exc.response.status_code}",
+                )
+            except Exception as exc:
+                return _rpc_error(rpc_id, -32000, str(exc) or exc.__class__.__name__)
+            status = structured["task"].get("status")
+            text = f"Task {structured['task_id']}"
+            if isinstance(status, dict) and isinstance(status.get("state"), str):
+                text += f" is {status['state']}"
+            return _rpc_result(
+                rpc_id,
+                {
+                    "content": [{"type": "text", "text": text}],
                     "isError": False,
                     "structuredContent": structured,
                 },
