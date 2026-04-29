@@ -120,6 +120,8 @@ Open the web dashboard to see all instances, providers, and upgrade candidates a
 clawcu dashboard
 ```
 
+![Dashboard](docs/images/en.png)
+
 Make instances talk to each other with A2A (opt-in, `v0.3.0`):
 
 ```bash

@@ -120,6 +120,8 @@ clawcu config writer
 clawcu dashboard
 ```
 
+![Dashboard](docs/images/cn.png)
+
 用 A2A 让实例之间对话（opt-in，`v0.3.0`）：
 
 ```bash
