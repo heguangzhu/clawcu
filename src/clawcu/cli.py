@@ -1138,10 +1138,10 @@ _APPLY_AGENT_OPTION = typer.Option(
     help="Target agent name for --apply-provider. Defaults to main.",
 )
 _APPLY_PERSIST_OPTION = typer.Option(
-    "--apply-persist",
+    "--apply-persist/--no-apply-persist",
     help=(
         "When set with --apply-provider, also persist the provider secret into the "
-        "instance env file (matches `provider apply --persist`)."
+        "instance env file (default ON, matches `provider apply --persist`)."
     ),
 )
 _A2A_OPTION = typer.Option(
@@ -1464,10 +1464,10 @@ def apply_provider(
     persist: Annotated[
         bool,
         typer.Option(
-            "--persist",
-            help="Also persist the provider secret to the instance env file and write an env reference into root openclaw.json.",
+            "--persist/--no-persist",
+            help="Persist the provider secret to the instance env file (default ON). Pass --no-persist to keep the secret only in the runtime config files.",
         ),
-    ] = False,
+    ] = True,
     primary: Annotated[str | None, typer.Option("--primary", help="Set the agent primary model.")] = None,
     fallback: Annotated[
         list[str] | None,

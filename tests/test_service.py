@@ -903,9 +903,12 @@ def test_apply_provider_merges_bundle_into_agent_runtime_directory(temp_clawcu_h
     config_payload = json.loads((target_datadir / "openclaw.json").read_text(encoding="utf-8"))
     assert sorted(auth_payload["profiles"]) == ["anthropic:default", "openai:default"]
     assert sorted(models_payload["providers"]) == ["anthropic", "openai"]
-    assert models_payload["providers"]["openai"]["models"] == [{"id": "gpt-5", "name": "GPT-5"}]
+    # Canonical path enriches model objects with openclaw-required fields.
+    assert models_payload["providers"]["openai"]["models"][0]["id"] == "gpt-5"
+    assert models_payload["providers"]["openai"]["models"][0]["name"] == "GPT-5"
     assert sorted(config_payload["models"]["providers"]) == ["openai"]
-    assert config_payload["models"]["providers"]["openai"]["models"] == [{"id": "gpt-5", "name": "GPT-5"}]
+    assert config_payload["models"]["providers"]["openai"]["models"][0]["id"] == "gpt-5"
+    assert config_payload["models"]["providers"]["openai"]["models"][0]["name"] == "GPT-5"
     assert "apiKey" not in config_payload["models"]["providers"]["openai"]
     assert config_payload["agents"]["list"] == [
         {
