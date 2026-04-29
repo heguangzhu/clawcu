@@ -12,6 +12,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provider bundle provenance via `.clawcu-instance.json` metadata.
 - Active provider as a first-class field.
 
+### Added
+- **Dashboard Docker container** — `clawcu dashboard` now runs as a persistent Docker container instead of a local Python process:
+  - Auto-builds `clawcu-dashboard:<version>` image on first run.
+  - Container runs with `--restart unless-stopped` for always-on availability.
+  - Mounts `~/.clawcu`, `~/.openclaw`, `~/.hermes`, and `/var/run/docker.sock`.
+  - Publishes on `127.0.0.1:8765` by default (LAN-safe).
+  - New flags: `--stop`, `--restart`, `--status`, `--rebuild`.
+  - Dashboard actions (`open_cli`, `open_config`, `open_tui`) gracefully degrade inside the container with host-side command hints.
+  - Health endpoint (`/health`) for Docker HEALTHCHECK and startup polling.
+
+## [0.4.1] - 2026-04-29
+
+### Changed
+- **CLI redesign v1** — simplify surface for v0.4:
+  - `list` default no longer shows version footer; `--versions` is explicit opt-in.
+  - `token` / `approve` moved to `clawcu openclaw` subgroup (root hidden aliases with deprecation warning).
+  - Removed `pull` command (`create` auto-pulls via service layer).
+  - Removed `hermes identity set` (use `docker cp` / `exec` instead).
+  - Removed `a2a up` and `a2a bridge serve` (long-lived services belong in docker-compose/systemd).
+
+### Added
+- `tui` checks instance status before launch; stopped instances get explicit `clawcu start <name>` guidance instead of auto-start.
+- `remove` auto-stops running instances before removal (10s grace) when `--delete-data` is passed.
+- `logs --follow` sends ANSI reset (`\x1b[0m`) on KeyboardInterrupt to prevent terminal color pollution.
+- `getenv --table` renders grouped table output (A2A / Sensitive / General) with masking by default.
+- `setenv --reload` sends SIGHUP to the running container for best-effort hot reload without recreation.
+- `snapshots list` and `snapshots clean --keep-last N` subcommands for manual snapshot management.
+- Automatic snapshot pruning after successful `upgrade` (keeps last 10 per instance; history-referenced snapshots are never deleted).
+- `upgrade --list-versions` fallback message enhancement when remote registry is unreachable.
+- `config --help` now includes service-specific examples for OpenClaw and Hermes.
+
+### Security
+- A2A sidecar hardening (iter 17–22): scheme allow-list, redirect blocking, 4 MiB response caps, socket-level timeouts, Content-Length validation, oversized-body rejection.
+
 ## [0.3.22] - 2026-04-23
 
 ### Fixed

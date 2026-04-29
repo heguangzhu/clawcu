@@ -196,17 +196,43 @@ class ServiceAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def apply_provider(
+    def bundle_to_canonical(
         self,
         service: "ClawCUService",
         bundle: dict[str, object],
-        instance: str,
+    ) -> "CanonicalProvider":
+        """Read this service's native bundle shape into canonical form.
+
+        Raises ``ProviderTranslationError`` if the bundle is malformed
+        or missing required fields for this service.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def write_canonical(
+        self,
+        service: "ClawCUService",
+        canonical: "CanonicalProvider",
+        record: InstanceRecord,
         *,
         agent: str = "main",
-        primary: str | None = None,
-        fallbacks: list[str] | None = None,
         persist: bool = False,
+        dry_run: bool = False,
+        use_ai: bool = False,
     ) -> dict[str, str]:
+        """Render canonical into this service's instance files.
+
+        Returns a result dict (provider, instance, agent, runtime_dir or
+        config_path/env_path, env_key, persist, primary, fallbacks).
+        Raises ``IncompatibleCredentialError`` if canonical's auth_type
+        is unsupported by this service. When ``dry_run=True`` no files
+        are written; the result dict still lists planned paths so
+        ``plan_apply_provider`` can render them.
+
+        When ``use_ai=True`` the adapter may call an LLM to generate the
+        config instead of using hard-coded templates.  This is opt-in
+        because it requires the ``anthropic`` package and an API key.
+        """
         raise NotImplementedError
 
     @abstractmethod

@@ -141,42 +141,34 @@ def call_hermes(
 
     if not use_stream:
         with urllib.request.urlopen(req, timeout=cfg.timeout) as resp:
-            raw = _streams.read_capped_bytes(resp, cap=A2A_LOCAL_UPSTREAM_CAP).decode("utf-8")
-        payload = json.loads(raw)
-        try:
-            return payload["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise RuntimeError(
-                f"unexpected chat response shape: {payload!r}"
-            ) from exc
+            return _parse_nonstream_response(resp)
 
-    return _consume_chat_stream(
-        req,
-        timeout=cfg.timeout,
-        progress=progress,
-        progress_interval_s=progress_interval_s,
-    )
-
-
-def _consume_chat_stream(
-    req: urllib.request.Request,
-    *,
-    timeout: float,
-    progress: Callable[[str], None],
-    progress_interval_s: float,
-) -> str:
-    """Read an OpenAI-compat SSE stream, emitting periodic progress notes.
-
-    Iterates ``data: {...}`` lines, accumulates ``choices[0].delta.content``
-    deltas, and calls ``progress(text)`` no more often than every
-    ``progress_interval_s`` seconds. Total accumulated content is bounded by
-    ``A2A_LOCAL_UPSTREAM_CAP`` — a runaway stream raises ``RuntimeError``.
-    """
+    resp = urllib.request.urlopen(req, timeout=cfg.timeout)
+    # If the gateway ignored ``stream: true`` (some peers always reply with
+    # plain JSON), the SSE consumer would loop over a non-event body and
+    # silently return ``""``, completing the task with a blank reply. Detect
+    # the mismatch via Content-Type and parse as JSON instead so the peer
+    # result is preserved.
+    content_type = (resp.headers.get("Content-Type") or "").lower()
+    if "text/event-stream" not in content_type:
+        with resp:
+            return _parse_nonstream_response(resp)
     return _consume_chat_stream_from(
-        urllib.request.urlopen(req, timeout=timeout),
+        resp,
         progress=progress,
         progress_interval_s=progress_interval_s,
     )
+
+
+def _parse_nonstream_response(resp) -> str:
+    raw = _streams.read_capped_bytes(resp, cap=A2A_LOCAL_UPSTREAM_CAP).decode("utf-8")
+    payload = json.loads(raw)
+    try:
+        return payload["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(
+            f"unexpected chat response shape: {payload!r}"
+        ) from exc
 
 
 def _consume_chat_stream_from(
@@ -222,6 +214,14 @@ def _consume_chat_stream_from(
             resp.close()
         except Exception:  # noqa: BLE001
             pass
+    if not chunks:
+        # Stream ended with no usable content deltas — either the gateway
+        # advertised text/event-stream but produced nothing parseable, or
+        # every delta was empty. Refuse to silently complete with a blank
+        # reply; the worker will surface the failure to the caller.
+        raise RuntimeError(
+            "streaming chat response yielded no content"
+        )
     return "".join(chunks)
 
 

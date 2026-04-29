@@ -25,22 +25,6 @@ clawcu setup [--completion]
 
 检查 Docker CLI、Docker daemon 可达性、ClawCU home 与运行目录，并交互式配置默认 ClawCU home、OpenClaw image repo、Hermes image repo。
 
-### `clawcu pull openclaw`
-
-```
-clawcu pull openclaw --version <version>
-```
-
-预取官方 OpenClaw 镜像引用。本地缺失镜像时，`create` / `start` / `recreate` 会在需要时触发 Docker 下载。
-
-### `clawcu pull hermes`
-
-```
-clawcu pull hermes --version <tag>
-```
-
-从配置的 Hermes image repo 拉取对应 tag 的预构建镜像。
-
 ## 2. 实例创建
 
 ### `clawcu create openclaw`
@@ -256,7 +240,31 @@ clawcu tui <name> [--agent <agent>]
 
 启动原生交互流程。OpenClaw 用其 TUI，Hermes 用其交互 chat。
 
-## 6. 服务相关访问命令
+## 6. Dashboard
+
+### `clawcu dashboard`
+
+```
+clawcu dashboard [--host HOST] [--port PORT]
+                 [--open/--no-open]
+                 [--stop] [--restart] [--status] [--rebuild]
+```
+
+将 ClawCU dashboard 作为 Docker 容器在后台常驻运行和管理。
+
+- 默认（无 flag）— 确保 dashboard 镜像存在（首次运行自动构建），如未运行则启动容器，然后打开浏览器
+- `--stop` — 停止并删除 dashboard 容器
+- `--restart` — 停止后重新启动容器（配置变更后可用）
+- `--status` — 打印容器状态、镜像标签、URL 和健康检查
+- `--rebuild` — 强制重建 dashboard Docker 镜像（升级 ClawCU 后使用）
+- `--host` / `--port` — 控制 dashboard 发布的本地接口和端口（默认 `127.0.0.1:8765`）
+
+Dashboard 容器会挂载以下宿主机路径：
+- `~/.clawcu` → 容器内 StateStore 数据
+- `~/.openclaw` / `~/.hermes` → 本地实例检测
+- `/var/run/docker.sock` → 容器内省和日志读取
+
+## 7. 服务相关访问命令
 
 ### `clawcu token` _(仅 OpenClaw)_
 
@@ -442,31 +450,6 @@ clawcu a2a registry serve [--port 8765] [--host 127.0.0.1]
 ```
 
 跑聚合器：通过 HTTP 提供 `GET /agents`（数组）与 `GET /agents/<name>`（单张卡片），stdlib-only。一个进程服务 N 个实例。
-
-### `clawcu a2a bridge serve`
-
-```
-clawcu a2a bridge serve --instance <name>
-                        [--port <p>] [--host 127.0.0.1]
-                        [--mode echo]
-                        [--role <r>] [--skills <s1,s2>] [--endpoint <url>]
-```
-
-给一个实例跑本地 fallback：暴露 `/.well-known/agent-card.json` + `/a2a/send`。**仅用于 demo / 离线** —— 实例烤了 sidecar 之后，registry 直接联邦 sidecar 自己发的卡片，这个 bridge 用不着。
-
-- `--mode echo` —— 目前唯一模式；以固定文案回复。加新模式时可切换。
-- `--role` / `--skills` / `--endpoint` —— 对外卡片字段的覆盖。实例不受管（无记录）时三者都必填，才允许起虚拟 bridge。
-
-### `clawcu a2a up`
-
-```
-clawcu a2a up [--host 127.0.0.1] [--registry-port 8765]
-              [--probe-timeout 0.5] [--probe-attempts 3] [--probe-delay 1.0]
-```
-
-一条命令把 A2A 搞起来：探测每个运行中的受管实例是否有 sidecar 服务的卡片；没有的起 echo bridge；最后前台跑 registry。`Ctrl+C` 一把收干净。
-
-- `--probe-timeout` / `--probe-attempts` / `--probe-delay` —— sidecar 探测的每次 HTTP 超时与重试参数。
 
 ### `clawcu a2a send`
 

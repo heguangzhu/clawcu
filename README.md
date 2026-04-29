@@ -32,10 +32,22 @@
 - **Snapshots before every upgrade** — datadir and env both captured; `rollback` restores from real backups
 - **Clone-first experiments** — copy an instance, upgrade the copy, leave the original running
 - **Agent-to-agent messaging (`v0.3.0`)** — opt-in `--a2a` bakes an A2A v0 sidecar into the managed image, exposing `/.well-known/agent-card.json` + `POST /a2a/send` on a neighbor port. Stock instances are unaffected.
-- **Available versions with cache-aware refresh** — `clawcu list` is fast by default, and `clawcu list --no-cache` forces a fresh registry read when you want to see the latest tags now
+- **Available versions with cache-aware refresh** — `clawcu list --versions` shows upgrade candidates from the configured registries, served from a day-cache by default. Add `--no-cache` to force a fresh registry read when you want the latest tags now.
 
 ```text
 $ clawcu list
+┏━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━┓
+┃ NAME            ┃ SERVICE  ┃ VERSION   ┃ PORT  ┃ STATUS  ┃ ACCESS          ┃
+┡━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━┩
+│ writer          │ openclaw │ 2026.4.1  │ 18799 │ running │ 127.0.0.1:18799 │
+│ analyst         │ hermes   │ 2026.4.13 │ 9129  │ running │ 127.0.0.1:9129  │
+└─────────────────┴──────────┴───────────┴───────┴─────────┴─────────────────┘
+```
+
+Pass `--versions` to see available upgrade candidates (cached per day):
+
+```text
+$ clawcu list --versions
 ┏━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━┓
 ┃ NAME            ┃ SERVICE  ┃ VERSION   ┃ PORT  ┃ STATUS  ┃ ACCESS          ┃
 ┡━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━┩
@@ -76,7 +88,6 @@ clawcu setup
 Spin up an OpenClaw instance and open the TUI:
 
 ```bash
-clawcu pull openclaw --version 2026.4.1
 clawcu create openclaw --name writer --version 2026.4.1
 clawcu tui writer
 ```
@@ -93,7 +104,6 @@ clawcu create openclaw \
 Or spin up a Hermes instance with the same shape:
 
 ```bash
-clawcu pull hermes --version 2026.4.13
 clawcu create hermes --name analyst --version 2026.4.13
 clawcu tui analyst
 ```
@@ -104,19 +114,26 @@ Configure providers / models inside an instance via its service-native flow (Ope
 clawcu config writer
 ```
 
+Open the web dashboard to see all instances, providers, and upgrade candidates at a glance (runs as a persistent Docker container):
+
+```bash
+clawcu dashboard
+```
+
 Make instances talk to each other with A2A (opt-in, `v0.3.0`):
 
 ```bash
 clawcu create openclaw --name writer  --version 2026.4.12 --a2a
 clawcu create hermes   --name analyst --version 2026.4.13 --a2a
-clawcu a2a up                                             # registry + bridges, one command
+clawcu a2a registry serve                                 # start the discovery registry
 clawcu a2a send --to analyst --message "summarize yesterday"
 ```
 
-Need the versions footer to ignore today's cache and fetch fresh tags immediately?
+See what versions are available for upgrade (cached per day; add `--no-cache` to force a fresh fetch):
 
 ```bash
-clawcu list --no-cache
+clawcu list --versions
+clawcu list --versions --no-cache
 ```
 
 Deep-dive on the A2A sidecar (architecture, protocol, operations, troubleshooting): [docs/a2a-sidecar.md](docs/a2a-sidecar.md). For the full command reference (`list` / `inspect` / `exec` / `upgrade` / `provider` / `a2a` …), see [USAGE_latest.md](release/USAGE_latest.md).

@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
 
 from clawcu.core.service import ClawCUService
+
+
+def _is_in_docker() -> bool:
+    return os.environ.get("CLAWCU_IN_DOCKER") == "1"
 
 
 def _apple_script_escape(value: str) -> str:
@@ -35,17 +40,36 @@ def action_setup_check(service: ClawCUService) -> dict[str, Any]:
 
 
 def action_open_cli(service: ClawCUService) -> dict[str, Any]:
+    if _is_in_docker():
+        home = service.store.paths.home
+        return {
+            "ok": False,
+            "message": "Opening a terminal is not available inside the dashboard container.",
+            "output": f"Run this on the host: cd {shlex.quote(str(home))}",
+        }
     home = service.store.paths.home
     _open_terminal(f"cd {shlex.quote(str(home))}")
     return {"ok": True, "message": "Opened a local terminal in CLAWCU_HOME.", "output": f"cd {home}"}
 
 
 def action_open_config(service: ClawCUService, name: str) -> dict[str, Any]:
+    if _is_in_docker():
+        return {
+            "ok": False,
+            "message": "Opening a config editor is not available inside the dashboard container.",
+            "output": f"Run this on the host: clawcu config {shlex.quote(name)}",
+        }
     _open_terminal(f"cd {shlex.quote(str(Path.cwd()))} && clawcu config {shlex.quote(name)}")
     return {"ok": True, "message": f"Launched config for `{name}` in Terminal.", "output": f"clawcu config {name}"}
 
 
 def action_open_tui(service: ClawCUService, name: str) -> dict[str, Any]:
+    if _is_in_docker():
+        return {
+            "ok": False,
+            "message": "Opening a TUI is not available inside the dashboard container.",
+            "output": f"Run this on the host: clawcu tui {shlex.quote(name)}",
+        }
     _open_terminal(f"cd {shlex.quote(str(Path.cwd()))} && clawcu tui {shlex.quote(name)}")
     return {"ok": True, "message": f"Launched TUI for `{name}` in Terminal.", "output": f"clawcu tui {name}"}
 

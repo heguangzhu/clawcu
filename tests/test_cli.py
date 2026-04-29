@@ -109,7 +109,11 @@ class FakeService:
         self.store = SimpleNamespace(
             paths=SimpleNamespace(home=Path("/tmp/clawcu-test-home")),
             load_record=self._fake_load_record,
+            list_snapshots=self._fake_list_snapshots,
+            prune_snapshots=self._fake_prune_snapshots,
+            snapshot_env_path=self._fake_snapshot_env_path,
         )
+        self._snapshots: dict[str, list[Path]] = {}
         self.instance_statuses: dict[str, str] = {}
         self._missing_instance_names: set[str] = set()
         self._removed_instance_names: set[str] = set()
@@ -118,6 +122,20 @@ class FakeService:
         if name in self._missing_instance_names:
             raise FileNotFoundError(f"Instance '{name}' was not found.")
         return self._instance(name=name)
+
+    def _fake_list_snapshots(self, name: str) -> list[Path]:
+        return list(self._snapshots.get(name, []))
+
+    def _fake_prune_snapshots(self, name: str, *, keep: int = 10) -> list[Path]:
+        snaps = self._snapshots.get(name, [])
+        if len(snaps) <= keep:
+            return []
+        removed = snaps[:-keep]
+        self._snapshots[name] = snaps[-keep:]
+        return removed
+
+    def _fake_snapshot_env_path(self, snapshot_dir: Path) -> Path:
+        return snapshot_dir.with_name(f"{snapshot_dir.name}.env")
 
     def _record(self, method: str, *args, **kwargs) -> None:
         self.calls.append((method, args, kwargs))
@@ -334,7 +352,7 @@ class FakeService:
         *,
         primary: str | None = None,
         fallbacks: list[str] | None = None,
-        persist: bool = False,
+        persist: bool = True,
     ) -> dict:
         self._record(
             "apply_provider",
@@ -570,6 +588,12 @@ class FakeService:
         self._record("stop_instance", name=name, timeout=timeout)
         return self._instance(name=name)
 
+    def signal_instance(self, name: str, signal: str) -> None:
+        self._record("signal_instance", name=name, signal=signal)
+
+    def _prune_old_snapshots(self, name: str, keep: int = 10) -> list[Path]:
+        return self.store.prune_snapshots(name, keep=keep)
+
     def restart_instance(
         self,
         name: str,
@@ -794,28 +818,8 @@ class FakeService:
         self._record("remove_removed_instance", name=name)
 
 
-def test_pull_openclaw_command(monkeypatch) -> None:
-    service = FakeService()
-    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
-
-    result = runner.invoke(app, ["pull", "openclaw", "--version", "2026.4.1"])
-
-    assert result.exit_code == 0
-    assert "Built image" in result.stdout
-    assert "Starting OpenClaw image preparation" in result.stdout
-    assert service.pulled_versions == ["2026.4.1"]
 
 
-def test_pull_hermes_command(monkeypatch) -> None:
-    service = FakeService()
-    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
-
-    result = runner.invoke(app, ["pull", "hermes", "--version", "v0.9.0"])
-
-    assert result.exit_code == 0
-    assert "Built image" in result.stdout
-    assert "Starting Hermes image preparation" in result.stdout
-    assert service.calls[0] == ("pull_hermes", (), {"version": "v0.9.0"})
 
 
 def test_root_version_flag_prints_version() -> None:
@@ -848,13 +852,6 @@ def test_create_help_uses_service_language_and_lists_supported_services() -> Non
     assert "hermes" in result.stdout
 
 
-def test_pull_help_uses_service_language_and_lists_supported_services() -> None:
-    result = runner.invoke(app, ["pull", "--help"])
-
-    assert result.exit_code == 0
-    assert "pull [OPTIONS] SERVICE" in result.stdout
-    assert "openclaw" in result.stdout
-    assert "hermes" in result.stdout
 
 
 def test_root_help_lists_descriptions_for_top_level_commands() -> None:
@@ -867,15 +864,14 @@ def test_root_help_lists_descriptions_for_top_level_commands() -> None:
     assert "List managed instances." in result.stdout
     assert "inspect" in result.stdout
     assert "Show detailed state for a managed instance." in result.stdout
-    assert "token" in result.stdout
-    assert "Print the dashboard token for a managed instance." in result.stdout
+    # token/approve moved to `clawcu openclaw` in v0.4; no longer in root help.
+    assert "openclaw" in result.stdout
+    assert "OpenClaw-specific instance operations." in result.stdout
     assert "setup" in result.stdout
     assert "Check local prerequisites and configure the default ClawCU home" in result.stdout
     assert "and service image repos." in result.stdout
     assert "provider" in result.stdout
     assert "Collect and reuse model configuration assets" in result.stdout
-    assert "approve" in result.stdout
-    assert "Approve a pending browser pairing request for an instance." in result.stdout
     assert "config" in result.stdout
     assert "Run the native configuration flow inside a managed instance." in result.stdout
     assert "exec" in result.stdout
@@ -939,16 +935,6 @@ def test_provider_help_lists_subcommands() -> None:
     assert "remove" in result.stdout
     assert "Remove a collected provider directory." in result.stdout
     assert "models" in result.stdout
-
-
-def test_provider_models_help_is_a_leaf_command() -> None:
-    """v0.2: the trailing `list` level was removed — `provider models`
-    is now a direct leaf command that takes a provider name."""
-    result = runner.invoke(app, ["provider", "models", "--help"])
-
-    assert result.exit_code == 0
-    assert "List the models stored in a collected provider." in result.stdout
-    assert "NAME" in result.stdout
 
 
 def test_setup_command_reports_success(monkeypatch) -> None:
@@ -1196,25 +1182,13 @@ def test_exec_help_explains_passthrough_usage() -> None:
 
 def test_empty_service_groups_show_help_instead_of_error() -> None:
     create_result = runner.invoke(app, ["create"])
-    pull_result = runner.invoke(app, ["pull"])
     provider_result = runner.invoke(app, ["provider"])
 
     assert create_result.exit_code == 0
-    assert pull_result.exit_code == 0
     assert provider_result.exit_code == 0
     assert "create [OPTIONS] SERVICE" in create_result.stdout
-    assert "pull [OPTIONS] SERVICE" in pull_result.stdout
     assert "provider [OPTIONS] COMMAND [ARGS]..." in provider_result.stdout
     assert "Missing command" not in create_result.stdout
-    assert "Missing command" not in pull_result.stdout
-
-    # `provider models` is a leaf command that takes a provider name
-    # directly (v0.2 dropped the trailing `list` level). Bare invocation
-    # with no args shows help (exit 0) — the user is asking "what does
-    # this take?", not invoking.
-    provider_models_result = runner.invoke(app, ["provider", "models"])
-    assert provider_models_result.exit_code == 0
-    assert "Usage:" in provider_models_result.output
 
 
 def test_bare_invoke_with_required_params_shows_help() -> None:
@@ -1233,7 +1207,6 @@ def test_bare_invoke_with_required_params_shows_help() -> None:
         "token",
         "provider show",
         "provider remove",
-        "provider models",
         "start",
         "stop",
         "restart",
@@ -1320,20 +1293,15 @@ def test_list_command_defaults_to_managed_source(monkeypatch) -> None:
     assert result.exit_code == 0
     assert "ClawCU Instances" in result.stdout
     # Default no longer mixes local pseudo-instances into the table.
-    # The available-versions footer calls the service once more.
+    # Versions footer is off by default (requires --versions).
     assert service.calls == [
         ("list_instance_summaries", (), {"running_only": False}),
-        (
-            "list_service_available_versions",
-            (),
-            {"include_remote": True, "use_cache": True},
-        ),
     ]
-    assert "Available versions" in result.stdout
+    assert "Available versions" not in result.stdout
 
 
 def test_list_no_remote_flag_skips_registry_fetch(monkeypatch) -> None:
-    """`--no-remote` still calls the service method but passes include_remote=False.
+    """`--versions --no-remote` calls the service method with include_remote=False.
 
     The service method is responsible for interpreting the flag (no
     network I/O), so the CLI behavior is a one-argument flip.
@@ -1341,7 +1309,7 @@ def test_list_no_remote_flag_skips_registry_fetch(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
 
-    result = runner.invoke(app, ["list", "--no-remote"])
+    result = runner.invoke(app, ["list", "--versions", "--no-remote"])
 
     assert result.exit_code == 0
     assert (
@@ -1355,7 +1323,7 @@ def test_list_no_cache_flag_bypasses_available_versions_cache(monkeypatch) -> No
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
 
-    result = runner.invoke(app, ["list", "--no-cache"])
+    result = runner.invoke(app, ["list", "--versions", "--no-cache"])
 
     assert result.exit_code == 0
     assert (
@@ -1433,7 +1401,7 @@ def test_list_no_remote_footer_renders_as_dim_offline(monkeypatch) -> None:
     service.list_service_available_versions = offline_versions  # type: ignore[assignment]
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
 
-    result = runner.invoke(app, ["list", "--no-remote"])
+    result = runner.invoke(app, ["list", "--versions", "--no-remote"])
 
     assert result.exit_code == 0
     assert "offline (remote skipped by --no-remote)" in result.stdout
@@ -1481,7 +1449,7 @@ def test_list_footer_renders_yellow_on_actual_fetch_failure(monkeypatch) -> None
     service.list_service_available_versions = failing_versions  # type: ignore[assignment]
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
 
-    result = runner.invoke(app, ["list"])
+    result = runner.invoke(app, ["list", "--versions"])
 
     assert result.exit_code == 0
     assert "fetch failed: network unreachable" in result.stdout
@@ -1502,11 +1470,6 @@ def test_list_command_source_all_includes_local(monkeypatch) -> None:
         ("list_local_instance_summaries", (), {}),
         ("list_removed_instance_summaries", (), {}),
         ("list_instance_summaries", (), {"running_only": False}),
-        (
-            "list_service_available_versions",
-            (),
-            {"include_remote": True, "use_cache": True},
-        ),
     ]
 
 
@@ -1878,6 +1841,20 @@ def test_getenv_command_reveal_shows_raw_values(monkeypatch) -> None:
     assert "OPENAI_BASE_URL=https://api.example.com/v1" in result.stdout
 
 
+def test_getenv_command_table_groups_output(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["getenv", "writer", "--table"])
+
+    assert result.exit_code == 0
+    assert "OPENAI_API_KEY" in result.stdout
+    assert "OPENAI_BASE_URL" in result.stdout
+    assert "2 env var(s)" in result.stdout
+    # Sensitive values are masked in table mode too
+    assert "sk-test" not in result.stdout
+
+
 def test_unsetenv_command_removes_instance_environment(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
@@ -2037,6 +2014,32 @@ def test_setenv_dry_run_and_apply_are_mutually_exclusive(monkeypatch) -> None:
     assert not any(call[0] == "set_instance_env" for call in service.calls)
 
 
+def test_setenv_reload_sends_signal_and_is_mutually_exclusive_with_apply(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    # --reload and --apply are mutually exclusive
+    result = runner.invoke(
+        app,
+        ["setenv", "writer", "FOO=bar", "--reload", "--apply"],
+    )
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.stdout.lower() or "mutually exclusive" in (result.stderr or "").lower()
+
+    # --reload sends SIGHUP after writing env
+    result = runner.invoke(
+        app,
+        ["setenv", "writer", "FOO=bar", "--reload"],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert any(call[0] == "set_instance_env" for call in service.calls)
+    assert any(
+        call[0] == "signal_instance" and call[2].get("signal") == "SIGHUP"
+        for call in service.calls
+    )
+    assert "SIGHUP" in result.stdout
+
+
 def test_unsetenv_dry_run_previews_removals(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
@@ -2170,7 +2173,7 @@ def test_provider_apply_command_defaults_agent_to_main(monkeypatch) -> None:
             "provider": "openai-main",
             "instance": "writer",
             "agent": "main",
-            "persist": False,
+            "persist": True,
             "primary": None,
             "fallbacks": None,
         },
@@ -2192,7 +2195,7 @@ def test_provider_apply_command_accepts_explicit_agent(monkeypatch) -> None:
             "provider": "openai-main",
             "instance": "writer",
             "agent": "chat",
-            "persist": False,
+            "persist": True,
             "primary": None,
             "fallbacks": None,
         },
@@ -2231,7 +2234,7 @@ def test_provider_apply_command_accepts_primary_and_fallbacks(monkeypatch) -> No
             "provider": "openai-main",
             "instance": "writer",
             "agent": "chat",
-            "persist": False,
+            "persist": True,
             "primary": "openai/gpt-5",
             "fallbacks": ["anthropic/claude-sonnet-4.5", "openai/gpt-4.1"],
         },
@@ -2289,21 +2292,6 @@ def test_provider_remove_force_deletes_even_when_in_use(monkeypatch) -> None:
     assert result.exit_code == 0
     remove_calls = [c for c in service.calls if c[0] == "remove_provider"]
     assert remove_calls == [("remove_provider", (), {"name": "openai-main", "force": True})]
-
-
-def test_provider_models_list_command_forwards_arguments(monkeypatch) -> None:
-    """v0.2: `clawcu provider models <name>` replaces the older
-    `clawcu provider models list <name>` form — the trailing `list` level
-    was dropped per design review.
-    """
-    service = FakeService()
-    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
-
-    list_result = runner.invoke(app, ["provider", "models", "openai-main"])
-
-    assert list_result.exit_code == 0
-    assert "gpt-5" in list_result.stdout
-    assert service.calls[0] == ("list_provider_models", (), {"name": "openai-main"})
 
 
 def test_create_command_uses_defaults(monkeypatch) -> None:
@@ -2785,6 +2773,7 @@ def test_create_command_skips_recreate_when_apply_persist_off(monkeypatch) -> No
             "2026.4.1",
             "--apply-provider",
             "openai-main",
+            "--no-apply-persist",
         ],
     )
 
@@ -2799,7 +2788,7 @@ def test_create_command_skips_recreate_when_apply_persist_off(monkeypatch) -> No
 
 def test_create_command_surfaces_apply_provider_failure_without_aborting(monkeypatch) -> None:
     class FlakyService(FakeService):
-        def apply_provider(self, provider, instance, agent="main", *, persist=False, **kwargs):  # type: ignore[override]
+        def apply_provider(self, provider, instance, agent="main", *, persist=True, **kwargs):  # type: ignore[override]
             self._record("apply_provider", provider=provider, instance=instance, agent=agent, persist=persist)
             raise RuntimeError("collected bundle is invalid")
 
@@ -2899,11 +2888,6 @@ def test_list_local_option_filters_to_local(monkeypatch) -> None:
     assert result.exit_code == 0
     assert service.calls == [
         ("list_local_instance_summaries", (), {}),
-        (
-            "list_service_available_versions",
-            (),
-            {"include_remote": True, "use_cache": True},
-        ),
     ]
 
 
@@ -3839,10 +3823,21 @@ def test_remove_delete_data_and_keep_data_flags(monkeypatch) -> None:
 
     assert delete_result.exit_code == 0
     assert keep_result.exit_code == 0
-    assert service.calls[-2] == (
+    # remove now inspects the instance first (best-effort auto-stop if running)
+    assert service.calls[-4] == (
+        "inspect_instance",
+        (),
+        {"name": "writer"},
+    )
+    assert service.calls[-3] == (
         "remove_instance",
         (),
         {"name": "writer", "delete_data": True},
+    )
+    assert service.calls[-2] == (
+        "inspect_instance",
+        (),
+        {"name": "writer"},
     )
     assert service.calls[-1] == (
         "remove_instance",
@@ -3905,3 +3900,102 @@ def test_remove_removed_rejects_explicit_data_flags(monkeypatch) -> None:
     assert keep_result.exit_code == 1
     assert "--removed already implies permanent deletion" in keep_result.stdout
     assert all(call[0] != "remove_removed_instance" for call in service.calls)
+
+
+def test_snapshots_list_shows_instance_snapshots(monkeypatch) -> None:
+    service = FakeService()
+    service._snapshots["writer"] = [
+        Path("/tmp/clawcu/snapshots/writer/20260101T000000Z-upgrade-to-2026.4.1"),
+        Path("/tmp/clawcu/snapshots/writer/20260102T000000Z-upgrade-to-2026.4.2"),
+    ]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["snapshots", "list", "writer"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "writer" in result.stdout
+    assert "2 snapshot(s)" in result.stdout
+    assert "20260101T000000Z" in result.stdout
+
+
+def test_snapshots_list_all_instances_when_no_name_given(monkeypatch) -> None:
+    service = FakeService()
+    service._snapshots["writer"] = [Path("/tmp/clawcu/snapshots/writer/20260101T000000Z-upgrade")]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["snapshots", "list"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "1 total snapshot(s)" in result.stdout
+
+
+def test_snapshots_clean_prunes_old_snapshots(monkeypatch) -> None:
+    service = FakeService()
+    service._snapshots["writer"] = [
+        Path("/tmp/clawcu/snapshots/writer/20260101T000000Z-upgrade-to-2026.4.1"),
+        Path("/tmp/clawcu/snapshots/writer/20260102T000000Z-upgrade-to-2026.4.2"),
+        Path("/tmp/clawcu/snapshots/writer/20260103T000000Z-upgrade-to-2026.4.3"),
+    ]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["snapshots", "clean", "writer", "--keep-last", "1", "--yes"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Pruned 2 snapshot(s)" in result.stdout
+    assert len(service._snapshots["writer"]) == 1
+
+
+def test_upgrade_list_versions_fallback_shows_local_upgrade_hint(monkeypatch) -> None:
+    service = FakeService()
+
+    def _failing(name, *, include_remote=True):
+        service._record("list_upgradable_versions", name=name, include_remote=include_remote)
+        return {
+            "instance": name,
+            "service": "openclaw",
+            "image_repo": "ghcr.io/openclaw/openclaw",
+            "current_version": "2026.4.1",
+            "history": ["2026.4.1"],
+            "local_images": ["2026.4.1"],
+            "remote_versions": None,
+            "remote_error": "network error: timeout",
+            "remote_registry": "ghcr.io",
+            "remote_requested": True,
+        }
+
+    service.list_upgradable_versions = _failing  # type: ignore[method-assign]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["upgrade", "writer", "--list-versions"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "Fallback:" in result.stdout
+    assert " Showing local Docker images below." in result.stdout
+    assert "clawcu upgrade writer --version" in result.stdout
+
+
+def test_upgrade_list_versions_no_remote_shows_skip_note(monkeypatch) -> None:
+    service = FakeService()
+
+    def _offline(name, *, include_remote=True):
+        service._record("list_upgradable_versions", name=name, include_remote=include_remote)
+        return {
+            "instance": name,
+            "service": "openclaw",
+            "image_repo": "ghcr.io/openclaw/openclaw",
+            "current_version": "2026.4.1",
+            "history": ["2026.4.1"],
+            "local_images": ["2026.4.1"],
+            "remote_versions": None,
+            "remote_error": None,
+            "remote_registry": None,
+            "remote_requested": False,
+        }
+
+    service.list_upgradable_versions = _offline  # type: ignore[method-assign]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["upgrade", "writer", "--list-versions", "--no-remote"])
+
+    assert result.exit_code == 0, result.stdout
+    assert "skipped by --no-remote" in result.stdout

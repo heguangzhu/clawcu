@@ -32,10 +32,22 @@
 - **每次升级前自动快照** — datadir 与环境变量同步捕获；`rollback` 从真实备份恢复
 - **先克隆再实验** — 复制一份实例，在副本上升级，主实例原地不动
 - **Agent-to-agent 消息（`v0.3.0`）** — 创建时加 `--a2a`，把 A2A v0 sidecar 烤进受管镜像，在邻居端口上暴露 `/.well-known/agent-card.json` + `POST /a2a/send`。普通实例不受影响。
-- **Available versions 支持缓存刷新** — 默认 `clawcu list` 走按天缓存，需要立即看最新 tag 时用 `clawcu list --no-cache`
+- **Available versions 支持缓存刷新** — `clawcu list --versions` 显示可升级版本，默认走按天缓存；需要立即看最新 tag 时加 `--no-cache` 强制刷新
 
 ```text
 $ clawcu list
+┏━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━┓
+┃ NAME            ┃ SERVICE  ┃ VERSION   ┃ PORT  ┃ STATUS  ┃ ACCESS          ┃
+┡━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━┩
+│ writer          │ openclaw │ 2026.4.1  │ 18799 │ running │ 127.0.0.1:18799 │
+│ analyst         │ hermes   │ 2026.4.13 │ 9129  │ running │ 127.0.0.1:9129  │
+└─────────────────┴──────────┴───────────┴───────┴─────────┴─────────────────┘
+```
+
+加 `--versions` 查看可升级版本（默认按天缓存）：
+
+```text
+$ clawcu list --versions
 ┏━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━━┓
 ┃ NAME            ┃ SERVICE  ┃ VERSION   ┃ PORT  ┃ STATUS  ┃ ACCESS          ┃
 ┡━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━━┩
@@ -76,7 +88,6 @@ clawcu setup
 创建一个 OpenClaw 实例并进入 TUI：
 
 ```bash
-clawcu pull openclaw --version 2026.4.1
 clawcu create openclaw --name writer --version 2026.4.1
 clawcu tui writer
 ```
@@ -93,7 +104,6 @@ clawcu create openclaw \
 或者用同样的模式创建一个 Hermes 实例：
 
 ```bash
-clawcu pull hermes --version 2026.4.13
 clawcu create hermes --name analyst --version 2026.4.13
 clawcu tui analyst
 ```
@@ -104,19 +114,26 @@ clawcu tui analyst
 clawcu config writer
 ```
 
+打开 web dashboard，一览所有实例、provider 和可升级版本（以 Docker 容器常驻后台运行）：
+
+```bash
+clawcu dashboard
+```
+
 用 A2A 让实例之间对话（opt-in，`v0.3.0`）：
 
 ```bash
 clawcu create openclaw --name writer  --version 2026.4.12 --a2a
 clawcu create hermes   --name analyst --version 2026.4.13 --a2a
-clawcu a2a up                                             # 注册中心 + 桥接，一条命令
+clawcu a2a registry serve                                 # 启动发现注册中心
 clawcu a2a send --to analyst --message "summarize yesterday"
 ```
 
-如果你想忽略当天的 Available versions 缓存，立刻重新拉一遍 registry：
+查看当前有哪些版本可升级（默认按天缓存；加 `--no-cache` 强制重新拉取）：
 
 ```bash
-clawcu list --no-cache
+clawcu list --versions
+clawcu list --versions --no-cache
 ```
 
 A2A sidecar 深度指南（架构 / 协议 / 运维 / 排障）：[docs/a2a-sidecar.zh-CN.md](docs/a2a-sidecar.zh-CN.md)。完整命令参考（`list` / `inspect` / `exec` / `upgrade` / `provider` / `a2a` …）见 [USAGE_latest.zh-CN.md](release/USAGE_latest.zh-CN.md)。

@@ -77,6 +77,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path == "/workspace":
                 self._serve_bytes(_static_bytes(_workspace_page_name(lang)), "text/html; charset=utf-8")
                 return
+            if parsed.path == "/health":
+                self._json_response({"status": "ok", "service": "clawcu-dashboard"})
+                return
             if parsed.path == "/api/dashboard":
                 self._json_response(collect_dashboard(self.service))
                 return

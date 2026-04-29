@@ -18,7 +18,7 @@ import clawcu.cli as cli_module
 from clawcu import __version__ as clawcu_version
 from clawcu.cli import app
 from clawcu.dashboard.data import collect_dashboard
-from clawcu.dashboard.server import DashboardHandler
+from clawcu.dashboard.server import DashboardHandler, _dashboard_is_healthy
 
 runner = CliRunner()
 
@@ -47,7 +47,7 @@ def _make_empty_dashboard_service() -> MagicMock:
     return service
 
 
-def test_dashboard_help_mentions_port_and_browser_options() -> None:
+def test_dashboard_help_mentions_port_and_container_options() -> None:
     result = runner.invoke(app, ["dashboard", "--help"])
     output = _plain(result.stdout)
 
@@ -55,76 +55,113 @@ def test_dashboard_help_mentions_port_and_browser_options() -> None:
     assert "--host" in output
     assert "--port" in output
     assert "--open" in output
-    assert "--foreground" in output
+    assert "--stop" in output
+    assert "--restart" in output
+    assert "--status" in output
+    assert "--rebuild" in output
+
+
+def test_dashboard_status_shows_container_info(monkeypatch) -> None:
+    monkeypatch.setattr(
+        cli_module,
+        "_dashboard_container_info",
+        lambda: {
+            "State": {"Status": "running", "StartedAt": "2024-01-01T00:00:00Z"},
+            "Config": {"Image": "clawcu-dashboard:0.4.1"},
+        },
+    )
+    monkeypatch.setattr(cli_module, "_dashboard_is_healthy", lambda _: True)
+
+    result = runner.invoke(app, ["dashboard", "--status"])
+
+    assert result.exit_code == 0
+    assert "running" in result.output
+    assert "clawcu-dashboard:0.4.1" in result.output
+    assert "healthy" in result.output
+
+
+def test_dashboard_status_no_container(monkeypatch) -> None:
+    monkeypatch.setattr(cli_module, "_dashboard_container_info", lambda: None)
+
+    result = runner.invoke(app, ["dashboard", "--status"])
+
+    assert result.exit_code == 0
+    assert "not running" in result.output
+
+
+def test_dashboard_stop_removes_container(monkeypatch) -> None:
+    stops: list[list[str]] = []
+    monkeypatch.setattr(
+        cli_module.subprocess,
+        "run",
+        lambda cmd, **_: stops.append(cmd) or MagicMock(),
+    )
+
+    result = runner.invoke(app, ["dashboard", "--stop"])
+
+    assert result.exit_code == 0
+    assert any("stop" in c for c in stops)
+    assert any("rm" in c for c in stops)
+
+
+def test_dashboard_starts_container_when_healthy(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+    health_checks = iter([False, True])
+
+    monkeypatch.setattr(cli_module, "_docker_image_exists", lambda _: True)
+    monkeypatch.setattr(cli_module, "_dashboard_container_info", lambda: None)
+    monkeypatch.setattr(cli_module, "_dashboard_is_healthy", lambda _: next(health_checks))
+    monkeypatch.setattr(
+        cli_module,
+        "_start_dashboard_container",
+        lambda *args, **kwargs: calls.append(("start", args, kwargs)),
+    )
+    monkeypatch.setattr(cli_module.webbrowser, "open", lambda url: calls.append(("open", url)))
+    monkeypatch.setattr(cli_module.time, "sleep", lambda _: None)
+
+    result = runner.invoke(app, ["dashboard", "--no-open"])
+
+    assert result.exit_code == 0
+    assert any(c[0] == "start" for c in calls)
+    assert "running at http://127.0.0.1:8765" in result.output
+
+
+def test_dashboard_rebuild_triggers_build(monkeypatch) -> None:
+    calls: list[tuple[str, object]] = []
+
+    monkeypatch.setattr(cli_module, "_dashboard_container_info", lambda: None)
+    monkeypatch.setattr(cli_module, "_dashboard_is_healthy", lambda _: True)
+    monkeypatch.setattr(
+        cli_module,
+        "_build_dashboard_image",
+        lambda tag, root: calls.append(("build", tag, root)),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_start_dashboard_container",
+        lambda *args, **kwargs: calls.append(("start", args, kwargs)),
+    )
+    monkeypatch.setattr(cli_module.webbrowser, "open", lambda _: None)
+    monkeypatch.setattr(cli_module.time, "sleep", lambda _: None)
+
+    result = runner.invoke(app, ["dashboard", "--rebuild", "--no-open"])
+
+    assert result.exit_code == 0
+    assert any(c[0] == "build" for c in calls)
 
 
 def test_dashboard_prints_concise_error_without_traceback(monkeypatch) -> None:
-    def fail_dashboard(**_: object) -> None:
-        raise RuntimeError("Port 8765 is already in use.")
+    def fail_build(image_tag: str, project_root: Path) -> None:
+        raise RuntimeError("Docker daemon is not running.")
 
-    monkeypatch.setattr(cli_module, "serve_dashboard", fail_dashboard)
-
-    result = runner.invoke(app, ["dashboard", "--foreground"])
-
-    assert result.exit_code == 1
-    assert "Port 8765 is already in use." in result.output
-    assert "Traceback" not in result.output
-
-
-def test_dashboard_background_starts_and_opens_browser(monkeypatch) -> None:
-    calls: list[object] = []
-    health_checks = iter([False, True])
-
-    class DummyPopen:
-        def __init__(self, cmd, **kwargs):
-            calls.append(("popen", cmd, kwargs))
-
-    monkeypatch.setattr(cli_module, "_dashboard_is_healthy", lambda _: next(health_checks))
-    monkeypatch.setattr(cli_module.subprocess, "Popen", DummyPopen)
-    monkeypatch.setattr(cli_module.webbrowser, "open", lambda url: calls.append(("open", url)))
-    monkeypatch.setattr(cli_module.shutil, "which", lambda _: "/tmp/clawcu")
-    monkeypatch.setattr(cli_module.time, "sleep", lambda _: None)
+    monkeypatch.setattr(cli_module, "_docker_image_exists", lambda _: False)
+    monkeypatch.setattr(cli_module, "_build_dashboard_image", fail_build)
 
     result = runner.invoke(app, ["dashboard"])
 
-    assert result.exit_code == 0
-    assert "ClawCU dashboard is running at http://127.0.0.1:8765" in result.output
-    assert calls[0][0] == "popen"
-    assert calls[0][1] == [
-        "/tmp/clawcu",
-        "dashboard",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "8765",
-        "--foreground",
-        "--no-open",
-    ]
-    assert calls[1] == ("open", "http://127.0.0.1:8765")
-
-
-def test_dashboard_foreground_uses_current_terminal(monkeypatch) -> None:
-    recorded: list[tuple[str, object]] = []
-
-    monkeypatch.setattr(
-        cli_module,
-        "serve_dashboard",
-        lambda **kwargs: recorded.append(("serve", kwargs)),
-    )
-
-    result = runner.invoke(app, ["dashboard", "--foreground", "--no-open"])
-
-    assert result.exit_code == 0
-    assert recorded == [
-        (
-            "serve",
-            {
-                "host": "127.0.0.1",
-                "port": 8765,
-                "open_browser": False,
-            },
-        )
-    ]
+    assert result.exit_code == 1
+    assert "Docker daemon is not running." in result.output
+    assert "Traceback" not in result.output
 
 
 def test_collect_dashboard_env_reports_real_clawcu_version() -> None:

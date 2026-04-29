@@ -22,7 +22,7 @@ from typer.main import get_command
 
 from clawcu import __version__
 from clawcu.a2a.cli import a2a_app
-from clawcu.dashboard.server import _dashboard_is_healthy, serve_dashboard
+from clawcu.dashboard.server import _dashboard_is_healthy
 from clawcu.core.registry import is_semver_release_tag
 from clawcu.service import ClawCUService
 
@@ -58,20 +58,6 @@ app = typer.Typer(
     rich_markup_mode="markdown",
     add_completion=False,
 )
-pull_app = typer.Typer(
-    help=(
-        "Pull and build managed services.\n\n"
-        "**Examples:**\n\n"
-        "```\n"
-        "clawcu pull openclaw --version 2026.4.15\n"
-        "clawcu pull hermes --version 2026.4.13\n"
-        "clawcu pull --service openclaw --version 2026.4.15  # alt form\n"
-        "```"
-    ),
-    rich_markup_mode="markdown",
-    subcommand_metavar="SERVICE",
-    add_completion=False,
-)
 create_app = typer.Typer(
     help=(
         "Create managed services.\n\n"
@@ -90,22 +76,21 @@ provider_app = typer.Typer(
     help="Collect and reuse model configuration assets from managed instances and local homes.",
     add_completion=False,
 )
-hermes_app = typer.Typer(
-    help="Hermes-specific instance operations.",
+openclaw_app = typer.Typer(
+    help="OpenClaw-specific instance operations.",
     subcommand_metavar="COMMAND",
     add_completion=False,
 )
-hermes_identity_app = typer.Typer(
-    help="Manage the SOUL.md persona file for a hermes instance.",
-    subcommand_metavar="ACTION",
-    add_completion=False,
-)
-hermes_app.add_typer(hermes_identity_app, name="identity")
-app.add_typer(pull_app, name="pull", rich_help_panel="Setup")
 app.add_typer(create_app, name="create", rich_help_panel="Lifecycle")
 app.add_typer(provider_app, name="provider", rich_help_panel="Providers")
-app.add_typer(hermes_app, name="hermes", rich_help_panel="Lifecycle")
+app.add_typer(openclaw_app, name="openclaw", rich_help_panel="Service-Specific")
 app.add_typer(a2a_app, name="a2a", rich_help_panel="A2A")
+
+snapshots_app = typer.Typer(
+    help="List and clean instance upgrade/rollback snapshots.",
+    add_completion=False,
+)
+app.add_typer(snapshots_app, name="snapshots", rich_help_panel="Lifecycle")
 console = Console()
 _DISPLAY_DATE_RE = re.compile(r"(\d{4}\.\d{1,2}\.\d{1,2})")
 
@@ -565,6 +550,7 @@ _API_KEY_STATE_LABELS = {
     "env-ref": "[cyan]env-ref[/cyan] = ${ENV_VAR} placeholder",
     "empty": "[yellow]empty[/yellow] = source had the field but it was blank",
     "missing": "unset = no apiKey field in the source",
+    "oauth": "[blue]oauth[/blue] = OAuth-based authentication",
 }
 
 
@@ -595,6 +581,8 @@ def _provider_api_key_cell(
             return "- [dim](empty)[/dim]"
         if state == "missing":
             return "- [dim](unset)[/dim]"
+        if state == "oauth":
+            return "- [dim](oauth)[/dim]"
         if state == "env-ref":
             # raw_key should not normally be blank when the state is
             # env-ref, but guard for the pathological case.
@@ -606,6 +594,8 @@ def _provider_api_key_cell(
         return "[yellow]empty[/yellow]"
     if state == "missing":
         return "[dim]unset[/dim]"
+    if state == "oauth":
+        return "[blue]oauth[/blue]"
     if state == "set":
         return "[green]set[/green]" if not wide else (_mask_secret(raw_key) or "-")
     # Fallback: derive from raw_key alone (used by tests that predate
@@ -615,6 +605,24 @@ def _provider_api_key_cell(
     if _API_KEY_ENV_REF.match(raw_key.strip()):
         return "[cyan]env-ref[/cyan]"
     return "[green]set[/green]" if not wide else (_mask_secret(raw_key) or "-")
+
+
+def _format_in_use(in_use: list[dict[str, str]] | None) -> str:
+    if not in_use:
+        return "-"
+    parts: list[str] = []
+    for row in in_use:
+        instance = row.get("instance") or ""
+        agent = row.get("agent") or ""
+        if instance == "local":
+            parts.append("local")
+        elif instance and agent and agent != "main":
+            parts.append(f"{instance}/{agent}")
+        elif instance:
+            parts.append(instance)
+        else:
+            parts.append(agent)
+    return ", ".join(parts)
 
 
 def _print_provider_stacked(records: list[dict], *, reveal: bool) -> None:
@@ -646,6 +654,7 @@ def _print_provider_stacked(records: list[dict], *, reveal: bool) -> None:
         detail.add_row("  endpoint", record.get("endpoint") or "-")
         models = record.get("models") or []
         detail.add_row("  models", ", ".join(models) if models else "-")
+        detail.add_row("  in_use", _format_in_use(record.get("in_use")))
         console.print(detail)
         if idx != len(records) - 1:
             console.print()
@@ -704,6 +713,7 @@ def _print_provider_table(records: list[dict], *, wide: bool = False, reveal: bo
     if effective_wide:
         table.add_column("ENDPOINT", overflow="fold")
     table.add_column("MODELS", overflow="fold")
+    table.add_column("IN_USE", overflow="fold")
     for record in records:
         raw_key = str(record.get("api_key") or "")
         state = record.get("api_key_state")
@@ -724,6 +734,7 @@ def _print_provider_table(records: list[dict], *, wide: bool = False, reveal: bo
         if effective_wide:
             row.append(record.get("endpoint") or "-")
         row.append(models_cell)
+        row.append(_format_in_use(record.get("in_use")))
         table.add_row(*row)
     console.print(table)
     # Legend line — only print it when the table actually uses one of
@@ -763,6 +774,104 @@ def _detect_shell_name() -> str | None:
     if shell_name in {"zsh", "bash", "fish"}:
         return shell_name
     return None
+
+
+def _dashboard_image_tag(version: str) -> str:
+    return f"clawcu-dashboard:{version}"
+
+
+def _dashboard_container_name() -> str:
+    return "clawcu-dashboard"
+
+
+def _find_project_root() -> Path:
+    """Return the project root directory (where pyproject.toml lives)."""
+    # clawcu package is under src/clawcu/; go up two levels.
+    pkg_dir = Path(__file__).parent
+    return pkg_dir.parent.parent
+
+
+def _docker_image_exists(image_tag: str) -> bool:
+    try:
+        subprocess.run(
+            ["docker", "image", "inspect", image_tag],
+            capture_output=True,
+            check=True,
+        )
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
+def _build_dashboard_image(image_tag: str, project_root: Path) -> None:
+    typer.echo(f"Building dashboard image {image_tag}...")
+    dockerfile = project_root / "src" / "clawcu" / "dashboard" / "Dockerfile"
+    subprocess.run(
+        ["docker", "build", "-f", str(dockerfile), "-t", image_tag, "."],
+        cwd=project_root,
+        check=True,
+    )
+    typer.echo(f"Dashboard image {image_tag} built.")
+
+
+def _dashboard_container_info() -> dict | None:
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", _dashboard_container_name(), "--format", "{{json .}}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return json.loads(result.stdout)
+    except (subprocess.CalledProcessError, FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def _start_dashboard_container(host: str, port: int, image_tag: str) -> None:
+    container_name = _dashboard_container_name()
+    clawcu_home = os.environ.get("CLAWCU_HOME") or str(Path.home() / ".clawcu")
+    home = Path.home()
+    openclaw_home = str(home / ".openclaw")
+    hermes_home = str(home / ".hermes")
+    cmd = [
+        "docker",
+        "run",
+        "-d",
+        "--name",
+        container_name,
+        "--restart",
+        "unless-stopped",
+        "--label",
+        "com.clawcu.managed=true",
+        "--label",
+        "com.clawcu.component=dashboard",
+        "-p",
+        f"{host}:{port}:8765",
+        "-v",
+        f"{clawcu_home}:/root/.clawcu",
+        "-v",
+        f"{openclaw_home}:/root/.openclaw",
+        "-v",
+        f"{hermes_home}:/root/.hermes",
+        "-v",
+        "/var/run/docker.sock:/var/run/docker.sock",
+        "--add-host",
+        "host.docker.internal:host-gateway",
+        image_tag,
+    ]
+    subprocess.run(cmd, check=True)
+
+
+def _stop_dashboard_container() -> None:
+    container_name = _dashboard_container_name()
+    subprocess.run(
+        ["docker", "stop", "--time", "5", container_name],
+        capture_output=True,
+    )
+    subprocess.run(
+        ["docker", "rm", "-f", container_name],
+        capture_output=True,
+    )
 
 
 def _completion_check(service: ClawCUService) -> dict[str, str | bool]:
@@ -926,7 +1035,7 @@ def root_callback(
         typer.Option(
             "--json",
             help=(
-                "Emit machine-readable JSON where supported (list, inspect, token, getenv, provider list/models). "
+                "Emit machine-readable JSON where supported (list, inspect, token, getenv, provider list). "
                 "Also accepted as a per-command flag (e.g. `clawcu inspect <name> --json`)."
             ),
         ),
@@ -1053,24 +1162,6 @@ def setup_environment(
 _KNOWN_SERVICES = ("openclaw", "hermes")
 
 
-def _do_pull(service_name: str, version: str) -> None:
-    if service_name not in _KNOWN_SERVICES:
-        _exit_with_error(
-            f"Unknown service '{service_name}'. Expected one of: {', '.join(_KNOWN_SERVICES)}."
-        )
-    service = get_service()
-    if hasattr(service, "set_reporter"):
-        service.set_reporter(_print_progress)
-    try:
-        if service_name == "openclaw":
-            image_tag = service.pull_openclaw(version)
-        else:
-            image_tag = service.pull_hermes(version)
-    except Exception as exc:
-        _exit_with_error(str(exc))
-    console.print(f"[green]Built image:[/green] {image_tag}")
-
-
 def _do_create(
     service_name: str,
     *,
@@ -1158,28 +1249,6 @@ def _do_create(
     _print_access_url(service, record.name)
 
 
-@pull_app.callback(invoke_without_command=True)
-def pull_callback(
-    ctx: typer.Context,
-    service: Annotated[
-        str | None,
-        typer.Option("--service", help=f"Service name ({' | '.join(_KNOWN_SERVICES)}). Unified alternative to the 'clawcu pull <service>' subcommand form."),
-    ] = None,
-    version: Annotated[
-        str | None,
-        typer.Option("--version", help="Service version or git ref."),
-    ] = None,
-) -> None:
-    if ctx.invoked_subcommand is not None:
-        return
-    if service:
-        if not version:
-            _exit_with_error("--service requires --version.")
-        _do_pull(service, version)
-        return
-    _show_help_and_exit(ctx)
-
-
 _APPLY_PROVIDER_OPTION = typer.Option(
     "--apply-provider",
     help=(
@@ -1193,10 +1262,10 @@ _APPLY_AGENT_OPTION = typer.Option(
     help="Target agent name for --apply-provider. Defaults to main.",
 )
 _APPLY_PERSIST_OPTION = typer.Option(
-    "--apply-persist",
+    "--apply-persist/--no-apply-persist",
     help=(
         "When set with --apply-provider, also persist the provider secret into the "
-        "instance env file (matches `provider apply --persist`)."
+        "instance env file (default ON, matches `provider apply --persist`)."
     ),
 )
 _A2A_OPTION = typer.Option(
@@ -1296,20 +1365,6 @@ def provider_callback(ctx: typer.Context) -> None:
         _show_help_and_exit(ctx)
 
 
-@pull_app.command("openclaw", rich_help_panel=_PANEL_SETUP)
-def pull_openclaw(
-    version: Annotated[str, typer.Option("--version", help="OpenClaw version to pull.")],
-) -> None:
-    _do_pull("openclaw", version)
-
-
-@pull_app.command("hermes", rich_help_panel=_PANEL_SETUP)
-def pull_hermes(
-    version: Annotated[str, typer.Option("--version", help="Hermes git ref to pull and build.")],
-) -> None:
-    _do_pull("hermes", version)
-
-
 @create_app.command("openclaw", rich_help_panel=_PANEL_LIFECYCLE)
 def create_openclaw(
     name: Annotated[str, typer.Option("--name", help="Managed instance name.")],
@@ -1399,35 +1454,6 @@ def create_hermes(
         apply_provider=apply_provider,
         apply_agent=apply_agent,
         apply_persist=apply_persist,
-    )
-
-
-@hermes_identity_app.command(
-    "set",
-    help=(
-        "Install a file as the persona (SOUL.md) for a hermes instance.\n\n"
-        "The file is copied into the instance's datadir where the container's "
-        "HERMES_HOME mount makes it `$HERMES_HOME/SOUL.md`. Hermes "
-        "re-reads it on every chat turn — no restart required."
-    ),
-)
-def hermes_identity_set(
-    name: Annotated[str, typer.Argument(help="Managed hermes instance name.")],
-    source: Annotated[str, typer.Argument(help="Path to a local markdown/text file.")],
-) -> None:
-    service = get_service()
-    try:
-        result = service.set_hermes_identity(name, source)
-    except ValueError as exc:
-        _exit_with_error(str(exc))
-    except FileNotFoundError as exc:
-        _exit_with_error(str(exc))
-    console.print(
-        f"[green]Installed persona[/green] for [bold]{result['instance']}[/bold]: "
-        f"{result['source']} -> {result['target']} ({result['bytes']} bytes)."
-    )
-    console.print(
-        "[dim]Next chat turn will pick it up automatically; no restart needed.[/dim]"
     )
 
 
@@ -1562,10 +1588,10 @@ def apply_provider(
     persist: Annotated[
         bool,
         typer.Option(
-            "--persist",
-            help="Also persist the provider secret to the instance env file and write an env reference into root openclaw.json.",
+            "--persist/--no-persist",
+            help="Persist the provider secret to the instance env file (default ON). Pass --no-persist to keep the secret only in the runtime config files.",
         ),
-    ] = False,
+    ] = True,
     primary: Annotated[str | None, typer.Option("--primary", help="Set the agent primary model.")] = None,
     fallback: Annotated[
         list[str] | None,
@@ -1708,35 +1734,80 @@ def remove_provider(
     console.print(f"[yellow]Removed provider:[/yellow] {name}")
 
 
-def _list_provider_models_impl(name: str, json_output: bool) -> None:
-    _set_json_mode(json_output)
+@provider_app.command(
+    "ai",
+    help="Invoke Claude to help configure providers interactively.",
+)
+def ai_provider() -> None:
+    """Load current environment into Claude and ask what to configure."""
+    import shutil
+    import subprocess
+
+    from clawcu.llm.renderer import _call_claude
+
+    service = get_service()
+
+    # Gather environment info
+    instances = service.list_instances()
+    providers = service.list_providers()
+    home = str(service.store.paths.home)
+
+    instance_lines = []
+    for inst in instances:
+        instance_lines.append(
+            f"  - {inst.name} ({inst.service}, {inst.status}, port={inst.port}, datadir={inst.datadir})"
+        )
+    if not instance_lines:
+        instance_lines.append("  (none)")
+
+    provider_lines = []
+    for p in providers:
+        models = ", ".join(p.get("models") or [])
+        provider_lines.append(
+            f"  - {p.get('name', '-')} ({p.get('service', '-')}, endpoint={p.get('endpoint') or '-'}, models=[{models}])"
+        )
+    if not provider_lines:
+        provider_lines.append("  (none)")
+
+    # Build the prompt for the initial Claude greeting
+    prompt = (
+        "你是 ClawCU 配置助手。请根据下面的环境信息，用中文向用户打招呼，"
+        "简要总结有哪些实例和模型配置，然后问用户想做什么样的配置。\n\n"
+        "## 实例\n"
+        + "\n".join(instance_lines)
+        + "\n\n## 模型配置\n"
+        + "\n".join(provider_lines)
+        + f"\n\n## 配置目录\n{home}\n"
+    )
+
+    claude_path = shutil.which("claude")
+    if claude_path is None:
+        _exit_with_error(
+            "The 'claude' CLI was not found on PATH. "
+            "Install it with: npm install -g @anthropic-ai/claude-code"
+        )
+
+    # Step 1: Use claude -p to get the initial greeting without user interaction
     try:
-        models = get_service().list_provider_models(name)
+        greeting = _call_claude(
+            prompt,
+            system_prompt="You are a helpful ClawCU configuration assistant. Respond in Chinese.",
+        )
     except Exception as exc:
         _exit_with_error(str(exc))
-    if _json_mode():
-        _print_json({"provider": name, "models": models})
-        return
-    if not models:
-        console.print("No models configured.")
-        return
-    for model in models:
-        console.print(model)
+
+    console.print(greeting)
+    console.print("\n[dim]--- Entering interactive Claude session ---[/dim]\n")
+
+    # Step 2: Launch Claude interactive mode with cwd set to ClawCU home
+    try:
+        subprocess.run([claude_path], cwd=home, check=False)
+    except KeyboardInterrupt:
+        pass
+    except Exception as exc:
+        _exit_with_error(str(exc))
 
 
-@provider_app.command(
-    "models",
-    help=(
-        "List the models stored in a collected provider. "
-        "Replaces the older `clawcu provider models list <name>` form — "
-        "the trailing `list` level is no longer required."
-    ),
-)
-def list_provider_models(
-    name: Annotated[str, typer.Argument(help="Provider name.")],
-    json_output: Annotated[bool, _JSON_OPTION] = False,
-) -> None:
-    _list_provider_models_impl(name, json_output)
 _LIST_SOURCES = ("managed", "local", "removed", "all")
 
 
@@ -1806,77 +1877,108 @@ def _apply_list_filters(
 
 @app.command(
     "dashboard",
-    help="Serve the local dashboard for managed, local, and removed instances.",
+    help="Manage the ClawCU dashboard Docker container.",
     rich_help_panel=_PANEL_INFO,
 )
 def dashboard(
     host: Annotated[
         str,
-        typer.Option("--host", help="Host interface to bind the dashboard server to."),
+        typer.Option("--host", help="Host interface to publish the dashboard on."),
     ] = "127.0.0.1",
     port: Annotated[
         int,
-        typer.Option("--port", min=1, max=65535, help="Port to bind the dashboard server to."),
+        typer.Option("--port", min=1, max=65535, help="Host port to publish the dashboard on."),
     ] = 8765,
     open_browser: Annotated[
         bool,
-        typer.Option("--open/--no-open", help="Open the dashboard URL in the default browser after starting."),
+        typer.Option("--open/--no-open", help="Open the dashboard URL in the default browser."),
     ] = True,
-    foreground: Annotated[
+    stop: Annotated[
         bool,
-        typer.Option(
-            "--foreground/--background",
-            help="Run the dashboard server in the current terminal instead of detaching it.",
-        ),
+        typer.Option("--stop", help="Stop the dashboard container."),
+    ] = False,
+    restart: Annotated[
+        bool,
+        typer.Option("--restart", help="Restart the dashboard container."),
+    ] = False,
+    status: Annotated[
+        bool,
+        typer.Option("--status", help="Show the dashboard container status."),
+    ] = False,
+    rebuild: Annotated[
+        bool,
+        typer.Option("--rebuild", help="Force rebuild the dashboard image."),
     ] = False,
 ) -> None:
     try:
-        if foreground:
-            serve_dashboard(host=host, port=port, open_browser=open_browser)
-            return
+        image_tag = _dashboard_image_tag(__version__)
+        container_name = _dashboard_container_name()
+        url = f"http://{host}:{port}"
 
-        primary_url = f"http://{host}:{port}"
-        if _dashboard_is_healthy(primary_url):
-            typer.echo(f"ClawCU dashboard is already running at {primary_url}")
-            if open_browser:
-                webbrowser.open(primary_url)
-            return
+        if status:
+            info = _dashboard_container_info()
+            if info is None:
+                typer.echo("Dashboard container is not running.")
+                raise typer.Exit(code=0)
+            state = info.get("State", {})
+            status_text = state.get("Status", "unknown")
+            started_at = state.get("StartedAt", "unknown")
+            image = info.get("Config", {}).get("Image", "unknown")
+            typer.echo(f"Container : {container_name} ({status_text})")
+            typer.echo(f"Image     : {image}")
+            typer.echo(f"URL       : {url}")
+            typer.echo(f"Started   : {started_at}")
+            if status_text == "running" and _dashboard_is_healthy(url):
+                typer.echo("Health    : healthy")
+            elif status_text == "running":
+                typer.echo("Health    : starting")
+            raise typer.Exit(code=0)
 
-        clawcu_bin = shutil.which("clawcu") or sys.argv[0]
-        cmd = [clawcu_bin, "dashboard", "--host", host, "--port", str(port), "--foreground", "--no-open"]
-        subprocess.Popen(  # noqa: S603
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
+        if stop:
+            _stop_dashboard_container()
+            typer.echo(f"Dashboard container {container_name} stopped.")
+            raise typer.Exit(code=0)
 
-        candidate_ports = [port]
-        if port == 8765:
-            candidate_ports.extend(range(port + 1, port + 21))
+        if restart:
+            _stop_dashboard_container()
+            # Fall through to start logic below.
 
-        healthy_url = None
-        deadline = time.time() + 12.0
+        # Ensure image exists (build if needed).
+        if rebuild or not _docker_image_exists(image_tag):
+            project_root = _find_project_root()
+            _build_dashboard_image(image_tag, project_root)
+
+        # Check if container already exists.
+        info = _dashboard_container_info()
+        if info is not None:
+            container_state = info.get("State", {})
+            if container_state.get("Status") == "running":
+                if _dashboard_is_healthy(url):
+                    typer.echo(f"ClawCU dashboard is already running at {url}")
+                    if open_browser:
+                        webbrowser.open(url)
+                    raise typer.Exit(code=0)
+            # Container exists but not running — remove and recreate.
+            _stop_dashboard_container()
+
+        _start_dashboard_container(host, port, image_tag)
+
+        # Wait for health.
+        deadline = time.time() + 30.0
         while time.time() < deadline:
-            for candidate_port in candidate_ports:
-                candidate_url = f"http://{host}:{candidate_port}"
-                if _dashboard_is_healthy(candidate_url):
-                    healthy_url = candidate_url
-                    break
-            if healthy_url:
-                break
-            time.sleep(0.2)
+            if _dashboard_is_healthy(url):
+                typer.echo(f"ClawCU dashboard is running at {url}")
+                if open_browser:
+                    webbrowser.open(url)
+                raise typer.Exit(code=0)
+            time.sleep(0.3)
 
-        if healthy_url:
-            typer.echo(f"ClawCU dashboard is running at {healthy_url}")
-            if open_browser:
-                webbrowser.open(healthy_url)
-        else:
-            typer.echo(
-                "ClawCU dashboard is starting in the background. "
-                f"Check http://{host}:{port} in a moment if the browser does not open automatically."
-            )
+        typer.echo(
+            "ClawCU dashboard container started, but health check is pending. "
+            f"Check {url} in a moment."
+        )
+    except typer.Exit:
+        raise
     except Exception as exc:
         typer.secho(str(exc), err=True, fg=typer.colors.RED)
         raise typer.Exit(code=1) from exc
@@ -1941,14 +2043,24 @@ def list_instances(
         bool,
         typer.Option("--reveal", help="Show full dashboard tokens inside ACCESS URLs. Off by default for safety."),
     ] = False,
+    versions: Annotated[
+        bool,
+        typer.Option(
+            "--versions",
+            help=(
+                "Append a top-10 'Available versions' footer per service (OpenClaw, Hermes) "
+                "fetched from the configured image registries. Off by default; pass this flag "
+                "to see candidate versions for upgrade."
+            ),
+        ),
+    ] = False,
     include_remote: Annotated[
         bool,
         typer.Option(
             "--remote/--no-remote",
             help=(
-                "Append a top-10 'Available versions' block per service (OpenClaw, Hermes) "
-                "fetched from the configured image registries. Default on; pass --no-remote "
-                "for a strictly offline view (CI, airgapped, slow networks)."
+                "When used with --versions, query the configured image registry for release tags. "
+                "Default on; pass --no-remote for a strictly offline view (CI, airgapped, slow networks)."
             ),
         ),
     ] = True,
@@ -1957,8 +2069,8 @@ def list_instances(
         typer.Option(
             "--no-cache",
             help=(
-                "Bypass the local Available Versions cache and fetch fresh "
-                "remote tags for the footer."
+                "When used with --versions, bypass the local cache and fetch fresh "
+                "remote tags from the registry."
             ),
         ),
     ] = False,
@@ -2019,27 +2131,25 @@ def list_instances(
     else:
         _print_instance_table(records, wide=wide, reveal=reveal)
 
-    # Versions block is a human-only footer; skip for --json (scripts
-    # already know which versions they care about), --agents (narrow
-    # per-agent view), and --removed (archival view, not an upgrade
-    # surface). Guarded with hasattr so older service implementations
-    # and test stubs without the method degrade to "silently skip".
-    if (
-        not agents
-        and resolved_source in {"managed", "local", "all"}
-        and hasattr(service, "list_service_available_versions")
-    ):
-        try:
-            versions_payload = service.list_service_available_versions(
-                include_remote=include_remote,
-                use_cache=not no_cache,
-            )
-        except Exception as exc:
-            console.print(
-                f"[yellow]Skipped available-versions fetch: {exc}[/yellow]"
-            )
-        else:
-            _print_available_versions(versions_payload, limit=10)
+    # Versions block is a human-only footer; only show when explicitly
+    # requested via --versions. Skip for --json (scripts already know which
+    # versions they care about), --agents (narrow per-agent view), and
+    # --removed (archival view, not an upgrade surface). Guarded with hasattr
+    # so older service implementations and test stubs without the method
+    # degrade to "silently skip".
+    if versions and not agents and resolved_source in {"managed", "local", "all"}:
+        if hasattr(service, "list_service_available_versions"):
+            try:
+                versions_payload = service.list_service_available_versions(
+                    include_remote=include_remote,
+                    use_cache=not no_cache,
+                )
+            except Exception as exc:
+                console.print(
+                    f"[yellow]Skipped available-versions fetch: {exc}[/yellow]"
+                )
+            else:
+                _print_available_versions(versions_payload, limit=10)
 
 
 def _print_inspect_human(payload: dict, *, reveal: bool, show_history: bool) -> None:
@@ -2258,15 +2368,14 @@ def _copy_to_clipboard(value: str) -> tuple[bool, str]:
     return False, "no clipboard backend found (tried pbcopy, wl-copy, xclip, xsel, clip)"
 
 
-@app.command(
+@openclaw_app.command(
     "token",
     help=(
-        "Print the dashboard token for a managed instance. "
+        "Print the dashboard token for an OpenClaw instance. "
         "Default shows both the token and the access URL with the `#token=…` anchor. "
         "Unlike `list`, `token` always prints the literal value (that's the whole point); "
         "avoid piping its output to shared logs."
     ),
-    rich_help_panel=_PANEL_ACCESS,
 )
 def token_for_instance(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
@@ -2364,6 +2473,16 @@ def set_instance_env(
         bool,
         typer.Option("--apply", help="Recreate the instance immediately so the new env takes effect now."),
     ] = False,
+    reload: Annotated[
+        bool,
+        typer.Option(
+            "--reload",
+            help=(
+                "Send SIGHUP to the running container after writing env, requesting a "
+                "hot reload without recreation. Best-effort: the service may not support it."
+            ),
+        ),
+    ] = False,
 ) -> None:
     if from_file is not None and assignments:
         _exit_with_error("Use either inline KEY=VALUE arguments or --from-file, not both.")
@@ -2373,6 +2492,10 @@ def set_instance_env(
         )
     if dry_run and apply_now:
         _exit_with_error("--dry-run and --apply are mutually exclusive.")
+    if reload and apply_now:
+        _exit_with_error("--reload and --apply are mutually exclusive.")
+    if reload and dry_run:
+        _exit_with_error("--reload and --dry-run are mutually exclusive.")
 
     effective_assignments: list[str]
     if from_file is not None:
@@ -2444,10 +2567,30 @@ def set_instance_env(
         )
         _print_access_url(service, record.name)
         return
+    if reload:
+        try:
+            service.signal_instance(name, signal="SIGHUP")
+            console.print(f"[green]Sent SIGHUP to {name}; config reload requested.[/green]")
+        except Exception:
+            console.print(
+                f"[yellow]Could not signal {name}; the service may not support hot reload.[/yellow]\n"
+                "[dim]Use --apply to recreate the container instead.[/dim]"
+            )
+        return
     console.print(
         "Changes will apply the next time the container is recreated. "
         f"Run `clawcu recreate {result['instance']}` if you want them to take effect now."
     )
+
+
+def _env_group_for_key(key: str) -> str:
+    """Return a display group for an env key."""
+    upper = key.upper()
+    if upper.startswith("A2A_"):
+        return "A2A"
+    if any(marker in upper for marker in _SENSITIVE_ENV_MARKERS):
+        return "Sensitive"
+    return "General"
 
 
 @app.command(
@@ -2460,6 +2603,10 @@ def get_instance_env(
     reveal: Annotated[
         bool,
         typer.Option("--reveal", help="Show unmasked values for KEY/TOKEN/SECRET/PASSWORD entries. Off by default."),
+    ] = False,
+    table_output: Annotated[
+        bool,
+        typer.Option("--table", help="Render output as a grouped table instead of KEY=VALUE lines."),
     ] = False,
     json_output: Annotated[bool, _JSON_OPTION] = False,
 ) -> None:
@@ -2484,6 +2631,32 @@ def get_instance_env(
         return
     if not display_values:
         console.print("No environment variables configured.")
+        return
+    if table_output:
+        table = Table(show_header=True, box=None, pad_edge=False)
+        table.add_column("KEY", style="bold", no_wrap=True)
+        table.add_column("VALUE", overflow="fold")
+        groups: dict[str, list[tuple[str, str]]] = {}
+        for key, displayed in display_values.items():
+            group = _env_group_for_key(key)
+            groups.setdefault(group, []).append((key, displayed))
+        first_group = True
+        for group_name in ("A2A", "Sensitive", "General"):
+            rows = groups.get(group_name, [])
+            if not rows:
+                continue
+            if not first_group:
+                table.add_row("─" * 18, "─" * 42)
+            first_group = False
+            for key, displayed in rows:
+                table.add_row(key, displayed)
+        console.print(table)
+        masked_count = sum(1 for k in display_values if _is_sensitive_env_key(k))
+        suffix = ""
+        if masked_any and not reveal:
+            plural = "s" if masked_count != 1 else ""
+            suffix = f" ({masked_count} sensitive value{plural} masked)"
+        console.print(f"[dim]{len(display_values)} env var(s){suffix}[/dim]")
         return
     for key, displayed in display_values.items():
         console.print(f"{key}={displayed}")
@@ -2578,13 +2751,12 @@ def unset_instance_env(
     )
 
 
-@app.command(
+@openclaw_app.command(
     "approve",
     help=(
-        "Approve a pending browser pairing request for an instance. "
+        "Approve a pending browser pairing request for an OpenClaw instance. "
         "Pass --list to enumerate pending requests without approving."
     ),
-    rich_help_panel=_PANEL_ACCESS,
 )
 def approve_pairing(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],
@@ -2625,7 +2797,7 @@ def approve_pairing(
             table.add_row(req_id, device, str(ts))
         console.print(table)
         console.print(
-            f"[dim]Run `clawcu approve {name} <REQUEST_ID>` to approve a specific request.[/dim]"
+            f"[dim]Run `clawcu openclaw approve {name} <REQUEST_ID>` to approve a specific request.[/dim]"
         )
         return
 
@@ -2635,6 +2807,53 @@ def approve_pairing(
         _exit_with_error(str(exc))
     console.print(f"[green]Approved pairing:[/green] {approved_request_id} for {name}")
     _print_access_url(service, name)
+
+
+# Deprecation aliases for commands moved to `clawcu openclaw` in v0.4.
+# These will be removed in v0.5.
+@app.command("token", hidden=True, rich_help_panel=_PANEL_ACCESS)
+def _token_alias(
+    name: Annotated[str, typer.Argument(help="Managed instance name.")],
+    copy: Annotated[
+        bool,
+        typer.Option("--copy", "-c", help="Copy the token to the system clipboard."),
+    ] = False,
+    url_only: Annotated[
+        bool,
+        typer.Option("--url-only", help="Print only the access URL."),
+    ] = False,
+    token_only: Annotated[
+        bool,
+        typer.Option("--token-only", help="Print only the token."),
+    ] = False,
+    json_output: Annotated[bool, _JSON_OPTION] = False,
+) -> None:
+    import sys
+    sys.stderr.write(
+        "DeprecationWarning: 'clawcu token' is deprecated. "
+        "Use 'clawcu openclaw token' instead.\n"
+    )
+    token_for_instance(
+        name, copy=copy, url_only=url_only, token_only=token_only, json_output=json_output
+    )
+
+
+@app.command("approve", hidden=True, rich_help_panel=_PANEL_ACCESS)
+def _approve_alias(
+    name: Annotated[str, typer.Argument(help="Managed instance name.")],
+    request_id: Annotated[str | None, typer.Argument(help="Specific pairing request id to approve.")] = None,
+    list_pending: Annotated[
+        bool,
+        typer.Option("--list", help="List pending pairing requests without approving."),
+    ] = False,
+    json_output: Annotated[bool, _JSON_OPTION] = False,
+) -> None:
+    import sys
+    sys.stderr.write(
+        "DeprecationWarning: 'clawcu approve' is deprecated. "
+        "Use 'clawcu openclaw approve' instead.\n"
+    )
+    approve_pairing(name, request_id=request_id, list_pending=list_pending, json_output=json_output)
 
 
 @app.command(
@@ -2657,7 +2876,14 @@ def configure_instance(
             "config",
             "This command runs the service-native setup or configuration flow inside the managed instance container.",
             [
-                "clawcu config <instance>",
+                "# OpenClaw — interactive configuration",
+                "clawcu config writer",
+                "",
+                "# Hermes — setup wizard",
+                "clawcu config analyst",
+                "",
+                "# Pass extra arguments to the service config command",
+                "clawcu config writer -- --non-interactive",
                 "clawcu config <instance> -- --help",
             ],
         )
@@ -2797,6 +3023,21 @@ def tui_instance(
             marker = " [dim](default)[/dim]" if agent_name == "main" else ""
             console.print(f"- {agent_name}{marker}")
         return
+
+    # Check instance status before launching TUI.
+    # Do not auto-start: machine resources are limited and the user may need
+    # to stop other instances first. Surface a clear, actionable message.
+    try:
+        record = service.store.load_record(name)
+        status = getattr(record, "status", "")
+        if status == "stopped":
+            _exit_with_error(
+                f"Instance '{name}' is stopped.\n"
+                f"Run `clawcu start {name}` to start it before entering the TUI.\n"
+                f"Tip: check available resources with `clawcu list` if you need to stop other instances first."
+            )
+    except Exception:
+        pass  # Best-effort; let tui_instance raise its own error if the record is unreadable
 
     try:
         service.tui_instance(name, agent=agent)
@@ -3104,20 +3345,28 @@ def _print_upgradable_versions(payload: dict, *, show_all: bool = False) -> None
         # Already communicated inline on the Image repo row above — no
         # separate Remote section needed when the flag disabled the
         # registry query entirely.
-        pass
+        console.print(
+            "[dim]Remote query skipped by --no-remote. Showing local images only.[/dim]"
+        )
     elif remote is None:
         # Remote was asked for but failed. Show the reason so the user
         # knows why they are only seeing local/history.
         if remote_error:
             console.print(
-                f"[bold]Remote:[/bold] [yellow]fetch failed: {remote_error}[/yellow]"
+                f"[bold yellow]Remote fetch failed:[/bold yellow] {remote_error}\n"
+                f"[green]Fallback:[/green] Showing local Docker images below. "
+                f"You can still upgrade using a local image, or retry with "
+                f"`clawcu upgrade {payload.get('instance', '<name>')} --version <local-tag>`."
             )
         else:
             console.print(
-                "[bold]Remote:[/bold] [yellow]fetch failed (no details)[/yellow]"
+                "[bold yellow]Remote fetch failed:[/bold yellow] (no details)\n"
+                f"[green]Fallback:[/green] Showing local Docker images below. "
+                f"You can still upgrade using a local image, or retry with "
+                f"`clawcu upgrade {payload.get('instance', '<name>')} --version <local-tag>`."
             )
         console.print(
-            "[dim]  try --no-remote to skip the registry query, "
+            "[dim]  tip: pass --no-remote to skip the registry query, "
             "or check network / mirror configuration[/dim]"
         )
     elif not remote:
@@ -3720,6 +3969,11 @@ def logs_instance(
         except TypeError:
             # Support older ClawCUService builds that don't accept tail/since.
             service.stream_logs(name, follow=follow)
+    except KeyboardInterrupt:
+        # Reset terminal colors after following Docker logs to avoid
+        # residual ANSI color codes in the prompt.
+        console.print("\x1b[0m", end="")
+        raise
     except Exception as exc:
         _exit_with_error(str(exc))
 
@@ -3766,10 +4020,24 @@ def remove_instance(
     _confirm_destructive(summary, yes)
     try:
         service = get_service()
-        if removed:
-            service.remove_removed_instance(name)
-        else:
+        if not removed:
+            # Auto-stop if running before removal.
+            # Best-effort: inspect failure should not block removal.
+            try:
+                info = service.inspect_instance(name)
+                container = info.get("container") or {}
+                state = container.get("State") or {}
+                status = state.get("Status") or container.get("Status", "")
+                if status == "running":
+                    console.print(
+                        f"[yellow]Instance '{name}' is running; stopping first (10s grace).[/yellow]"
+                    )
+                    service.stop_instance(name, timeout=10)
+            except Exception:
+                pass
             service.remove_instance(name, delete_data=delete_data)
+        else:
+            service.remove_removed_instance(name)
     except Exception as exc:
         _exit_with_error(str(exc))
     if removed:
@@ -3777,6 +4045,62 @@ def remove_instance(
     else:
         action = "and data directory" if delete_data else "but kept data directory"
         console.print(f"[green]Removed instance:[/green] {name} {action}")
+
+
+@snapshots_app.command("list", help="List snapshots for an instance.")
+def list_snapshots(
+    name: Annotated[str | None, typer.Argument(help="Instance name. Omit to list all instances.")] = None,
+) -> None:
+    service = get_service()
+    if name:
+        records = [service.inspect_instance(name).get("instance", {})]
+    else:
+        records = [r.to_dict() for r in service.list_instances()]
+    total = 0
+    for rec in records:
+        instance_name = rec.get("name")
+        if not instance_name:
+            continue
+        snaps = service.store.list_snapshots(instance_name)
+        if not snaps:
+            continue
+        console.print(f"[bold]{instance_name}[/bold] ({len(snaps)} snapshot(s))")
+        for snap in snaps:
+            console.print(f"  {snap.name}")
+        total += len(snaps)
+    if total == 0:
+        console.print("No snapshots found.")
+    else:
+        console.print(f"[dim]{total} total snapshot(s)[/dim]")
+
+
+@snapshots_app.command("clean", help="Delete old snapshots, keeping the most recent N per instance.")
+def clean_snapshots(
+    name: Annotated[str | None, typer.Argument(help="Instance name. Omit to clean all instances.")] = None,
+    keep_last: Annotated[
+        int,
+        typer.Option("--keep-last", help="Number of recent snapshots to retain per instance.", min=1),
+    ] = 10,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip the confirmation prompt.")] = False,
+) -> None:
+    service = get_service()
+    targets: list[str] = [name] if name else [r.name for r in service.list_instances()]
+    if not yes:
+        scope = f"'{name}'" if name else "all instances"
+        _confirm_destructive(
+            f"About to prune old snapshots for {scope}, keeping the last {keep_last} per instance.",
+            yes=False,
+        )
+    total_removed = 0
+    for target in targets:
+        removed = service._prune_old_snapshots(target, keep=keep_last)
+        if removed:
+            console.print(f"[green]Pruned {len(removed)} snapshot(s) for '{target}'.[/green]")
+            total_removed += len(removed)
+    if total_removed == 0:
+        console.print("No old snapshots to prune.")
+    else:
+        console.print(f"[green]Total pruned: {total_removed} snapshot(s).[/green]")
 
 
 def _register_command_aliases() -> None:

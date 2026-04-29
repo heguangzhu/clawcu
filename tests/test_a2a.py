@@ -928,162 +928,14 @@ def test_cache_state_does_not_leak_between_providers():
 # ---------- D8: bridge UX ----------
 
 
-def test_bridge_serve_virtual_instance_with_full_overrides(monkeypatch, temp_clawcu_home):
-    class EmptyService:
-        def list_instances(self, *, running_only=False):  # noqa: ARG002
-            return []
-
-        def adapter_for_record(self, record):  # noqa: ARG002
-            raise AssertionError("virtual bridge should not touch adapters")
-
-    monkeypatch.setattr("clawcu.a2a.cli.ClawCUService", lambda: EmptyService())
-
-    captured: dict[str, Any] = {}
-
-    def fake_serve(card, *, host, port, reply_fn):
-        captured["card"] = card
-        captured["host"] = host
-        captured["port"] = port
-        raise KeyboardInterrupt  # exit the serve loop cleanly
-
-    monkeypatch.setattr("clawcu.a2a.cli.serve_bridge_forever", fake_serve)
-
-    result = runner.invoke(
-        app,
-        [
-            "a2a",
-            "bridge",
-            "serve",
-            "--instance",
-            "virtual",
-            "--role",
-            "demo",
-            "--skills",
-            "chat,analysis",
-            "--endpoint",
-            "http://example.test/a2a/send",
-            "--port",
-            "12345",
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    assert captured["port"] == 12345
-    card = captured["card"]
-    assert card.name == "virtual"
-    assert card.role == "demo"
-    assert card.skills == ["chat", "analysis"]
-    assert card.endpoint == "http://example.test/a2a/send"
 
 
-def test_bridge_serve_unknown_instance_without_overrides_fails(monkeypatch, temp_clawcu_home):
-    class EmptyService:
-        def list_instances(self, *, running_only=False):  # noqa: ARG002
-            return []
-
-    monkeypatch.setattr("clawcu.a2a.cli.ClawCUService", lambda: EmptyService())
-    result = runner.invoke(app, ["a2a", "bridge", "serve", "--instance", "ghost"])
-    assert result.exit_code == 1
-    assert "--role" in result.output
-    assert "--skills" in result.output
-    assert "--endpoint" in result.output
 
 
-def test_bridge_serve_unknown_instance_with_empty_skills_fails(monkeypatch, temp_clawcu_home):
-    """Review-1 §11: `--skills ""` parses to [] and must be rejected up front.
-
-    Without this guard the CLI would happily bind a bridge whose AgentCard
-    has no skills — peers can fetch it but no discovery query matches,
-    which is a worse user experience than a fail-fast error.
-    """
-    class EmptyService:
-        def list_instances(self, *, running_only=False):  # noqa: ARG002
-            return []
-
-    monkeypatch.setattr("clawcu.a2a.cli.ClawCUService", lambda: EmptyService())
-    result = runner.invoke(
-        app,
-        [
-            "a2a",
-            "bridge",
-            "serve",
-            "--instance",
-            "virtual",
-            "--role",
-            "demo",
-            "--skills",
-            "",
-            "--endpoint",
-            "http://example.test/a2a/send",
-        ],
-    )
-    assert result.exit_code == 1
-    assert "--skills" in result.output
 
 
-def test_bridge_serve_default_port_uses_display_port(monkeypatch, temp_clawcu_home):
-    record = FakeRecord(name="writer", service="openclaw", port=0)
-
-    class FakeService:
-        def list_instances(self, *, running_only=False):  # noqa: ARG002
-            return [record]
-
-        def adapter_for_record(self, r):  # noqa: ARG002
-            return _FixedPortAdapter(18839)
-
-    monkeypatch.setattr("clawcu.a2a.cli.ClawCUService", lambda: FakeService())
-
-    captured: dict[str, Any] = {}
-
-    def fake_serve(card, *, host, port, reply_fn):
-        captured["card"] = card
-        captured["port"] = port
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr("clawcu.a2a.cli.serve_bridge_forever", fake_serve)
-
-    result = runner.invoke(app, ["a2a", "bridge", "serve", "--instance", "writer"])
-    assert result.exit_code == 0, result.output
-    assert captured["port"] == 18839
-    assert captured["card"].endpoint == "http://127.0.0.1:18839/a2a/send"
 
 
-def test_bridge_serve_overrides_on_managed_instance(monkeypatch, temp_clawcu_home):
-    record = FakeRecord(name="writer", service="openclaw", port=0)
-
-    class FakeService:
-        def list_instances(self, *, running_only=False):  # noqa: ARG002
-            return [record]
-
-        def adapter_for_record(self, r):  # noqa: ARG002
-            return _FixedPortAdapter(18839)
-
-    monkeypatch.setattr("clawcu.a2a.cli.ClawCUService", lambda: FakeService())
-
-    captured: dict[str, Any] = {}
-
-    def fake_serve(card, *, host, port, reply_fn):
-        captured["card"] = card
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr("clawcu.a2a.cli.serve_bridge_forever", fake_serve)
-
-    result = runner.invoke(
-        app,
-        [
-            "a2a",
-            "bridge",
-            "serve",
-            "--instance",
-            "writer",
-            "--role",
-            "custom role",
-            "--skills",
-            "one,two",
-        ],
-    )
-    assert result.exit_code == 0, result.output
-    assert captured["card"].role == "custom role"
-    assert captured["card"].skills == ["one", "two"]
 
 
 # ---------- D9: clawcu a2a up ----------
@@ -1151,84 +1003,6 @@ def test_detect_plugin_or_none_single_attempt():
     assert sleeps == []
 
 
-def test_a2a_up_starts_echo_bridges_for_instances_without_plugin(monkeypatch, temp_clawcu_home):
-    # One instance with a real plugin at a live server, one instance with
-    # an unreachable probe port → expect one echo bridge started.
-    plugin_payload = {
-        "name": "writer",
-        "role": "plugin role",
-        "skills": ["chat"],
-        "endpoint": "http://127.0.0.1:1/a2a/send",
-    }
-    plugin_server, plugin_thread = _start_well_known_server(
-        body=json.dumps(plugin_payload).encode()
-    )
-    try:
-        _, plugin_port = plugin_server.server_address
-
-        # Pick a free port for the echo bridge by opening and closing a socket.
-        import socket
-
-        with socket.socket() as s:
-            s.bind(("127.0.0.1", 0))
-            bridge_port = s.getsockname()[1]
-        with socket.socket() as s:
-            s.bind(("127.0.0.1", 0))
-            registry_port = s.getsockname()[1]
-
-        writer = FakeRecord(name="writer", service="openclaw", port=0)
-        ghost = FakeRecord(name="ghost", service="hermes", port=0)
-
-        class Svc:
-            def list_instances(self, *, running_only=False):  # noqa: ARG002
-                return [writer, ghost]
-
-            def adapter_for_record(self, record):
-                return _FixedPortAdapter(
-                    plugin_port if record.name == "writer" else bridge_port
-                )
-
-        monkeypatch.setattr("clawcu.a2a.cli.ClawCUService", lambda: Svc())
-
-        # Stop the registry promptly so the test doesn't hang. We hit
-        # /agents once from a background thread, then send KeyboardInterrupt
-        # via a monkeypatched serve_registry_forever.
-        agents_capture: dict[str, Any] = {}
-
-        def fake_registry_serve(provider, *, host, port, on_ready=None):
-            # Call provider() exactly to prove the up command wired it.
-            agents_capture["cards"] = list(provider())
-            raise KeyboardInterrupt
-
-        monkeypatch.setattr(
-            "clawcu.a2a.cli.serve_registry_forever", fake_registry_serve
-        )
-
-        result = runner.invoke(
-            app,
-            [
-                "a2a",
-                "up",
-                "--registry-port",
-                str(registry_port),
-                "--probe-timeout",
-                "0.5",
-                "--probe-attempts",
-                "1",
-                "--probe-delay",
-                "0.0",
-            ],
-        )
-        assert result.exit_code == 0, result.output
-        assert "OK" in result.output and "writer" in result.output
-        assert "WARN" in result.output and "ghost" in result.output
-        # provider returned cards for both instances, ghost card came from
-        # the echo bridge we started.
-        by_name = {c.name: c for c in agents_capture["cards"]}
-        assert set(by_name) == {"writer", "ghost"}
-        assert by_name["writer"].role == "plugin role"
-    finally:
-        _stop(plugin_server, plugin_thread)
 
 
 # ---------- fix-up: neighbor-port federation + bind-probe ----------
@@ -1323,76 +1097,6 @@ def test_try_fetch_plugin_card_prefers_display_port_over_neighbor():
             _stop(sidecar_server, sidecar_thread)
 
 
-def test_a2a_up_skips_echo_bridge_when_port_already_bound(
-    monkeypatch, temp_clawcu_home, caplog
-):
-    import socket as _socket
-
-    # Bind a socket on a random free IPv4 localhost port and hold it open
-    # while `a2a up` runs. The echo bridge must notice and step aside.
-    holder = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
-    holder.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
-    holder.bind(("127.0.0.1", 0))
-    holder.listen(128)
-    held_port = holder.getsockname()[1]
-    try:
-        with _socket.socket() as s:
-            s.bind(("127.0.0.1", 0))
-            registry_port = s.getsockname()[1]
-
-        ghost = FakeRecord(name="ghost", service="openclaw", port=0)
-
-        class Svc:
-            def list_instances(self, *, running_only=False):  # noqa: ARG002
-                return [ghost]
-
-            def adapter_for_record(self, record):  # noqa: ARG002
-                # display_port → held port; neighbor (held+1) won't respond
-                # either, so detect_plugin_or_none returns None → up tries
-                # to start an echo bridge on held_port.
-                return _FixedPortAdapter(held_port)
-
-        monkeypatch.setattr("clawcu.a2a.cli.ClawCUService", lambda: Svc())
-
-        bind_calls: list[int] = []
-        original_build = build_bridge_server
-
-        def spy_build(card, *, host, port, reply_fn):
-            bind_calls.append(port)
-            return original_build(card, host=host, port=port, reply_fn=reply_fn)
-
-        monkeypatch.setattr("clawcu.a2a.cli.build_bridge_server", spy_build)
-
-        def fake_registry_serve(provider, *, host, port, on_ready=None):  # noqa: ARG001
-            raise KeyboardInterrupt
-
-        monkeypatch.setattr(
-            "clawcu.a2a.cli.serve_registry_forever", fake_registry_serve
-        )
-
-        result = runner.invoke(
-            app,
-            [
-                "a2a",
-                "up",
-                "--registry-port",
-                str(registry_port),
-                "--probe-timeout",
-                "0.2",
-                "--probe-attempts",
-                "1",
-                "--probe-delay",
-                "0.0",
-            ],
-        )
-        assert result.exit_code == 0, result.output
-        assert "already in use" in result.output
-        assert "ghost" in result.output
-        # No bridge was built on the held port (or any port at all — only
-        # one instance was under test).
-        assert bind_calls == []
-    finally:
-        holder.close()
 
 
 # ---------- iter 4: native-agent routing (P0-3 regression) ----------
@@ -2248,74 +1952,6 @@ def test_hermes_sidecar_call_hermes_sends_system_prompt_and_parses_reply(monkeyp
     assert body["messages"][-1]["content"].endswith("ping")
 
 
-def test_a2a_up_skips_echo_bridge_when_ipv6_bound(monkeypatch, temp_clawcu_home):
-    import socket as _socket
-
-    if not _socket.has_ipv6:
-        pytest.skip("IPv6 not available on this host")
-    try:
-        holder = _socket.socket(_socket.AF_INET6, _socket.SOCK_STREAM)
-    except OSError:
-        pytest.skip("cannot create IPv6 socket")
-    try:
-        holder.bind(("::1", 0))
-    except OSError:
-        holder.close()
-        pytest.skip("IPv6 localhost unavailable")
-    holder.listen(128)
-    held_port = holder.getsockname()[1]
-    try:
-        with _socket.socket() as s:
-            s.bind(("127.0.0.1", 0))
-            registry_port = s.getsockname()[1]
-
-        ghost = FakeRecord(name="ghost", service="openclaw", port=0)
-
-        class Svc:
-            def list_instances(self, *, running_only=False):  # noqa: ARG002
-                return [ghost]
-
-            def adapter_for_record(self, record):  # noqa: ARG002
-                return _FixedPortAdapter(held_port)
-
-        monkeypatch.setattr("clawcu.a2a.cli.ClawCUService", lambda: Svc())
-
-        bind_calls: list[int] = []
-        original_build = build_bridge_server
-
-        def spy_build(card, *, host, port, reply_fn):
-            bind_calls.append(port)
-            return original_build(card, host=host, port=port, reply_fn=reply_fn)
-
-        monkeypatch.setattr("clawcu.a2a.cli.build_bridge_server", spy_build)
-
-        def fake_registry_serve(provider, *, host, port, on_ready=None):  # noqa: ARG001
-            raise KeyboardInterrupt
-
-        monkeypatch.setattr(
-            "clawcu.a2a.cli.serve_registry_forever", fake_registry_serve
-        )
-
-        result = runner.invoke(
-            app,
-            [
-                "a2a",
-                "up",
-                "--registry-port",
-                str(registry_port),
-                "--probe-timeout",
-                "0.2",
-                "--probe-attempts",
-                "1",
-                "--probe-delay",
-                "0.0",
-            ],
-        )
-        assert result.exit_code == 0, result.output
-        assert "already in use" in result.output
-        assert bind_calls == []
-    finally:
-        holder.close()
 
 
 # ---------------------------------------------------------------------------
@@ -2474,6 +2110,107 @@ def test_hermes_dockerfile_copies_whole_sidecar_dir():
     _assert_dockerfile_copies_whole_sidecar_dir("hermes")
 
 
+def test_a2a_hermes_runtime_user_picks_root_for_old_versions():
+    """Pre-v2026.4.23 hermes images run as root and have no ``hermes`` user.
+
+    Forcing ``USER hermes`` in those images would make the container fail at
+    startup with "unable to find user hermes". The builder must default to
+    root for those tags so the bake stays compatible across the version range.
+    """
+    from clawcu.a2a.builder import _hermes_runtime_user
+
+    assert _hermes_runtime_user("v2026.4.8") == "root"
+    assert _hermes_runtime_user("v2026.4.13") == "root"
+    assert _hermes_runtime_user("v2026.4.22") == "root"
+
+
+def test_a2a_hermes_runtime_user_picks_hermes_for_new_versions():
+    """v2026.4.23+ ships a non-root ``hermes`` user; pass it to USER."""
+    from clawcu.a2a.builder import _hermes_runtime_user
+
+    assert _hermes_runtime_user("v2026.4.23") == "hermes"
+    assert _hermes_runtime_user("v2026.5.0") == "hermes"
+    assert _hermes_runtime_user("v2027.1.1") == "hermes"
+
+
+def test_a2a_hermes_runtime_user_falls_back_to_root_for_unparseable_tags():
+    """Sha-style or floating tags can't be compared — default to safe ``root``."""
+    from clawcu.a2a.builder import _hermes_runtime_user
+
+    assert _hermes_runtime_user("latest") == "root"
+    assert _hermes_runtime_user("sha256-abcdef") == "root"
+    assert _hermes_runtime_user("") == "root"
+
+
+def test_a2a_image_builder_passes_runtime_user_for_hermes():
+    """``A2AImageBuilder.ensure_image`` forwards HERMES_RUNTIME_USER to docker.
+
+    Regression for review-23 P1: the Dockerfile now defaults
+    ``HERMES_RUNTIME_USER=root`` so older base tags keep building, and the
+    builder must override it to ``hermes`` for v2026.4.23+ where the upstream
+    image switched to a non-root runtime user.
+    """
+    from clawcu.a2a.builder import A2AImageBuilder
+
+    captured: dict[str, dict[str, str] | None] = {}
+
+    class _FakeDocker:
+        def image_exists(self, _tag):
+            return False
+
+        def pull_image(self, _tag):
+            return None
+
+        def build_image(
+            self,
+            context_dir,  # noqa: ARG002
+            target_tag,
+            *,
+            dockerfile=None,  # noqa: ARG002
+            build_contexts=None,  # noqa: ARG002
+            build_args=None,
+        ):
+            captured["build_args"] = build_args
+            captured["target_tag"] = target_tag
+
+    builder = A2AImageBuilder(docker=_FakeDocker(), clawcu_version="0.2.11")
+    builder.ensure_image("hermes", "v2026.4.23", "clawcu/hermes-agent:v2026.4.23")
+    assert captured["build_args"]["HERMES_RUNTIME_USER"] == "hermes"
+
+    captured.clear()
+    builder.ensure_image("hermes", "v2026.4.8", "clawcu/hermes-agent:v2026.4.8")
+    assert captured["build_args"]["HERMES_RUNTIME_USER"] == "root"
+
+
+def test_a2a_image_builder_does_not_set_runtime_user_for_openclaw():
+    """The runtime-user override is hermes-specific; openclaw uses ``USER node``."""
+    from clawcu.a2a.builder import A2AImageBuilder
+
+    captured: dict[str, dict[str, str] | None] = {}
+
+    class _FakeDocker:
+        def image_exists(self, _tag):
+            return False
+
+        def pull_image(self, _tag):
+            return None
+
+        def build_image(
+            self,
+            context_dir,  # noqa: ARG002
+            target_tag,  # noqa: ARG002
+            *,
+            dockerfile=None,  # noqa: ARG002
+            build_contexts=None,  # noqa: ARG002
+            build_args=None,
+        ):
+            captured["build_args"] = build_args
+
+    builder = A2AImageBuilder(docker=_FakeDocker(), clawcu_version="0.2.11")
+    builder.ensure_image("openclaw", "2026.4.12", "ghcr.io/openclaw/openclaw:2026.4.12")
+    assert "HERMES_RUNTIME_USER" not in captured["build_args"]
+
+
 def test_a2a_image_tag_embeds_source_sha_not_raw_version(tmp_path, monkeypatch):
     """Tag component after ``plugin`` is ``<ver>.<sha>``, not bare ``<ver>``.
 
@@ -2519,130 +2256,10 @@ def test_hermes_sidecar_invalidate_gateway_ready_resets_cache():
 # ---------------------------------------------------------------------------
 
 
-def test_hermes_identity_set_writes_soul_md_to_datadir(tmp_path):
-    """set_hermes_identity copies source into ``<datadir>/SOUL.md`` verbatim."""
-    from clawcu.core.models import InstanceRecord
-
-    source = tmp_path / "my-persona.md"
-    source.write_text("# My Scribe\n\nSign off with ZZZZ.\n", encoding="utf-8")
-    datadir = tmp_path / "datadir"
-    datadir.mkdir()
-
-    record = InstanceRecord(
-        name="scribe",
-        service="hermes",
-        version="2026.4.13",
-        port=8642,
-        datadir=str(datadir),
-        cpu="1",
-        memory="2g",
-        auth_mode="token",
-        upstream_ref="v2026.4.13",
-        image_tag="clawcu/hermes-agent:v2026.4.13",
-        container_name="clawcu-hermes-scribe",
-        status="running",
-        created_at="2026-04-21T00:00:00Z",
-        updated_at="2026-04-21T00:00:00Z",
-        a2a_enabled=True,
-    )
-
-    class _Store:
-        def load_record(self_, name):  # noqa: N805
-            assert name == "scribe"
-            return record
-
-        def append_log(self_, _line):  # noqa: N805
-            pass
-
-    class _Service:
-        store = _Store()
-
-    from clawcu.core.service import ClawCUService
-
-    result = ClawCUService.set_hermes_identity(_Service(), "scribe", source)
-    written = (datadir / "SOUL.md").read_text(encoding="utf-8")
-    assert written == "# My Scribe\n\nSign off with ZZZZ.\n"
-    assert result["target"] == str(datadir / "SOUL.md")
-    assert result["bytes"] == len(written)
-    assert result["instance"] == "scribe"
 
 
-def test_hermes_identity_set_rejects_non_hermes_service(tmp_path):
-    from clawcu.core.models import InstanceRecord
-
-    source = tmp_path / "p.md"
-    source.write_text("x\n", encoding="utf-8")
-    record = InstanceRecord(
-        name="jim",
-        service="openclaw",
-        version="2026.4.12",
-        port=18789,
-        datadir=str(tmp_path),
-        cpu="1",
-        memory="2g",
-        auth_mode="token",
-        upstream_ref="2026.4.12",
-        image_tag="clawcu/openclaw-a2a:2026.4.12",
-        container_name="clawcu-openclaw-jim",
-        status="running",
-        created_at="2026-04-21T00:00:00Z",
-        updated_at="2026-04-21T00:00:00Z",
-        a2a_enabled=False,
-    )
-
-    class _Store:
-        def load_record(self_, _n):  # noqa: N805
-            return record
-
-        def append_log(self_, _l):  # noqa: N805
-            pass
-
-    class _Service:
-        store = _Store()
-
-    from clawcu.core.service import ClawCUService
-
-    with pytest.raises(ValueError, match="only available for hermes"):
-        ClawCUService.set_hermes_identity(_Service(), "jim", source)
 
 
-def test_hermes_identity_set_rejects_empty_file(tmp_path):
-    from clawcu.core.models import InstanceRecord
-
-    source = tmp_path / "empty.md"
-    source.write_text("   \n\n", encoding="utf-8")
-    record = InstanceRecord(
-        name="scribe",
-        service="hermes",
-        version="2026.4.13",
-        port=8642,
-        datadir=str(tmp_path),
-        cpu="1",
-        memory="2g",
-        auth_mode="token",
-        upstream_ref="v2026.4.13",
-        image_tag="clawcu/hermes-agent:v2026.4.13",
-        container_name="clawcu-hermes-scribe",
-        status="running",
-        created_at="2026-04-21T00:00:00Z",
-        updated_at="2026-04-21T00:00:00Z",
-        a2a_enabled=True,
-    )
-
-    class _Store:
-        def load_record(self_, _n):  # noqa: N805
-            return record
-
-        def append_log(self_, _l):  # noqa: N805
-            pass
-
-    class _Service:
-        store = _Store()
-
-    from clawcu.core.service import ClawCUService
-
-    with pytest.raises(ValueError, match="empty"):
-        ClawCUService.set_hermes_identity(_Service(), "scribe", source)
 
 
 def test_hermes_sidecar_wait_for_gateway_ready_uses_cache_until_invalidated(

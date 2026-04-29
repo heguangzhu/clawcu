@@ -11,7 +11,7 @@
 - `clawcu create openclaw|hermes --a2a ...` bakes an **A2A v0 sidecar** into the instance's image.
 - The sidecar runs as a second process next to the native gateway and publishes two endpoints on a neighbor port: `GET /.well-known/agent-card.json` (discovery) and `POST /a2a/send` (messaging).
 - Stock instances (no `--a2a`) are unchanged. A2A is strictly opt-in and additive.
-- `clawcu a2a up` one-shots the whole setup: probe running instances, bridge the ones without sidecars, serve an aggregate registry.
+- `clawcu a2a registry serve` runs the aggregate registry so instances can discover each other.
 - `clawcu a2a send --to <name> --message "..."` is the smoke test.
 
 * * *
@@ -28,7 +28,7 @@
 - [Image lifecycle and the source-sha fingerprint](#image-lifecycle-and-the-source-sha-fingerprint)
 - [Two-instance walkthrough](#two-instance-walkthrough)
 - [Enabling A2A on an existing instance](#enabling-a2a-on-an-existing-instance)
-- [`a2a up` vs `registry serve` vs `bridge serve`](#a2a-up-vs-registry-serve-vs-bridge-serve)
+- [The A2A registry](#the-a2a-registry)
 - [Troubleshooting](#troubleshooting)
 - [Current limits](#current-limits)
 - [FAQ](#faq)
@@ -186,7 +186,7 @@ Error responses are `{"error": "..."}` with appropriate HTTP status (400 for bad
 
 ### `GET /healthz`
 
-Returns plain JSON with `status`, `gateway_ready`, `plugin_version`. Used by `clawcu a2a up`'s probe loop; also useful for your own liveness checks.
+Returns plain JSON with `status`, `gateway_ready`, `plugin_version`. Used by the registry's probe loop; also useful for your own liveness checks.
 
 ```json
 {
@@ -240,7 +240,7 @@ curl -sS -X POST http://127.0.0.1:18790/a2a/outbound \
 | `to`           | string | yes      | Peer's registered name. Resolved via `GET /agents/{to}` on registry.  |
 | `message`      | string | yes      | Message body forwarded verbatim.                                      |
 | `thread_id`    | string | no       | If set, propagates through to the peer's `/a2a/send` (uuid v7 shape). |
-| `registry_url` | string | no       | Override. Defaults to `$A2A_REGISTRY_URL` then `http://host.docker.internal:9100` (where `clawcu a2a up` binds). |
+| `registry_url` | string | no       | Override. Defaults to `$A2A_REGISTRY_URL` then `http://host.docker.internal:9100` (where `clawcu a2a registry serve` binds). |
 | `timeout_ms`   | number | no       | Per-call HTTP timeout. Default `60000`.                               |
 
 ### Response (2xx)
@@ -449,10 +449,8 @@ The canonical smoke test: two A2A instances talking via the registry.
 clawcu create openclaw --name writer  --version 2026.4.12 --a2a
 clawcu create hermes   --name analyst --version 2026.4.13 --a2a
 
-# 2. Start the A2A topology (registry + any missing bridges, foreground).
-clawcu a2a up
-# [green]OK[/green] writer  (plugin-backed on :18820)
-# [green]OK[/green] analyst (plugin-backed on :9129)
+# 2. Start the A2A registry (foreground).
+clawcu a2a registry serve
 # [bold]A2A registry[/bold] listening on http://127.0.0.1:8765 (Ctrl+C to stop)
 
 # 3. From another terminal: send.
@@ -488,18 +486,19 @@ The datadir (models, history, env) is preserved across the clone + create. The i
 Why no in-place path yet? The image change is a rebuild, not a mutation, and we don't want a flag on `upgrade` that silently re-bakes. Explicit is better than clever. If this becomes a pain point in practice, it can be added later as a dedicated `clawcu enable-a2a <name>` verb.
 
 * * *
-## `a2a up` vs `registry serve` vs `bridge serve`
+## The A2A registry
 
-Three related commands; pick the one that matches your situation:
+The registry aggregates AgentCards from all running managed instances and exposes them at `GET /agents` and `GET /agents/{name}`. Start it with:
 
-- **`clawcu a2a up`** — the common case. Probes every running managed instance, starts echo bridges for instances without a sidecar, serves the aggregate registry in the foreground. One command.
-- **`clawcu a2a registry serve`** — just the registry, no probing or bridging. Use when every instance already has a sidecar baked and you don't need the auto-bridge fallback.
-- **`clawcu a2a bridge serve --instance <name>`** — just a bridge for one instance, no registry. Demo / offline / CI-testing. If a real sidecar is already serving on the instance's port, the bridge won't be needed; it exists so an un-baked instance can still show up on the A2A surface for a demo.
+```bash
+clawcu a2a registry serve
+```
+
+It binds `127.0.0.1:9100` by default and runs in the foreground (Ctrl+C to stop). Every managed instance with `--a2a` publishes its own card; the registry just collects them so peers can find each other.
 
 A mental model:
 
-- **Sidecar** = what runs inside the container. Baked in once, permanent.
-- **Bridge** = out-of-container stand-in for an instance without a sidecar. Per-instance, short-lived.
+- **Sidecar** = what runs inside the container. Baked in once at `clawcu create --a2a` time, permanent.
 - **Registry** = aggregator, cross-instance. Tells callers "here are the cards of everyone on this host."
 
 * * *
