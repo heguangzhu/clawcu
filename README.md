@@ -31,7 +31,7 @@
 - **One CLI, two runtimes** — OpenClaw and Hermes through the same lifecycle commands
 - **Snapshots before every upgrade** — datadir and env both captured; `rollback` restores from real backups
 - **Clone-first experiments** — copy an instance, upgrade the copy, leave the original running
-- **Agent-to-agent messaging (`v0.3.0`)** — opt-in `--a2a` bakes an A2A v0 sidecar into the managed image, exposing `/.well-known/agent-card.json` + `POST /a2a/send` on a neighbor port. Stock instances are unaffected.
+- **Agent-to-agent messaging (`v0.4.2`)** — opt-in `--a2a` bakes an A2A v0 sidecar into the managed image, exposing `/.well-known/agent-card.json` + `POST /a2a/send` on a neighbor port. Stock instances are unaffected.
 - **Available versions with cache-aware refresh** — `clawcu list --versions` shows upgrade candidates from the configured registries, served from a day-cache by default. Add `--no-cache` to force a fresh registry read when you want the latest tags now.
 
 ```text
@@ -122,7 +122,7 @@ clawcu dashboard
 
 ![Dashboard](docs/images/en.png)
 
-Make instances talk to each other with A2A (opt-in, `v0.3.0`):
+Make instances talk to each other with A2A (opt-in, `v0.4.2`):
 
 ```bash
 clawcu create openclaw --name writer  --version 2026.4.12 --a2a
