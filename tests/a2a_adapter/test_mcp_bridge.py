@@ -623,6 +623,7 @@ def test_mcp_wait_task_returns_completed_reply_as_content(monkeypatch):
     payload = json.loads(response.body)
 
     assert payload["result"]["content"] == [{"type": "text", "text": "done reply"}]
+    assert payload["result"]["isError"] is False
     assert payload["result"]["structuredContent"]["reply"] == "done reply"
 
 
@@ -694,6 +695,7 @@ def test_wait_task_timeout_text_includes_guidance(monkeypatch):
     assert "Tell the user the task is still running" in text
     assert "call a2a_wait_task again" in text
     assert payload["result"]["structuredContent"]["timed_out"] is True
+    assert payload["result"]["isError"] is True
 
 
 def test_default_wait_timeout_is_15_seconds():

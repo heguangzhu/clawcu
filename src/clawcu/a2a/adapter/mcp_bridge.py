@@ -818,11 +818,12 @@ async def handle_mcp(request: Request) -> Response:
             except Exception as exc:
                 return _rpc_error(rpc_id, -32000, str(exc) or exc.__class__.__name__)
             text = _task_tool_text(structured)
+            is_error = bool(structured.get("timed_out"))
             return _rpc_result(
                 rpc_id,
                 {
                     "content": [{"type": "text", "text": text}],
-                    "isError": False,
+                    "isError": is_error,
                     "structuredContent": structured,
                 },
             )
