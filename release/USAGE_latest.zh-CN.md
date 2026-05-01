@@ -1,11 +1,11 @@
-# ClawCU Usage v0.3.0
+# ClawCU Usage v0.4.1
 
 🌐 Language:
-[English](USAGE_v0.3.0.md) | [中文](USAGE_v0.3.0.zh-CN.md)
+[English](USAGE_v0.4.1.md) | [中文](USAGE_v0.4.1.zh-CN.md)
 
-发布范围：`v0.3.0`
+发布范围：`v0.4.1`
 
-`ClawCU v0.3.0` 的命令参考。覆盖 OpenClaw 与 Hermes 共享的命令界面、两者差异、`v0.2.6` 引入的孤儿实例生命周期、`v0.2.9`–`v0.2.10` 的 list 页脚打磨、**`v0.3.0` A2A v0 表面**（创建时 `--a2a` opt-in、`clawcu a2a` 子命令树、`clawcu hermes identity set`），以及运行时默认值。
+`ClawCU v0.4.1` 的命令参考。覆盖 OpenClaw 与 Hermes 共享的命令界面、两者差异、`v0.2.6` 引入的孤儿实例生命周期、`v0.2.9`–`v0.2.10` 的 list 页脚打磨、**`v0.4.2` A2A v0 表面**（创建时 `--a2a` opt-in、`clawcu a2a` 子命令树）、**`v0.4.1` provider 命令**（`collect` / `list` / `show` / `apply` / `remove`）、**`v0.4.1` Dashboard**（Docker 常驻容器），以及运行时默认值。
 
 ## 1. 初始化与镜像准备
 
@@ -69,7 +69,8 @@ clawcu list [--source managed|local|removed|all]
             [--local] [--managed] [--all] [--removed]
             [--service X] [--status X] [--running]
             [--agents] [--wide] [--reveal]
-            [--remote/--no-remote] [--json]
+            [--versions] [--remote/--no-remote] [--no-cache]
+            [--json]
 ```
 
 列出实例摘要或逐 agent 行。默认 source 为 `managed`。
@@ -79,7 +80,9 @@ clawcu list [--source managed|local|removed|all]
 - `--agents` —— 逐 agent 一行，而非逐实例
 - `--wide` —— 在窄模式 6 列之上追加 SOURCE / HOME / PROVIDERS / MODELS / SNAPSHOT
 - `--reveal` —— 显示完整 dashboard token
-- `--remote` / `--no-remote` —— 控制 "Available versions" 页脚的 registry 拉取（默认开）。页脚展示每个服务（OpenClaw、Hermes）最多 10 个稳定版本、最新在前；预发布（`-beta`、`-rc`、`-alpha`）被过滤。`--json` / `--agents` / `--removed` 视图下不渲染。成功的拉取会缓存到 `<clawcu_home>/cache/available_versions.json`，按本地日期当天有效（跨日或 `image_repo` 变更即失效）。registry 不通或 `--no-remote` 时，页脚会在错误行下方追加一行本地 Docker 镜像作为离线回退
+- `--versions` —— 追加每个服务（OpenClaw、Hermes）最多 10 个 "Available versions" 页脚。从配置的 registry 拉取，按天缓存到 `<clawcu_home>/cache/available_versions.json`
+- `--remote` / `--no-remote` —— 与 `--versions` 联用时控制 registry 拉取（默认开）。传 `--no-remote` 获得离线视图（CI、气隙网络、慢网络）
+- `--no-cache` —— 与 `--versions` 联用时跳过本地缓存，强制重新拉取远程 tag
 - `--json` —— 脚本友好的实例数组（契约不变；版本页脚只在文本模式下渲染）
 
 ### `clawcu inspect`
@@ -200,6 +203,7 @@ clawcu remove <name> [--keep-data|--delete-data]
 
 - `--delete-data` —— 同时删除 datadir
 - `--removed` —— 永久删除 `clawcu list --removed` 列出的孤儿 datadir。此模式下 `--keep-data` / `--delete-data` 会被拒绝（`--removed` 必定删除）
+- 自动提示：当对记录已消失但 datadir 仍在的实例执行 `remove <name>` 时，CLI 会一步提示并删除孤儿数据（无需重新加 `--removed` 执行）
 
 ## 4. 孤儿实例生命周期
 
@@ -414,9 +418,9 @@ clawcu provider apply <provider> <instance>
 - 孤儿恢复：
   - `list --removed` → `recreate <orphan>`（端口 / 版本自动从 `.clawcu-instance.json` 还原）
 
-## 11. Agent-to-Agent 消息（`v0.3.0`）
+## 11. Agent-to-Agent 消息（`v0.4.2`）
 
-`v0.3.0` 引入 A2A v0 表面。所有 A2A 行为通过创建时的 `--a2a` 开启；不加则已有实例一切不变。
+`v0.4.2` 引入 A2A v0 表面。所有 A2A 行为通过创建时的 `--a2a` 开启；不加则已有实例一切不变。
 
 ### 创建时 opt-in
 
@@ -471,6 +475,6 @@ clawcu hermes identity set <instance> <soul-path>
 
 ## 12. 备注
 
-- 本文档描述 `v0.3.0` 命令界面。
-- 发布上下文见 [RELEASE_v0.3.0.zh-CN.md](RELEASE_v0.3.0.zh-CN.md)。
+- 本文档描述 `v0.4.1` 命令界面。
+- 发布上下文见 [RELEASE_v0.4.1.zh-CN.md](RELEASE_v0.4.1.zh-CN.md)。
 - 快捷方式：[USAGE_latest.zh-CN.md](USAGE_latest.zh-CN.md) 始终指向当前发布版本。

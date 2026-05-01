@@ -1,11 +1,11 @@
-# ClawCU Usage v0.3.0
+# ClawCU Usage v0.4.1
 
 🌐 Language:
-[English](USAGE_v0.3.0.md) | [中文](USAGE_v0.3.0.zh-CN.md)
+[English](USAGE_v0.4.1.md) | [中文](USAGE_v0.4.1.zh-CN.md)
 
-Release Scope: `v0.3.0`
+Release Scope: `v0.4.1`
 
-Command reference for `ClawCU v0.3.0`. Covers the shared command surface, OpenClaw / Hermes service differences, the orphan-instance lifecycle (introduced in `v0.2.6`), the `v0.2.9`–`v0.2.10` list-footer polish, the **`v0.3.0` A2A v0 surface** (`--a2a` opt-in at create time, `clawcu a2a` subcommand tree, `clawcu hermes identity set`), and the operational defaults.
+Command reference for `ClawCU v0.4.1`. Covers the shared command surface, OpenClaw / Hermes service differences, the orphan-instance lifecycle (introduced in `v0.2.6`), the `v0.2.9`–`v0.2.10` list-footer polish, the **`v0.4.2` A2A v0 surface** (`--a2a` opt-in at create time, `clawcu a2a` subcommand tree), the **`v0.4.1` provider commands** (`collect` / `list` / `show` / `apply` / `remove`), the **`v0.4.1` Dashboard** (persistent Docker container), and the operational defaults.
 
 ## 1. Setup and Artifact Preparation
 
@@ -69,7 +69,8 @@ clawcu list [--source managed|local|removed|all]
             [--local] [--managed] [--all] [--removed]
             [--service X] [--status X] [--running]
             [--agents] [--wide] [--reveal]
-            [--remote/--no-remote] [--json]
+            [--versions] [--remote/--no-remote] [--no-cache]
+            [--json]
 ```
 
 List instance summaries or per-agent rows. Default source is `managed`.
@@ -79,7 +80,9 @@ List instance summaries or per-agent rows. Default source is `managed`.
 - `--agents` — one row per agent instead of per instance
 - `--wide` — adds SOURCE / HOME / PROVIDERS / MODELS / SNAPSHOT columns on top of the narrow 6-column view
 - `--reveal` — unmasks the dashboard token fragment
-- `--remote` / `--no-remote` — toggle the "Available versions" footer registry fetch (default on). Footer shows the top 10 stable releases per service (OpenClaw, Hermes), newest first; prereleases (`-beta`, `-rc`, `-alpha`) are filtered. Omitted in `--json` / `--agents` / `--removed` views. Successful fetches are cached at `<clawcu_home>/cache/available_versions.json` for the local calendar day (invalidated by date rollover or an `image_repo` change). When the registry is unreachable or `--no-remote` is set, the footer falls back to local Docker images on a continuation line under the error
+- `--versions` — append a top-10 "Available versions" footer per service (OpenClaw, Hermes). Fetched from configured registries and cached per calendar day at `<clawcu_home>/cache/available_versions.json`
+- `--remote` / `--no-remote` — when used with `--versions`, toggle the registry fetch (default on). Pass `--no-remote` for an offline view (CI, airgapped, slow networks)
+- `--no-cache` — when used with `--versions`, bypass the local cache and fetch fresh remote tags
 - `--json` — script-friendly instance array (contract unchanged; versions footer is text-mode only)
 
 ### `clawcu inspect`
@@ -200,6 +203,7 @@ Remove a managed instance. Default keeps the datadir.
 
 - `--delete-data` — also delete the datadir
 - `--removed` — permanently delete an orphan datadir listed by `clawcu list --removed`. In this mode `--keep-data` / `--delete-data` are rejected, since `--removed` always deletes
+- Auto-prompt: when `remove <name>` is called on an instance whose record is already gone but whose datadir still exists, the CLI prompts to delete the orphan in one shot (no need to re-run with `--removed`)
 
 ## 4. Orphan Instance Lifecycle
 
@@ -414,9 +418,9 @@ Apply a collected asset to the selected instance. Writeback is service-native.
 - Orphan recovery:
   - `list --removed` → `recreate <orphan>` (port / version auto-restored from `.clawcu-instance.json`)
 
-## 11. Agent-to-Agent Messaging (`v0.3.0`)
+## 11. Agent-to-Agent Messaging (`v0.4.2`)
 
-`v0.3.0` introduces an A2A v0 surface. All A2A behaviour is opt-in via `--a2a` at create time; existing instances are unaffected.
+`v0.4.2` introduces an A2A v0 surface. All A2A behaviour is opt-in via `--a2a` at create time; existing instances are unaffected.
 
 ### Opt-in at create time
 
@@ -471,6 +475,6 @@ Install a user-authored `SOUL.md` into a Hermes instance's datadir. `prompt_buil
 
 ## 12. Notes
 
-- This usage guide describes the command surface for `v0.3.0`.
-- For release context, see [RELEASE_v0.3.0.md](RELEASE_v0.3.0.md).
+- This usage guide describes the command surface for `v0.4.1`.
+- For release context, see [RELEASE_v0.4.1.md](RELEASE_v0.4.1.md).
 - Shortcut: [USAGE_latest.md](USAGE_latest.md) always points at the current release.
