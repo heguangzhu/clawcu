@@ -10,6 +10,26 @@ Release Date: April 29, 2026
 * * *
 ## Highlights
 
+### Dashboard (persistent Docker container)
+
+- **`clawcu dashboard` now runs as a Docker container**
+  - Auto-builds `clawcu-dashboard:<version>` image on first run.
+  - Container runs with `--restart unless-stopped` for always-on availability.
+  - Mounts `~/.clawcu`, `~/.openclaw`, `~/.hermes`, and `/var/run/docker.sock`.
+  - Publishes on `127.0.0.1:8765` by default (LAN-safe).
+  - New flags: `--stop`, `--restart`, `--status`, `--rebuild`.
+  - Dashboard actions (`open_cli`, `open_config`, `open_tui`) gracefully degrade inside the container with host-side command hints.
+  - Health endpoint (`/health`) for Docker HEALTHCHECK and startup polling.
+
+### Provider Commands (cross-service auth/model management)
+
+- **`clawcu provider collect/list/show/apply/remove`**
+  - Collect provider auth bundles from OpenClaw and Hermes into a canonical form.
+  - Apply a provider to another instance without re-entering keys.
+  - `list` shows an `IN_USE` column indicating which instances reference each provider.
+  - OAuth detection: shows `oauth` status for providers using OAuth instead of API keys.
+  - Cross-service apply: OAuth tokens and API keys can be moved between OpenClaw and Hermes.
+
 ### CLI Redesign (v0.4.x foundation)
 
 - **`list` default is now version-free**
@@ -38,6 +58,10 @@ Release Date: April 29, 2026
 - **`remove` auto-stops running instances**
   - `clawcu remove <name> --delete-data` now stops a running container before removal (10s grace).
   - Previously this failed with a Docker error; now it's a single command.
+
+- **`remove` auto-prompts for orphaned datadir**
+  - When `clawcu remove <name>` is called on an instance whose record is already gone but whose datadir still exists, the CLI prompts to delete the orphan in one shot.
+  - No need to re-run with `--removed`; the correct path is offered automatically.
 
 - **`logs --follow` ANSI reset on Ctrl+C**
   - Pressing Ctrl+C during `clawcu logs <name> --follow` sends an ANSI reset sequence so the terminal does not keep Docker's colour codes.
