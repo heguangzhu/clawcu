@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import asyncio
+import time
 import urllib.parse
 from typing import Any
 
@@ -15,10 +17,17 @@ from .tasks import config_from_env
 CALL_TOOL_NAME = "a2a_call_peer"
 CALL_ASYNC_TOOL_NAME = "a2a_call_peer_async"
 GET_TASK_TOOL_NAME = "a2a_get_task"
+WAIT_TASK_TOOL_NAME = "a2a_wait_task"
 CANCEL_TASK_TOOL_NAME = "a2a_cancel_task"
 LIST_TOOL_NAME = "a2a_list_peers"
 MCP_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_SEND_TIMEOUT_SECONDS = 86400.0
+DEFAULT_WAIT_TIMEOUT_SECONDS = 45.0
+DEFAULT_WAIT_POLL_INTERVAL_SECONDS = 2.0
+TOOL_PEER_CACHE_TTL_SECONDS = 30.0
+TOOL_PEER_FETCH_TIMEOUT_SECONDS = 2.0
+TASK_TERMINAL_STATES = frozenset({"completed", "failed", "canceled"})
+_TOOL_PEER_CACHE: dict[str, Any] = {"expires_at": 0.0, "summary": ""}
 
 
 def _rpc_result(rpc_id: Any, result: Any) -> JSONResponse:
@@ -60,6 +69,30 @@ def _send_timeout(arguments: dict[str, Any]) -> float:
     return max(timeout, requested)
 
 
+def _wait_timeout(arguments: dict[str, Any]) -> float:
+    raw_default = os.environ.get("A2A_TASK_WAIT_TIMEOUT", str(DEFAULT_WAIT_TIMEOUT_SECONDS))
+    try:
+        default = float(raw_default)
+    except (TypeError, ValueError):
+        default = DEFAULT_WAIT_TIMEOUT_SECONDS
+    if "timeout_seconds" not in arguments:
+        return max(1.0, default)
+    try:
+        requested = float(arguments["timeout_seconds"])
+    except (TypeError, ValueError):
+        return max(1.0, default)
+    return max(1.0, requested)
+
+
+def _wait_poll_interval(arguments: dict[str, Any]) -> float:
+    raw = arguments.get("poll_interval_seconds", DEFAULT_WAIT_POLL_INTERVAL_SECONDS)
+    try:
+        interval = float(raw)
+    except (TypeError, ValueError):
+        interval = DEFAULT_WAIT_POLL_INTERVAL_SECONDS
+    return min(30.0, max(0.5, interval))
+
+
 def _extract_reply(result: dict[str, Any]) -> str:
     artifacts = result.get("artifacts")
     if isinstance(artifacts, list):
@@ -69,15 +102,70 @@ def _extract_reply(result: dict[str, Any]) -> str:
                 for part in parts:
                     if isinstance(part, dict) and isinstance(part.get("text"), str):
                         return part["text"]
+    reply = _extract_message_reply(result.get("message"))
+    if reply:
+        return reply
     status = result.get("status")
     if isinstance(status, dict):
-        message = status.get("message")
-        parts = message.get("parts") if isinstance(message, dict) else None
-        if isinstance(parts, list):
-            for part in parts:
-                if isinstance(part, dict) and isinstance(part.get("text"), str):
-                    return part["text"]
+        reply = _extract_message_reply(status.get("message"))
+        if reply:
+            return reply
     return ""
+
+
+def _extract_message_reply(message: Any) -> str:
+    parts = message.get("parts") if isinstance(message, dict) else None
+    if isinstance(parts, list):
+        for part in parts:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                return part["text"]
+    return ""
+
+
+def _task_state(task: dict[str, Any]) -> str:
+    status = task.get("status")
+    state = status.get("state") if isinstance(status, dict) else None
+    return state if isinstance(state, str) else ""
+
+
+def _task_structured(
+    target: str,
+    task_id: str,
+    task: dict[str, Any],
+    *,
+    timed_out: bool = False,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
+    structured: dict[str, Any] = {
+        "from": target,
+        "task_id": task_id,
+        "reply": _extract_reply(task),
+        "task": task,
+    }
+    if timed_out:
+        structured["timed_out"] = True
+        if timeout_seconds is not None:
+            structured["timeout_seconds"] = timeout_seconds
+    return structured
+
+
+def _task_tool_text(structured: dict[str, Any]) -> str:
+    reply = structured.get("reply")
+    if isinstance(reply, str) and reply:
+        return reply
+    task_id = str(structured.get("task_id") or "")
+    task = structured.get("task")
+    state = _task_state(task) if isinstance(task, dict) else ""
+    text = f"Task {task_id}"
+    if state:
+        text += f" is {state}"
+    if structured.get("timed_out"):
+        timeout = structured.get("timeout_seconds")
+        if isinstance(timeout, (int, float)):
+            text += f" (wait timed out after {timeout:g}s)"
+        else:
+            text += " (wait timed out)"
+    return text
 
 
 def _interface_endpoint(card: dict[str, Any]) -> str:
@@ -203,12 +291,30 @@ async def _get_peer_card(
     registry_url: str,
     target: str,
 ) -> dict[str, Any]:
-    quoted_target = urllib.parse.quote(target.strip(), safe="")
-    card_resp = await client.get(
-        f"{registry_url}/agents/{quoted_target}",
-        headers=_registry_headers(),
-    )
-    card_resp.raise_for_status()
+    target_name = target.strip()
+    quoted_target = urllib.parse.quote(target_name, safe="")
+    try:
+        card_resp = await client.get(
+            f"{registry_url}/agents/{quoted_target}",
+            headers=_registry_headers(),
+        )
+        card_resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 404:
+            raise
+        list_resp = await client.get(f"{registry_url}/agents", headers=_registry_headers())
+        list_resp.raise_for_status()
+        payload = list_resp.json()
+        if not isinstance(payload, list):
+            raise RuntimeError("registry returned malformed agent list") from exc
+        wanted = target_name.casefold()
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            if isinstance(name, str) and name.casefold() == wanted:
+                return item
+        raise
     card = card_resp.json()
     if not isinstance(card, dict):
         raise RuntimeError(f"registry card for {target!r} is malformed")
@@ -229,6 +335,55 @@ def _peers_text(peers: list[dict[str, Any]]) -> str:
         suffix = f" ({'; '.join(detail_parts)})" if detail_parts else ""
         lines.append(f"- {peer['name']}{suffix}")
     return "\n".join(lines)
+
+
+def _tool_peer_summary(peers: list[dict[str, Any]]) -> str:
+    own_name = os.environ.get("A2A_AGENT_NAME", "").strip()
+    visible = [peer for peer in peers if peer.get("name") != own_name]
+    if not visible:
+        return ""
+    parts: list[str] = []
+    for peer in visible[:16]:
+        details: list[str] = []
+        role = peer.get("role")
+        if isinstance(role, str) and role:
+            details.append(role)
+        skills = peer.get("skills")
+        if isinstance(skills, list) and skills:
+            details.append("skills: " + ", ".join(str(skill) for skill in skills[:6]))
+        suffix = f" ({'; '.join(details)})" if details else ""
+        parts.append(f"{peer['name']}{suffix}")
+    if len(visible) > 16:
+        parts.append(f"...and {len(visible) - 16} more")
+    return "Available peers: " + "; ".join(parts)
+
+
+async def _peer_summary_for_descriptions() -> str:
+    now = time.monotonic()
+    cached = _TOOL_PEER_CACHE.get("summary")
+    if now < float(_TOOL_PEER_CACHE.get("expires_at") or 0.0):
+        return cached if isinstance(cached, str) else ""
+    try:
+        registry_url = _registry_url({})
+        async with httpx.AsyncClient(timeout=TOOL_PEER_FETCH_TIMEOUT_SECONDS) as client:
+            resp = await client.get(f"{registry_url}/agents", headers=_registry_headers())
+            resp.raise_for_status()
+            payload = resp.json()
+        if not isinstance(payload, list):
+            raise RuntimeError("registry returned malformed agent list")
+        peers = [
+            peer
+            for item in payload
+            if isinstance(item, dict)
+            for peer in [_normalize_peer(item)]
+            if peer is not None
+        ]
+        summary = _tool_peer_summary(peers)
+    except Exception:
+        summary = ""
+    _TOOL_PEER_CACHE["summary"] = summary
+    _TOOL_PEER_CACHE["expires_at"] = now + TOOL_PEER_CACHE_TTL_SECONDS
+    return summary
 
 
 async def _call_peer(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -327,6 +482,30 @@ async def _call_peer_async(arguments: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def _fetch_task(
+    client: httpx.AsyncClient,
+    registry_url: str,
+    target: str,
+    task_id: str,
+    *,
+    cancel: bool = False,
+) -> dict[str, Any]:
+    card = await _get_peer_card(client, registry_url, target)
+    endpoint = _jsonrpc_endpoint(card)
+    if not endpoint:
+        raise ValueError(f"registry card for {target!r} has no endpoint")
+    url = _task_endpoint(endpoint, task_id, cancel=cancel)
+    if cancel:
+        task_resp = await client.post(url, json={})
+    else:
+        task_resp = await client.get(url)
+    task_resp.raise_for_status()
+    task = task_resp.json()
+    if not isinstance(task, dict):
+        raise RuntimeError("peer returned malformed task")
+    return task
+
+
 async def _get_task(arguments: dict[str, Any]) -> dict[str, Any]:
     target = arguments.get("to")
     task_id = arguments.get("task_id")
@@ -338,16 +517,49 @@ async def _get_task(arguments: dict[str, Any]) -> dict[str, Any]:
     timeout = _send_timeout(arguments)
     registry_url = _registry_url(arguments)
     async with httpx.AsyncClient(timeout=timeout) as client:
+        task = await _fetch_task(client, registry_url, target, task_id.strip())
+    return _task_structured(target, task_id.strip(), task)
+
+
+async def _wait_task(arguments: dict[str, Any]) -> dict[str, Any]:
+    target = arguments.get("to")
+    task_id = arguments.get("task_id")
+    if not isinstance(target, str) or not target.strip():
+        raise ValueError("argument 'to' is required")
+    if not isinstance(task_id, str) or not task_id.strip():
+        raise ValueError("argument 'task_id' is required")
+
+    target = target.strip()
+    task_id = task_id.strip()
+    timeout_seconds = _wait_timeout(arguments)
+    poll_interval = _wait_poll_interval(arguments)
+    deadline = time.monotonic() + timeout_seconds
+    registry_url = _registry_url(arguments)
+    task: dict[str, Any] | None = None
+
+    async with httpx.AsyncClient(timeout=_send_timeout(arguments)) as client:
         card = await _get_peer_card(client, registry_url, target)
         endpoint = _jsonrpc_endpoint(card)
         if not endpoint:
             raise ValueError(f"registry card for {target!r} has no endpoint")
-        task_resp = await client.get(_task_endpoint(endpoint, task_id.strip()))
-        task_resp.raise_for_status()
-        task = task_resp.json()
-        if not isinstance(task, dict):
-            raise RuntimeError("peer returned malformed task")
-    return {"from": target, "task_id": task_id.strip(), "task": task}
+        task_url = _task_endpoint(endpoint, task_id)
+        while True:
+            task_resp = await client.get(task_url)
+            task_resp.raise_for_status()
+            task = task_resp.json()
+            if not isinstance(task, dict):
+                raise RuntimeError("peer returned malformed task")
+            if _task_state(task) in TASK_TERMINAL_STATES:
+                return _task_structured(target, task_id, task)
+            if time.monotonic() >= deadline:
+                return _task_structured(
+                    target,
+                    task_id,
+                    task,
+                    timed_out=True,
+                    timeout_seconds=timeout_seconds,
+                )
+            await asyncio.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
 
 
 async def _cancel_task(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -361,26 +573,25 @@ async def _cancel_task(arguments: dict[str, Any]) -> dict[str, Any]:
     timeout = _send_timeout(arguments)
     registry_url = _registry_url(arguments)
     async with httpx.AsyncClient(timeout=timeout) as client:
-        card = await _get_peer_card(client, registry_url, target)
-        endpoint = _jsonrpc_endpoint(card)
-        if not endpoint:
-            raise ValueError(f"registry card for {target!r} has no endpoint")
-        task_resp = await client.post(_task_endpoint(endpoint, task_id.strip(), cancel=True), json={})
-        task_resp.raise_for_status()
-        task = task_resp.json()
-        if not isinstance(task, dict):
-            raise RuntimeError("peer returned malformed task")
-    return {"from": target, "task_id": task_id.strip(), "task": task}
+        task = await _fetch_task(client, registry_url, target, task_id.strip(), cancel=True)
+    return _task_structured(target, task_id.strip(), task)
 
 
-def _tool_descriptor() -> dict[str, Any]:
+def _description_with_peers(description: str, peer_summary: str) -> str:
+    return f"{description} {peer_summary}" if peer_summary else description
+
+
+def _tool_descriptor(peer_summary: str = "") -> dict[str, Any]:
     return {
         "name": CALL_TOOL_NAME,
-        "description": "Call another local A2A agent and return its reply. If the target name is unknown, call a2a_list_peers first.",
+        "description": _description_with_peers(
+            "Synchronously call another local A2A agent and return its reply. Use only for quick requests expected to finish within 30 seconds. Do not use for market data, research, web access, code execution, or other nontrivial work because the MCP client may time out before the peer replies. For those requests, use a2a_call_peer_async, then a2a_wait_task. If the target name is unknown, call a2a_list_peers first.",
+            peer_summary,
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "to": {"type": "string", "description": "Target agent name in the A2A registry."},
+                "to": {"type": "string", "description": "Target agent name in the A2A registry. Matching is case-insensitive; use the peer names shown in the tool description when available."},
                 "message": {"type": "string", "description": "Message to send to the target agent."},
                 "registry_url": {"type": "string", "description": "Optional registry URL override."},
                 "timeout_seconds": {"type": "number", "description": "Optional request timeout; values below the adapter's 24h floor are ignored."},
@@ -391,19 +602,44 @@ def _tool_descriptor() -> dict[str, Any]:
     }
 
 
-def _async_tool_descriptor() -> dict[str, Any]:
+def _async_tool_descriptor(peer_summary: str = "") -> dict[str, Any]:
     return {
         "name": CALL_ASYNC_TOOL_NAME,
-        "description": "Start an asynchronous call to another local A2A agent and return the task metadata.",
+        "description": _description_with_peers(
+            "Preferred tool for market data, research, web access, code execution, or any peer request that may take more than 30 seconds. Starts a long-running call to another local A2A agent and returns task metadata immediately. After this returns a task_id, call a2a_wait_task to wait for the final reply, or a2a_get_task to poll current status.",
+            peer_summary,
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "to": {"type": "string", "description": "Target agent name in the A2A registry."},
+                "to": {"type": "string", "description": "Target agent name in the A2A registry. Matching is case-insensitive; use the peer names shown in the tool description when available."},
                 "message": {"type": "string", "description": "Message to send to the target agent."},
                 "registry_url": {"type": "string", "description": "Optional registry URL override."},
                 "timeout_seconds": {"type": "number", "description": "Optional request timeout; values below the adapter's 24h floor are ignored."},
             },
             "required": ["to", "message"],
+            "additionalProperties": False,
+        },
+    }
+
+
+def _wait_tool_descriptor(peer_summary: str = "") -> dict[str, Any]:
+    return {
+        "name": WAIT_TASK_TOOL_NAME,
+        "description": _description_with_peers(
+            "Wait briefly for an asynchronous A2A peer task to reach completed, failed, or canceled. Defaults to 45 seconds so the MCP client does not time out. When the task is completed and has a reply, this tool returns the reply directly in content. If it returns a working/timed-out status, call this tool again with the same task_id.",
+            peer_summary,
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "Target agent name in the A2A registry. Matching is case-insensitive; use the peer names shown in the tool description when available."},
+                "task_id": {"type": "string", "description": "Peer task id returned by a2a_call_peer_async."},
+                "registry_url": {"type": "string", "description": "Optional registry URL override."},
+                "timeout_seconds": {"type": "number", "description": "Maximum time to wait for completion. Defaults to 45 seconds."},
+                "poll_interval_seconds": {"type": "number", "description": "How often to poll task status. Defaults to 2 seconds."},
+            },
+            "required": ["to", "task_id"],
             "additionalProperties": False,
         },
     }
@@ -416,7 +652,7 @@ def _task_tool_descriptor(name: str, description: str) -> dict[str, Any]:
         "inputSchema": {
             "type": "object",
             "properties": {
-                "to": {"type": "string", "description": "Target agent name in the A2A registry."},
+                "to": {"type": "string", "description": "Target agent name in the A2A registry. Matching is case-insensitive; use the peer names shown in the tool description when available."},
                 "task_id": {"type": "string", "description": "Peer task id."},
                 "registry_url": {"type": "string", "description": "Optional registry URL override."},
                 "timeout_seconds": {"type": "number", "description": "Optional request timeout; values below the adapter's 24h floor are ignored."},
@@ -442,12 +678,13 @@ def _list_tool_descriptor() -> dict[str, Any]:
     }
 
 
-def _tool_descriptors() -> list[dict[str, Any]]:
-    tools = [_tool_descriptor()]
+def _tool_descriptors(peer_summary: str = "") -> list[dict[str, Any]]:
+    tools = [_tool_descriptor(peer_summary)]
     if config_from_env().enabled:
         tools.extend(
             [
-                _async_tool_descriptor(),
+                _async_tool_descriptor(peer_summary),
+                _wait_tool_descriptor(peer_summary),
                 _task_tool_descriptor(GET_TASK_TOOL_NAME, "Fetch an asynchronous A2A peer task by id."),
                 _task_tool_descriptor(CANCEL_TASK_TOOL_NAME, "Cancel an asynchronous A2A peer task by id."),
             ]
@@ -480,9 +717,10 @@ async def handle_mcp(request: Request) -> Response:
     if method == "ping":
         return _rpc_result(rpc_id, {})
     if method == "tools/list":
+        peer_summary = await _peer_summary_for_descriptions()
         return _rpc_result(
             rpc_id,
-            {"tools": _tool_descriptors()},
+            {"tools": _tool_descriptors(peer_summary)},
         )
     if method == "tools/call":
         params = payload.get("params") or {}
@@ -493,6 +731,7 @@ async def handle_mcp(request: Request) -> Response:
             CALL_TOOL_NAME,
             CALL_ASYNC_TOOL_NAME,
             GET_TASK_TOOL_NAME,
+            WAIT_TASK_TOOL_NAME,
             CANCEL_TASK_TOOL_NAME,
             LIST_TOOL_NAME,
         }:
@@ -500,7 +739,7 @@ async def handle_mcp(request: Request) -> Response:
         arguments = params.get("arguments") or {}
         if not isinstance(arguments, dict):
             return _rpc_error(rpc_id, -32602, "tool arguments must be an object")
-        if tool_name in {CALL_ASYNC_TOOL_NAME, GET_TASK_TOOL_NAME, CANCEL_TASK_TOOL_NAME} and not config_from_env().enabled:
+        if tool_name in {CALL_ASYNC_TOOL_NAME, GET_TASK_TOOL_NAME, WAIT_TASK_TOOL_NAME, CANCEL_TASK_TOOL_NAME} and not config_from_env().enabled:
             return _rpc_error(
                 rpc_id,
                 -32000,
@@ -538,7 +777,12 @@ async def handle_mcp(request: Request) -> Response:
                 )
             except Exception as exc:
                 return _rpc_error(rpc_id, -32000, str(exc) or exc.__class__.__name__)
-            text = f"Submitted task {structured['task_id']}" if structured["task_id"] else "Submitted asynchronous A2A task"
+            text = (
+                f"Submitted task {structured['task_id']}. "
+                f"Call a2a_wait_task with to={structured['from']} and task_id={structured['task_id']} to wait for the final reply. If it reports the task is still working, call a2a_wait_task again with the same task_id."
+                if structured["task_id"]
+                else "Submitted asynchronous A2A task. Call a2a_get_task or a2a_wait_task with the returned task id to read the result."
+            )
             return _rpc_result(
                 rpc_id,
                 {
@@ -547,9 +791,14 @@ async def handle_mcp(request: Request) -> Response:
                     "structuredContent": structured,
                 },
             )
-        if tool_name in {GET_TASK_TOOL_NAME, CANCEL_TASK_TOOL_NAME}:
+        if tool_name in {GET_TASK_TOOL_NAME, WAIT_TASK_TOOL_NAME, CANCEL_TASK_TOOL_NAME}:
             try:
-                structured = await (_get_task(arguments) if tool_name == GET_TASK_TOOL_NAME else _cancel_task(arguments))
+                if tool_name == GET_TASK_TOOL_NAME:
+                    structured = await _get_task(arguments)
+                elif tool_name == WAIT_TASK_TOOL_NAME:
+                    structured = await _wait_task(arguments)
+                else:
+                    structured = await _cancel_task(arguments)
             except ValueError as exc:
                 return _rpc_error(rpc_id, -32602, str(exc))
             except httpx.HTTPStatusError as exc:
@@ -560,10 +809,7 @@ async def handle_mcp(request: Request) -> Response:
                 )
             except Exception as exc:
                 return _rpc_error(rpc_id, -32000, str(exc) or exc.__class__.__name__)
-            status = structured["task"].get("status")
-            text = f"Task {structured['task_id']}"
-            if isinstance(status, dict) and isinstance(status.get("state"), str):
-                text += f" is {status['state']}"
+            text = _task_tool_text(structured)
             return _rpc_result(
                 rpc_id,
                 {

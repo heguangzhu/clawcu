@@ -7,6 +7,7 @@ Rapha loop 恢复点（2026-04-30）：
 - Round 1 已完成：TaskStore、worker、HTTP async/task routes、MCP async tools、Docker companion orchestration 已实现。
 - Round 2 已完成：inspect/getenv/operator surface、SSE heartbeat、docs/release notes、Redis smoke、CLI 测试已补齐。
 - Round 3 已完成：按最新决策将 async API/MCP 工具默认开启，同时保留 `A2A_ASYNC_ENABLED=false` 作为显式禁用开关。
+- Round 4 未开始：将 A2A registry 从宿主机进程迁移为 Docker 服务，并使用 Redis 记录 peer/card/status 状态数据。
 - 已验证：`uv run --extra a2a pytest`，结果 `511 passed`。
 - Redis smoke：`docker exec clawcu-a2a-redis redis-cli ping` 返回 `PONG`；真实 Redis TaskStore + worker smoke 完成 `submitted -> working -> progress -> completed`。
 - 提交：`Add Redis-backed A2A async tasks`；`Enable A2A async by default`。
@@ -128,3 +129,18 @@ Rapha loop 恢复点（2026-04-30）：
 | T92 | 已提交 | Phase 3 orchestration commit | Redis/worker companion 管理 | 合并提交覆盖 |
 | T93 | 已提交 | Phase 4 docs/tests commit | 文档和测试补齐 | 合并提交覆盖 |
 | T94 | 已提交 | Phase 5 default-on async commit | 将 async API/MCP 工具默认开启，保留 `A2A_ASYNC_ENABLED=false` 作为回退开关 | `uv run --extra a2a pytest` 通过，提交覆盖 |
+
+## Phase 10: Dockerized Redis-backed A2A Registry
+
+| ID | 状态 | 任务 | 产出 | 验证 |
+| --- | --- | --- | --- | --- |
+| T100 | 未开始 | 定义 registry Docker 服务契约 | `clawcu-a2a-registry` 容器、`127.0.0.1:9100->9100`、复用 `clawcu-a2a-redis` | compose/service spec 单元测试 |
+| T101 | 未开始 | 设计 Redis registry state schema | peer card、endpoint、status、last_seen、TTL、source instance 写入 `a2a:registry:*` key | Redis facade 单元测试 |
+| T102 | 未开始 | 实现 registry Redis store | registry 读写 Redis，保留实时探测 fallback | fake Redis + real Redis smoke |
+| T103 | 未开始 | 让 adapter/instance 发布状态 | adapter 启动/健康检查周期性 upsert card/status；停止/remove 时清理或 TTL 过期 | adapter/registry 集成测试 |
+| T104 | 未开始 | 增加 registry Docker lifecycle | create/recreate/start/restart 时 ensure Redis -> registry -> adapter/worker；stop/remove 不误删共享 registry | service lifecycle 测试 |
+| T105 | 未开始 | 更新 `clawcu a2a registry` CLI | CLI 从“前台 serve”转为可管理 Docker 服务，保留 debug serve 入口 | CLI 测试 |
+| T106 | 未开始 | inspect/list 暴露 registry 状态 | `clawcu inspect` 或 A2A operator 输出 registry container、Redis state、peer count | CLI/service 测试 |
+| T107 | 未开始 | 替换 LaunchAgent 过渡方案 | 停用宿主机 LaunchAgent 文档路径，推荐 Docker registry | 手动迁移验证 |
+| T108 | 未开始 | 更新 docs/release/troubleshooting | 说明 registry Docker 架构、Redis keys、故障恢复、端口 `9100` | 文档检查 |
+| T109 | 未开始 | 全量验证与提交 | `uv run --extra a2a pytest`、registry Redis smoke、peer discovery smoke | commit + push |

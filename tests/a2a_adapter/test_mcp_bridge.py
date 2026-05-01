@@ -63,9 +63,22 @@ class _FakeClient:
                     },
                 ]
             )
+        if url.endswith("/agents/Analyst"):
+            return _FakeResponse({"error": "not found"}, status_code=404)
         if "/tasks/" in url:
+            task_id = url.rstrip("/").rsplit("/", 1)[-1]
+            if task_id == "task-done":
+                return _FakeResponse(
+                    {
+                        "id": task_id,
+                        "status": {"state": "completed"},
+                        "artifacts": [
+                            {"parts": [{"type": "text", "text": "done reply"}]}
+                        ],
+                    }
+                )
             return _FakeResponse(
-                {"id": url.rsplit("/", 1)[-1], "status": {"state": "working"}}
+                {"id": task_id, "status": {"state": "working"}}
             )
         return _FakeResponse(
             {
@@ -125,6 +138,48 @@ def test_call_peer_uses_registry_and_jsonrpc(monkeypatch):
     assert calls[1][2]["params"]["configuration"] == {"blocking": True}
 
 
+def test_call_peer_resolves_peer_name_case_insensitively(monkeypatch):
+    from clawcu.a2a.adapter import mcp_bridge
+
+    calls = []
+
+    monkeypatch.setattr(
+        mcp_bridge.httpx,
+        "AsyncClient",
+        lambda *a, **kw: _FakeClient(calls, *a, **kw),
+    )
+
+    result = asyncio.run(
+        mcp_bridge._call_peer(
+            {"to": "Analyst", "message": "ping", "registry_url": "http://registry"}
+        )
+    )
+
+    assert result["reply"] == "pong"
+    assert calls[0] == ("GET", "http://registry/agents/Analyst", None)
+    assert calls[1] == ("GET", "http://registry/agents", None)
+    assert calls[2][0:2] == ("POST", "http://peer.local")
+
+
+async def _no_peer_summary():
+    return ""
+
+
+async def _analyst_peer_summary():
+    return "Available peers: analyst (Analyst agent; skills: analysis, chat)"
+
+
+def test_extract_reply_accepts_top_level_message():
+    from clawcu.a2a.adapter import mcp_bridge
+
+    assert (
+        mcp_bridge._extract_reply(
+            {"message": {"role": "agent", "parts": [{"type": "text", "text": "pong"}]}}
+        )
+        == "pong"
+    )
+
+
 def test_call_peer_async_requests_nonblocking_jsonrpc(monkeypatch):
     from clawcu.a2a.adapter import mcp_bridge
 
@@ -179,6 +234,50 @@ def test_peer_task_endpoints_derive_from_jsonrpc_endpoint(monkeypatch):
     assert calls[3] == ("POST", "http://peer.local/tasks/task%201/cancel", {})
 
 
+def test_get_task_extracts_completed_reply(monkeypatch):
+    from clawcu.a2a.adapter import mcp_bridge
+
+    calls = []
+
+    monkeypatch.setattr(
+        mcp_bridge.httpx,
+        "AsyncClient",
+        lambda *a, **kw: _FakeClient(calls, *a, **kw),
+    )
+
+    result = asyncio.run(
+        mcp_bridge._get_task(
+            {"to": "analyst", "task_id": "task-done", "registry_url": "http://registry"}
+        )
+    )
+
+    assert result["reply"] == "done reply"
+    assert result["task"]["status"]["state"] == "completed"
+
+
+def test_wait_task_returns_completed_reply(monkeypatch):
+    from clawcu.a2a.adapter import mcp_bridge
+
+    calls = []
+
+    monkeypatch.setattr(
+        mcp_bridge.httpx,
+        "AsyncClient",
+        lambda *a, **kw: _FakeClient(calls, *a, **kw),
+    )
+
+    result = asyncio.run(
+        mcp_bridge._wait_task(
+            {"to": "analyst", "task_id": "task-done", "registry_url": "http://registry"}
+        )
+    )
+
+    assert result["reply"] == "done reply"
+    assert result["task"]["status"]["state"] == "completed"
+    assert calls[0] == ("GET", "http://registry/agents/analyst", None)
+    assert calls[1] == ("GET", "http://peer.local/tasks/task-done", None)
+
+
 def test_list_peers_uses_registry(monkeypatch):
     from clawcu.a2a.adapter import mcp_bridge
 
@@ -231,6 +330,9 @@ def test_mcp_tools_list_exposes_async_tools_by_default(monkeypatch):
     from clawcu.a2a.adapter import mcp_bridge
 
     monkeypatch.delenv("A2A_ASYNC_ENABLED", raising=False)
+    monkeypatch.setattr(
+        mcp_bridge, "_peer_summary_for_descriptions", _analyst_peer_summary
+    )
     request = _FakeRequest(
         {"jsonrpc": "2.0", "id": 6, "method": "tools/list", "params": {}}
     )
@@ -242,16 +344,19 @@ def test_mcp_tools_list_exposes_async_tools_by_default(monkeypatch):
     assert tool_names == [
         "a2a_call_peer",
         "a2a_call_peer_async",
+        "a2a_wait_task",
         "a2a_get_task",
         "a2a_cancel_task",
         "a2a_list_peers",
     ]
+    assert "Available peers: analyst" in payload["result"]["tools"][0]["description"]
 
 
 def test_mcp_tools_list_hides_async_tools_when_disabled(monkeypatch):
     from clawcu.a2a.adapter import mcp_bridge
 
     monkeypatch.setenv("A2A_ASYNC_ENABLED", "false")
+    monkeypatch.setattr(mcp_bridge, "_peer_summary_for_descriptions", _no_peer_summary)
     request = _FakeRequest(
         {"jsonrpc": "2.0", "id": 6, "method": "tools/list", "params": {}}
     )
@@ -270,6 +375,7 @@ def test_mcp_tools_list_exposes_async_tools_when_enabled(monkeypatch):
     from clawcu.a2a.adapter import mcp_bridge
 
     monkeypatch.setenv("A2A_ASYNC_ENABLED", "true")
+    monkeypatch.setattr(mcp_bridge, "_peer_summary_for_descriptions", _no_peer_summary)
     request = _FakeRequest(
         {"jsonrpc": "2.0", "id": 6, "method": "tools/list", "params": {}}
     )
@@ -281,6 +387,7 @@ def test_mcp_tools_list_exposes_async_tools_when_enabled(monkeypatch):
     assert tool_names == [
         "a2a_call_peer",
         "a2a_call_peer_async",
+        "a2a_wait_task",
         "a2a_get_task",
         "a2a_cancel_task",
         "a2a_list_peers",
@@ -365,7 +472,10 @@ def test_mcp_tools_call_routes_async_peer_call(monkeypatch):
 
     assert payload["id"] == 9
     assert payload["result"]["content"] == [
-        {"type": "text", "text": "Submitted task task-1"}
+        {
+            "type": "text",
+            "text": "Submitted task task-1. Call a2a_wait_task with to=analyst and task_id=task-1 to wait for the final reply. If it reports the task is still working, call a2a_wait_task again with the same task_id.",
+        }
     ]
     assert payload["result"]["structuredContent"]["task_id"] == "task-1"
     assert calls[1][2]["params"]["configuration"] == {"blocking": False}
@@ -425,6 +535,73 @@ def test_mcp_tools_call_routes_task_tools(monkeypatch):
     ]
     assert calls[1] == ("GET", "http://peer.local/tasks/task-1", None)
     assert calls[3] == ("POST", "http://peer.local/tasks/task-1/cancel", {})
+
+
+def test_mcp_get_task_returns_completed_reply_as_content(monkeypatch):
+    from clawcu.a2a.adapter import mcp_bridge
+
+    calls = []
+    monkeypatch.setattr(
+        mcp_bridge.httpx,
+        "AsyncClient",
+        lambda *a, **kw: _FakeClient(calls, *a, **kw),
+    )
+    monkeypatch.setenv("A2A_ASYNC_ENABLED", "true")
+    request = _FakeRequest(
+        {
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "tools/call",
+            "params": {
+                "name": "a2a_get_task",
+                "arguments": {
+                    "to": "analyst",
+                    "task_id": "task-done",
+                    "registry_url": "http://registry",
+                },
+            },
+        }
+    )
+
+    response = asyncio.run(mcp_bridge.handle_mcp(request))
+    payload = json.loads(response.body)
+
+    assert payload["result"]["content"] == [{"type": "text", "text": "done reply"}]
+    assert payload["result"]["structuredContent"]["reply"] == "done reply"
+
+
+def test_mcp_wait_task_returns_completed_reply_as_content(monkeypatch):
+    from clawcu.a2a.adapter import mcp_bridge
+
+    calls = []
+    monkeypatch.setattr(
+        mcp_bridge.httpx,
+        "AsyncClient",
+        lambda *a, **kw: _FakeClient(calls, *a, **kw),
+    )
+    monkeypatch.setenv("A2A_ASYNC_ENABLED", "true")
+    request = _FakeRequest(
+        {
+            "jsonrpc": "2.0",
+            "id": 13,
+            "method": "tools/call",
+            "params": {
+                "name": "a2a_wait_task",
+                "arguments": {
+                    "to": "analyst",
+                    "task_id": "task-done",
+                    "registry_url": "http://registry",
+                    "timeout_seconds": 5,
+                },
+            },
+        }
+    )
+
+    response = asyncio.run(mcp_bridge.handle_mcp(request))
+    payload = json.loads(response.body)
+
+    assert payload["result"]["content"] == [{"type": "text", "text": "done reply"}]
+    assert payload["result"]["structuredContent"]["reply"] == "done reply"
 
 
 def test_mcp_tools_call_lists_peers(monkeypatch):

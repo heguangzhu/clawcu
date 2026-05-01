@@ -29,12 +29,88 @@ Rapha loop Round 3 is complete and verified:
 - Preserve `A2A_ASYNC_ENABLED=false` as the explicit rollback switch that hides async MCP tools and rejects non-blocking submissions.
 - Verified with `uv run --extra a2a pytest` (`511 passed`).
 
+Rapha loop Round 4 is planned:
+
+- Move the A2A registry from a host foreground/LaunchAgent process into a managed Docker service named `clawcu-a2a-registry`.
+- Reuse the shared `clawcu-a2a-redis` container as the registry state store.
+- Store peer card/status/endpoint/last-seen state in Redis so registry restarts do not lose discovery data and adapters can publish health independently of registry process lifetime.
+- Keep HTTP discovery at `http://127.0.0.1:9100/agents` for compatibility with existing adapters and MCP tools.
+
 Final rollout state:
 
 - Async is enabled by default for A2A instances; set `A2A_ASYNC_ENABLED=false` to disable the async surface.
 - Default JSON-RPC mode remains `sync`.
 - CLI task subcommands are deferred; HTTP task endpoints and MCP async tools are the supported operator/user surfaces for this rollout.
 - Local commits: `Add Redis-backed A2A async tasks`; `Enable A2A async by default`.
+
+## Next Target: Dockerized Redis-backed Registry
+
+Current registry status:
+
+- `clawcu a2a registry serve` is a host process.
+- It discovers peer cards by probing running instance adapter ports.
+- It has no durable state and can disappear when the terminal/session dies unless externally supervised.
+
+Target registry architecture:
+
+```text
+A2A adapter companions  ---- publish card/status ----> Redis registry state
+                                                          ^
+                                                          |
+MCP tools / A2A peers ---- GET /agents ----------------> A2A registry container
+                                                          |
+                                                          v
+                                                  clawcu-a2a-redis
+```
+
+Planned services:
+
+```text
+clawcu-a2a-redis       shared Redis, already used by async tasks
+clawcu-a2a-registry    shared registry container, binds 127.0.0.1:9100
+clawcu-a2a-<instance>  per-instance HTTP adapter
+clawcu-a2a-worker-<instance> per-instance arq worker
+```
+
+Redis registry state model:
+
+```text
+a2a:registry:peer:<name>       JSON card/status snapshot
+a2a:registry:peers             Redis Set of peer names
+a2a:registry:event:<name>      optional stream for card/status changes
+```
+
+Peer snapshot fields:
+
+```json
+{
+  "name": "steve.jobs",
+  "endpoint": "http://host.docker.internal:18800",
+  "role": "A2A agent",
+  "skills": ["chat", "tools"],
+  "status": "running",
+  "source": "adapter",
+  "updated_at": "...",
+  "expires_at": "..."
+}
+```
+
+Compatibility requirements:
+
+- `/agents` and `/agents/{name}` response shapes remain unchanged.
+- `A2A_REGISTRY_URL=http://host.docker.internal:9100` remains valid inside adapter/worker containers.
+- Existing MCP tools continue to call the registry over HTTP.
+- If Redis is temporarily unavailable, registry should return a clear 503 rather than an empty peer list.
+
+Implementation scope:
+
+1. Add registry Redis store module and tests.
+2. Extend the registry HTTP server to read peer snapshots from Redis, with optional probe fallback during migration.
+3. Add a registry Docker entrypoint/image path or reuse the adapter image with a registry command.
+4. Add service lifecycle helpers to ensure Redis and `clawcu-a2a-registry` are running before A2A adapters.
+5. Add adapter-side publish/heartbeat and cleanup/TTL behavior.
+6. Update CLI/operator surface to manage the Docker registry instead of relying on a host process.
+7. Update docs, release notes, and troubleshooting.
 
 ## Goal
 
