@@ -11,7 +11,7 @@ import urllib.request
 from pathlib import Path
 
 from clawcu import __version__ as clawcu_version
-from clawcu.a2a.sidecar_plugin import resolve_advertise_host
+from clawcu.a2a._util import resolve_advertise_host
 from clawcu.core.adapters import ServiceAdapter
 from clawcu.core.models import AccessInfo, ContainerRunSpec, InstanceRecord, InstanceSpec
 from clawcu.core.validation import (
@@ -41,6 +41,7 @@ class OpenClawAdapter(ServiceAdapter):
     a2a_skills = ("chat", "tools")
     a2a_role = "OpenClaw local assistant"
     a2a_plugin_port_offsets = (0, 1)
+    a2a_gateway_auth_env_keys = ("OPENCLAW_TOKEN",)
 
     def __init__(self, manager: OpenClawManager):
         self.manager = manager
@@ -219,6 +220,11 @@ class OpenClawAdapter(ServiceAdapter):
                 endpoints = http_cfg.setdefault("endpoints", {})
                 chat_completions = endpoints.setdefault("chatCompletions", {})
                 chat_completions["enabled"] = True
+                mcp_servers = config.setdefault("mcp", {}).setdefault("servers", {})
+                mcp_servers["a2a"] = {
+                    "url": f"http://127.0.0.1:{self.a2a_internal_port}/mcp",
+                    "transport": "streamable-http",
+                }
             config_path.write_text(
                 json.dumps(config, indent=2, ensure_ascii=False),
                 encoding="utf-8",

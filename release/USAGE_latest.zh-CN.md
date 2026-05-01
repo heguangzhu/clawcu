@@ -1,11 +1,11 @@
-# ClawCU Usage v0.4.1
+# ClawCU Usage Latest
 
 🌐 Language:
-[English](USAGE_v0.4.1.md) | [中文](USAGE_v0.4.1.zh-CN.md)
+[English](USAGE_latest.md) | [中文](USAGE_latest.zh-CN.md)
 
-发布范围：`v0.4.1`
+发布范围：当前版本
 
-`ClawCU v0.4.1` 的命令参考。覆盖 OpenClaw 与 Hermes 共享的命令界面、两者差异、`v0.2.6` 引入的孤儿实例生命周期、`v0.2.9`–`v0.2.10` 的 list 页脚打磨、**`v0.4.2` A2A v0 表面**（创建时 `--a2a` opt-in、`clawcu a2a` 子命令树）、**`v0.4.1` provider 命令**（`collect` / `list` / `show` / `apply` / `remove`）、**`v0.4.1` Dashboard**（Docker 常驻容器），以及运行时默认值。
+当前 `ClawCU` 命令界面参考。覆盖 OpenClaw 与 Hermes 共享生命周期命令、provider 管理、Dashboard 常驻容器、孤儿实例恢复、A2A companion adapter，以及运行时默认值。
 
 ## 1. 初始化与镜像准备
 
@@ -41,7 +41,7 @@ clawcu create openclaw --name <name> --version <version>
 - `datadir` 默认 `~/.clawcu/<name>`
 - 默认端口 `18799`，冲突时以 `+10` 步长探测
 - 写入 `.clawcu-instance.json` 元数据 sidecar，仅凭 datadir 即可恢复
-- `--a2a` —— 把 A2A sidecar 烤进镜像（见 §11）。在原生网关旁边发布一个邻居端口，暴露 `GET /.well-known/agent-card.json` + `POST /a2a/send`。原生行为不变；sidecar 使用 Node stdlib `http` 说 A2A v0
+- `--a2a` —— 启动 companion A2A adapter 容器（见 §11）。发布额外本地端口，暴露 `GET /.well-known/agent-card.json`、JSON-RPC `message/send` 和 `POST /mcp`。原生行为不变。
 
 ### `clawcu create hermes`
 
@@ -58,7 +58,7 @@ clawcu create hermes --name <name> --version <ref>
 - API 端口默认 `8652`，仪表盘端口起点 `9129`
 - 两者均以 `+10` 步长探测
 - 同样写入 `.clawcu-instance.json` sidecar
-- `--a2a` —— 把 A2A sidecar 烤进镜像（见 §11）。Python stdlib sidecar 绑 `A2A_BIND_PORT`（默认 9119）
+- `--a2a` —— 启动 companion A2A adapter 容器（见 §11）。adapter 共享服务容器网络，暴露 AgentCard、JSON-RPC 消息和 `POST /mcp`。
 
 ## 3. 共享生命周期命令
 
@@ -420,24 +420,25 @@ clawcu provider apply <provider> <instance>
 
 ## 11. Agent-to-Agent 消息（`v0.4.2`）
 
-`v0.4.2` 引入 A2A v0 表面。所有 A2A 行为通过创建时的 `--a2a` 开启；不加则已有实例一切不变。
+`v0.4.2` 引入 companion A2A adapter 表面。所有 A2A 行为通过创建时的 `--a2a` 开启；不加则已有实例一切不变。
 
 ### 创建时 opt-in
 
-给 `clawcu create openclaw` 或 `clawcu create hermes` 传 `--a2a`，ClawCU 会把 sidecar 烤进实例镜像。烤出来的 tag 形如 `clawcu/{service}-a2a:{base}-plugin{clawcu_version}.{sha}`，其中 `sha` 对磁盘上 sidecar 源码做指纹，可编辑安装下源码改了会自动重烤。
+给 `clawcu create openclaw` 或 `clawcu create hermes` 传 `--a2a`，ClawCU 会在服务容器旁边启动 companion A2A adapter 容器。adapter 镜像共享为 `clawcu/a2a-adapter:<clawcu_version>`。
 
-启用 A2A 的实例在原生网关旁边的邻居端口上暴露：
+启用 A2A 的实例在本地 adapter 端口上暴露：
 
-- `GET /.well-known/agent-card.json` —— `{name, role, skills, endpoint}`
-- `POST /a2a/send` —— `{"from": ..., "to": ..., "message": ...}` → `{"from": ..., "message": ...}`
+- `GET /.well-known/agent-card.json` —— 标准 Google A2A AgentCard
+- `POST /` —— JSON-RPC 2.0 A2A `message/send`
+- `POST /mcp` —— MCP JSON-RPC 工具表面，暴露 `a2a_call_peer`
 
-可选请求字段 `thread_id`（uuid v7）：带上时 sidecar 把 `{peer, message, timestamp}` 以 JSONL 写到 `<datadir>/threads/<peer>.jsonl`；同 `thread_id` 的后续轮次会把之前的上下文拼回。
+启用 A2A 时，ClawCU 还会把 `mcp.servers.a2a` 写入服务配置，让本地 agent 能通过 `a2a_call_peer` MCP 工具调用对端。
 
-Sidecar 内置的运维能力（当前无对外可调 flag）：
+运维说明：
 
-- 按 peer 的 token-bucket 限流（key 为消息的 `from`）
-- 就绪探针 —— `/healthz` 只在原生网关响应后翻 `ok`
-- 日志 tee —— sidecar 的 stdout/stderr 同时写到 `<datadir>/a2a-sidecar.log`
+- adapter 会把入站 A2A 消息转发到同容器网络里的服务网关 `/v1/chat/completions`。
+- registry 通过 `GET /agents` 和 `GET /agents/<name>` 聚合卡片。
+- `clawcu inspect <instance>` 会显示 A2A 端口、registry URL、hop budget 和 MCP URL。
 
 ### `clawcu a2a card`
 
@@ -450,7 +451,7 @@ clawcu a2a card [--name <instance>] [--host 127.0.0.1]
 ### `clawcu a2a registry serve`
 
 ```
-clawcu a2a registry serve [--port 8765] [--host 127.0.0.1]
+clawcu a2a registry serve [--port 9100] [--host 127.0.0.1]
 ```
 
 跑聚合器：通过 HTTP 提供 `GET /agents`（数组）与 `GET /agents/<name>`（单张卡片），stdlib-only。一个进程服务 N 个实例。
@@ -459,11 +460,11 @@ clawcu a2a registry serve [--port 8765] [--host 127.0.0.1]
 
 ```
 clawcu a2a send --to <target> --message <text>
-                [--registry http://127.0.0.1:8765]
+                [--registry http://127.0.0.1:9100]
                 [--from clawcu-cli] [--timeout 60]
 ```
 
-在 registry 里查 `TARGET`，向其 endpoint POST 消息。打印回复 JSON。`--timeout` 是等待 LLM 回复的时长。
+在 registry 里查 `TARGET`，向其 endpoint 发送 A2A JSON-RPC `message/send` 请求。打印回复 JSON。`--timeout` 是等待 LLM 回复的时长。
 
 ### `clawcu hermes identity set`
 
@@ -475,6 +476,6 @@ clawcu hermes identity set <instance> <soul-path>
 
 ## 12. 备注
 
-- 本文档描述 `v0.4.1` 命令界面。
-- 发布上下文见 [RELEASE_v0.4.1.zh-CN.md](RELEASE_v0.4.1.zh-CN.md)。
+- 本文档描述当前命令界面。
+- 发布上下文见 [RELEASE_latest.zh-CN.md](RELEASE_latest.zh-CN.md)。
 - 快捷方式：[USAGE_latest.zh-CN.md](USAGE_latest.zh-CN.md) 始终指向当前发布版本。
