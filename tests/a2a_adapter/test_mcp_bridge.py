@@ -402,6 +402,28 @@ def test_send_timeout_clamps_low_tool_argument_to_24h(monkeypatch):
     assert mcp_bridge._send_timeout({"timeout_seconds": 90}) == 86400
 
 
+def test_wait_timeout_clamps_high_tool_argument_to_default():
+    from clawcu.a2a.adapter import mcp_bridge
+
+    # Model passes 60s but default cap is 15s, should be clamped
+    assert mcp_bridge._wait_timeout({"timeout_seconds": 60}) == 15.0
+    assert mcp_bridge._wait_timeout({"timeout_seconds": 120}) == 15.0
+    # Within cap is fine
+    assert mcp_bridge._wait_timeout({"timeout_seconds": 10}) == 10.0
+    # No argument uses default
+    assert mcp_bridge._wait_timeout({}) == 15.0
+
+
+def test_wait_timeout_respects_env_override(monkeypatch):
+    from clawcu.a2a.adapter import mcp_bridge
+
+    monkeypatch.setenv("A2A_TASK_WAIT_TIMEOUT", "30")
+    assert mcp_bridge._wait_timeout({}) == 30.0
+    # Model can't exceed env cap either
+    assert mcp_bridge._wait_timeout({"timeout_seconds": 60}) == 30.0
+    assert mcp_bridge._wait_timeout({"timeout_seconds": 20}) == 20.0
+
+
 def test_mcp_tools_call_routes_agent_to_peer(monkeypatch):
     from clawcu.a2a.adapter import mcp_bridge
 

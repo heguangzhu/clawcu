@@ -75,13 +75,14 @@ def _wait_timeout(arguments: dict[str, Any]) -> float:
         default = float(raw_default)
     except (TypeError, ValueError):
         default = DEFAULT_WAIT_TIMEOUT_SECONDS
+    cap = max(1.0, default)
     if "timeout_seconds" not in arguments:
-        return max(1.0, default)
+        return cap
     try:
         requested = float(arguments["timeout_seconds"])
     except (TypeError, ValueError):
-        return max(1.0, default)
-    return max(1.0, requested)
+        return cap
+    return min(cap, max(1.0, requested))
 
 
 def _wait_poll_interval(arguments: dict[str, Any]) -> float:
