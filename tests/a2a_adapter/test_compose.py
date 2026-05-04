@@ -203,7 +203,7 @@ class TestCompanionHelpers:
             [
                 "docker", "run", "-d",
                 "--name", "clawcu-a2a-redis",
-                "--network", "container:clawcu-openclaw-writer",
+                "-p", "127.0.0.1:6379:6379",
                 "--restart", "unless-stopped",
                 "redis:7-alpine",
                 "redis-server",

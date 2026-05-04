@@ -20,8 +20,11 @@ from clawcu.a2a.adapter.compose import (
     build_adapter_image,
     redis_companion_spec,
     redis_companion_status,
+    registry_companion_spec,
+    registry_companion_status,
     start_companion,
     start_redis_companion,
+    start_registry_companion,
     start_worker_companion,
     stop_companion,
     stop_worker_companion,
@@ -69,6 +72,7 @@ class ClawCUService:
     STARTUP_PROGRESS_INTERVAL_SECONDS = 10.0
     STARTUP_TIMEOUT_SECONDS = 120.0
     SHARED_A2A_REDIS_CONTAINER = "clawcu-a2a-redis"
+    SHARED_A2A_REGISTRY_CONTAINER = "clawcu-a2a-registry"
     A2A_ASYNC_ENV_SPEC_ATTRS: dict[str, tuple[str, ...]] = {
         "A2A_ASYNC_ENABLED": ("async_enabled",),
         "A2A_DEFAULT_MODE": ("default_mode",),
@@ -869,12 +873,22 @@ class ClawCUService:
         return spec
 
     def _ensure_a2a_redis_companion(self, record: InstanceRecord) -> None:
+        redis_spec = redis_companion_spec(record.name)
         if self.docker.container_status(self.SHARED_A2A_REDIS_CONTAINER) == "running":
-            return
+            inspection = self.docker.inspect_container(self.SHARED_A2A_REDIS_CONTAINER) or {}
+            ports = (inspection.get("NetworkSettings") or {}).get("Ports") or {}
+            bindings = ports.get(f"{redis_spec.redis_port}/tcp") or []
+            has_host_binding = any(
+                str(binding.get("HostPort") or "") == str(redis_spec.redis_port)
+                for binding in bindings
+                if isinstance(binding, dict)
+            )
+            if has_host_binding:
+                return
         try:
             start_redis_companion(
                 self.docker,
-                redis_companion_spec(record.name),
+                redis_spec,
                 record.container_name,
             )
         except Exception as exc:
@@ -884,10 +898,23 @@ class ClawCUService:
                 "Redis; check Docker availability and that port 6379 is free."
             ) from exc
 
+    def _ensure_a2a_registry_companion(self, adapter_image: str) -> None:
+        if self.docker.container_status(self.SHARED_A2A_REGISTRY_CONTAINER) == "running":
+            return
+        try:
+            start_registry_companion(self.docker, registry_companion_spec(adapter_image))
+        except Exception as exc:
+            raise RuntimeError(
+                "Failed to start shared A2A registry companion "
+                f"'{self.SHARED_A2A_REGISTRY_CONTAINER}'. Check Docker availability "
+                "and that port 9100 is free."
+            ) from exc
+
     def _start_a2a_companion(self, record: InstanceRecord) -> None:
         """Start the A2A companion stack for an A2A-enabled instance."""
         spec = self._build_a2a_companion_spec(record)
         self._ensure_a2a_redis_companion(record)
+        self._ensure_a2a_registry_companion(spec.adapter_image)
         start_companion(self.docker, spec, record.container_name)
         worker_spec = worker_companion_spec(spec)
         try:
@@ -1124,11 +1151,16 @@ class ClawCUService:
             }
         )
         redis_status = redis_companion_status(self.docker, record.name)
+        registry_status = registry_companion_status(self.docker)
         worker_status = worker_companion_status(self.docker, record.name)
         async_warnings: list[str] = []
         if async_cfg.enabled and redis_status != "running":
             async_warnings.append(
                 f"Redis companion is {redis_status}; async tasks need clawcu-a2a-redis running"
+            )
+        if async_cfg.enabled and registry_status != "running":
+            async_warnings.append(
+                f"registry companion is {registry_status}; peer discovery may fail"
             )
         if async_cfg.enabled and worker_status != "running":
             async_warnings.append(
@@ -1146,6 +1178,7 @@ class ClawCUService:
             "redis_url": async_cfg.redis_url,
             "queue_name": async_cfg.queue_name,
             "redis_status": redis_status,
+            "registry_status": registry_status,
             "worker_status": worker_status,
             "async_warning": "; ".join(async_warnings),
         }
