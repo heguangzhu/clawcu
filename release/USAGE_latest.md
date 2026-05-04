@@ -452,9 +452,11 @@ Print the AgentCard JSON for a local clawcu instance (derived from its record). 
 
 ```
 clawcu a2a registry serve [--port 9100] [--host 127.0.0.1]
+                         [--provider probe|redis]
+                         [--redis-url redis://host.docker.internal:6379/0]
 ```
 
-Run the aggregator: serves `GET /agents` (array) and `GET /agents/<name>` (single card) over HTTP, stdlib-only. One process for N instances.
+Run a foreground/debug registry server: serves `GET /agents` (array) and `GET /agents/<name>` (single card) over HTTP. Normal A2A lifecycle manages the Dockerized `clawcu-a2a-registry` automatically; use `--provider redis` to read Redis-backed peer snapshots, or `--provider probe` for legacy live probing.
 
 ### `clawcu a2a send`
 

@@ -452,9 +452,11 @@ clawcu a2a card [--name <instance>] [--host 127.0.0.1]
 
 ```
 clawcu a2a registry serve [--port 9100] [--host 127.0.0.1]
+                         [--provider probe|redis]
+                         [--redis-url redis://host.docker.internal:6379/0]
 ```
 
-跑聚合器：通过 HTTP 提供 `GET /agents`（数组）与 `GET /agents/<name>`（单张卡片），stdlib-only。一个进程服务 N 个实例。
+运行前台/debug registry server：通过 HTTP 提供 `GET /agents`（数组）与 `GET /agents/<name>`（单张卡片）。正常 A2A lifecycle 会自动管理 Dockerized `clawcu-a2a-registry`；`--provider redis` 读取 Redis-backed peer snapshots，`--provider probe` 保留旧的实时探测模式。
 
 ### `clawcu a2a send`
 
