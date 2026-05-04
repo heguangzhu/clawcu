@@ -17,6 +17,8 @@ from clawcu.a2a.client import (
     send_via_registry,
 )
 from clawcu.a2a.registry import make_cards_provider, serve_registry_forever
+from clawcu.a2a.registry_store import make_redis_cards_provider
+from clawcu.a2a.adapter.tasks import DEFAULT_REDIS_URL
 from clawcu.service import ClawCUService
 
 
@@ -69,11 +71,19 @@ def card_command(
 def registry_serve(
     port: Annotated[int, typer.Option("--port", help="Port to bind the registry server on.")] = DEFAULT_REGISTRY_PORT,
     host: Annotated[str, typer.Option("--host", help="Host interface to bind.")] = "127.0.0.1",
+    provider_mode: Annotated[str, typer.Option("--provider", help="Card provider: probe or redis.")] = "probe",
+    redis_url: Annotated[str, typer.Option("--redis-url", help="Redis URL for --provider redis.")] = DEFAULT_REDIS_URL,
 ) -> None:
-    """Serve /agents and /agents/{name} over HTTP (stdlib-only)."""
-    service = _get_service()
-    provider = make_cards_provider(service, host=host)
-    console.print(f"[bold]A2A registry[/bold] listening on http://{host}:{port}")
+    """Serve /agents and /agents/{name} over HTTP."""
+    if provider_mode == "redis":
+        provider = make_redis_cards_provider(redis_url)
+    elif provider_mode == "probe":
+        service = _get_service()
+        provider = make_cards_provider(service, host=host)
+    else:
+        console.print("[bold red]Error:[/bold red] --provider must be 'probe' or 'redis'.")
+        raise typer.Exit(code=2)
+    console.print(f"[bold]A2A registry[/bold] listening on http://{host}:{port} ({provider_mode})")
     try:
         serve_registry_forever(provider, host=host, port=port)
     except KeyboardInterrupt:

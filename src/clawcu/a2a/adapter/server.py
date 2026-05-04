@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import threading
 import time
 from typing import Any
 
@@ -12,6 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from clawcu.a2a.registry_store import publish_card
 from .executor import _GATEWAY_AUTH_TOKEN, _call_gateway, _check_gateway_ready
 from .mcp_bridge import handle_mcp
 from .tasks import (
@@ -279,6 +282,18 @@ async def handle_task_events(request: Request):
     return EventSourceResponse(_events())
 
 
+def _publish_registry_loop(agent_card) -> None:
+    redis_url = config_from_env().redis_url
+    ttl_s = int(os.environ.get("A2A_REGISTRY_CARD_TTL_S", "30") or "30")
+    interval_s = max(1, int(os.environ.get("A2A_REGISTRY_PUBLISH_INTERVAL_S", "10") or "10"))
+    while True:
+        try:
+            publish_card(redis_url, agent_card, ttl_s=ttl_s)
+        except Exception:
+            log.warning("failed to publish A2A card to Redis registry", exc_info=True)
+        time.sleep(interval_s)
+
+
 def create_app() -> Starlette:
     """Build the Starlette application with JSON-RPC and agent-card routes."""
     try:
@@ -293,6 +308,8 @@ def create_app() -> Starlette:
         raise
 
     agent_card = build_agent_card()
+
+    threading.Thread(target=_publish_registry_loop, args=(agent_card,), daemon=True).start()
 
     routes = [
         *create_agent_card_routes(agent_card),

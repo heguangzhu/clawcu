@@ -17,6 +17,8 @@ _REDIS_IMAGE = "redis:7-alpine"
 _REDIS_PORT = 6379
 _ARQ_WORKER_SETTINGS = "clawcu.a2a.adapter.worker.WorkerSettings"
 _REDIS_CONTAINER_NAME = "clawcu-a2a-redis"
+_REGISTRY_CONTAINER_NAME = "clawcu-a2a-registry"
+_REGISTRY_PORT = 9100
 
 
 @dataclass
@@ -56,6 +58,16 @@ class RedisCompanionSpec:
     instance_name: str = "shared"
     redis_image: str = _REDIS_IMAGE
     redis_port: int = _REDIS_PORT
+
+
+@dataclass
+class RegistryCompanionSpec:
+    """Configuration for the shared A2A registry container."""
+
+    registry_image: str
+    redis_url: str = tasks.DEFAULT_REDIS_URL
+    registry_port: int = _REGISTRY_PORT
+    command: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -137,9 +149,19 @@ def worker_companion_container_name(instance_name: str) -> str:
     return f"clawcu-a2a-worker-{instance_name}"
 
 
+def registry_companion_container_name() -> str:
+    """Canonical container name for the shared A2A registry."""
+    return _REGISTRY_CONTAINER_NAME
+
+
 def redis_companion_spec(instance_name: str) -> RedisCompanionSpec:
     """Return the shared Redis companion spec."""
     return RedisCompanionSpec(instance_name=instance_name)
+
+
+def registry_companion_spec(adapter_image: str) -> RegistryCompanionSpec:
+    """Return the shared registry companion spec."""
+    return RegistryCompanionSpec(registry_image=adapter_image)
 
 
 def worker_companion_spec(spec: CompanionSpec) -> WorkerCompanionSpec:
@@ -194,6 +216,12 @@ def _companion_env(spec: CompanionSpec) -> dict[str, str]:
         "A2A_TASK_RETAIN_S": str(spec.task_retain_seconds),
         "A2A_TASK_PROGRESS_INTERVAL_S": str(spec.task_progress_interval_seconds),
         "A2A_TASK_EVENTS_IDLE_TIMEOUT_S": str(spec.task_events_idle_timeout_seconds),
+    }
+
+
+def _registry_env(spec: RegistryCompanionSpec) -> dict[str, str]:
+    return {
+        "A2A_REDIS_URL": spec.redis_url,
     }
 
 
@@ -257,7 +285,14 @@ def start_companion(docker, spec: CompanionSpec, main_container: str) -> None:
 
 
 def start_redis_companion(docker, spec: RedisCompanionSpec, main_container: str) -> None:
-    """Start the Redis companion container sharing the main container's network."""
+    """Start the shared Redis companion with a host-local port.
+
+    A2A adapter and worker companions share the main service container's network
+    namespace, so a Redis container attached to one main container namespace can
+    become unreachable after that main container restarts. Publish Redis on the
+    Docker host loopback instead; companions consistently reach it via the
+    default A2A_REDIS_URL (host.docker.internal:6379).
+    """
     cname = redis_companion_container_name(spec.instance_name)
 
     docker.remove_container(cname, missing_ok=True)
@@ -265,7 +300,7 @@ def start_redis_companion(docker, spec: RedisCompanionSpec, main_container: str)
     cmd = [
         "docker", "run", "-d",
         "--name", cname,
-        "--network", f"container:{main_container}",
+        "-p", f"127.0.0.1:{spec.redis_port}:{spec.redis_port}",
         "--restart", "unless-stopped",
         spec.redis_image,
         "redis-server",
@@ -274,7 +309,34 @@ def start_redis_companion(docker, spec: RedisCompanionSpec, main_container: str)
         "--port", str(spec.redis_port),
     ]
     _run_docker_command(docker, cmd, cname)
-    log.info("started Redis companion %s (network=%s)", cname, main_container)
+    log.info("started Redis companion %s (host_port=%s)", cname, spec.redis_port)
+
+
+def start_registry_companion(docker, spec: RegistryCompanionSpec) -> None:
+    """Start the shared Redis-backed A2A registry container."""
+    cname = registry_companion_container_name()
+
+    docker.remove_container(cname, missing_ok=True)
+
+    command = spec.command or [
+        "clawcu", "a2a", "registry", "serve",
+        "--provider", "redis",
+        "--host", "0.0.0.0",
+        "--port", str(spec.registry_port),
+        "--redis-url", spec.redis_url,
+    ]
+    cmd = [
+        "docker", "run", "-d",
+        "--name", cname,
+        "-p", f"127.0.0.1:{spec.registry_port}:{spec.registry_port}",
+        "--add-host", "host.docker.internal:host-gateway",
+        "--restart", "unless-stopped",
+        *_env_flags(_registry_env(spec)),
+        spec.registry_image,
+        *command,
+    ]
+    _run_docker_command(docker, cmd, cname)
+    log.info("started A2A registry companion %s (host_port=%s)", cname, spec.registry_port)
 
 
 def start_worker_companion(docker, spec: WorkerCompanionSpec, main_container: str) -> None:
@@ -317,6 +379,16 @@ def stop_redis_companion(docker, instance_name: str) -> None:
     docker.remove_container(cname, missing_ok=True)
 
 
+def stop_registry_companion(docker) -> None:
+    """Stop and remove the shared A2A registry companion container."""
+    cname = registry_companion_container_name()
+    try:
+        docker.stop_container(cname)
+    except Exception:
+        pass
+    docker.remove_container(cname, missing_ok=True)
+
+
 def stop_worker_companion(docker, instance_name: str) -> None:
     """Stop and remove the arq worker companion container."""
     cname = worker_companion_container_name(instance_name)
@@ -340,3 +412,8 @@ def redis_companion_status(docker, instance_name: str) -> str:
 def worker_companion_status(docker, instance_name: str) -> str:
     """Return the status of the arq worker companion container, or 'missing'."""
     return docker.container_status(worker_companion_container_name(instance_name))
+
+
+def registry_companion_status(docker) -> str:
+    """Return the status of the shared A2A registry companion, or 'missing'."""
+    return docker.container_status(registry_companion_container_name())

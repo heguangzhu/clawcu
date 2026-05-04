@@ -402,6 +402,28 @@ def test_send_timeout_clamps_low_tool_argument_to_24h(monkeypatch):
     assert mcp_bridge._send_timeout({"timeout_seconds": 90}) == 86400
 
 
+def test_wait_timeout_clamps_high_tool_argument_to_default():
+    from clawcu.a2a.adapter import mcp_bridge
+
+    # Model passes 60s but default cap is 15s, should be clamped
+    assert mcp_bridge._wait_timeout({"timeout_seconds": 60}) == 15.0
+    assert mcp_bridge._wait_timeout({"timeout_seconds": 120}) == 15.0
+    # Within cap is fine
+    assert mcp_bridge._wait_timeout({"timeout_seconds": 10}) == 10.0
+    # No argument uses default
+    assert mcp_bridge._wait_timeout({}) == 15.0
+
+
+def test_wait_timeout_respects_env_override(monkeypatch):
+    from clawcu.a2a.adapter import mcp_bridge
+
+    monkeypatch.setenv("A2A_TASK_WAIT_TIMEOUT", "30")
+    assert mcp_bridge._wait_timeout({}) == 30.0
+    # Model can't exceed env cap either
+    assert mcp_bridge._wait_timeout({"timeout_seconds": 60}) == 30.0
+    assert mcp_bridge._wait_timeout({"timeout_seconds": 20}) == 20.0
+
+
 def test_mcp_tools_call_routes_agent_to_peer(monkeypatch):
     from clawcu.a2a.adapter import mcp_bridge
 
@@ -528,10 +550,10 @@ def test_mcp_tools_call_routes_task_tools(monkeypatch):
     cancel_payload = json.loads(cancel_response.body)
 
     assert get_payload["result"]["content"] == [
-        {"type": "text", "text": "Task task-1 is working"}
+        {"type": "text", "text": "Task task-1 from analyst is working"}
     ]
     assert cancel_payload["result"]["content"] == [
-        {"type": "text", "text": "Task task-1 is canceled"}
+        {"type": "text", "text": "Task task-1 from analyst is canceled"}
     ]
     assert calls[1] == ("GET", "http://peer.local/tasks/task-1", None)
     assert calls[3] == ("POST", "http://peer.local/tasks/task-1/cancel", {})
@@ -601,6 +623,7 @@ def test_mcp_wait_task_returns_completed_reply_as_content(monkeypatch):
     payload = json.loads(response.body)
 
     assert payload["result"]["content"] == [{"type": "text", "text": "done reply"}]
+    assert payload["result"]["isError"] is False
     assert payload["result"]["structuredContent"]["reply"] == "done reply"
 
 
@@ -633,6 +656,52 @@ def test_mcp_tools_call_lists_peers(monkeypatch):
     assert "analyst" in payload["result"]["content"][0]["text"]
     assert payload["result"]["structuredContent"]["peers"][1]["name"] == "analyst"
     assert calls == [("GET", "http://registry/agents", None)]
+
+
+def test_wait_task_timeout_text_includes_guidance(monkeypatch):
+    from clawcu.a2a.adapter import mcp_bridge
+
+    calls = []
+    monkeypatch.setattr(
+        mcp_bridge.httpx,
+        "AsyncClient",
+        lambda *a, **kw: _FakeClient(calls, *a, **kw),
+    )
+    monkeypatch.setenv("A2A_ASYNC_ENABLED", "true")
+    request = _FakeRequest(
+        {
+            "jsonrpc": "2.0",
+            "id": 14,
+            "method": "tools/call",
+            "params": {
+                "name": "a2a_wait_task",
+                "arguments": {
+                    "to": "analyst",
+                    "task_id": "task-1",
+                    "registry_url": "http://registry",
+                    "timeout_seconds": 1,
+                    "poll_interval_seconds": 0.5,
+                },
+            },
+        }
+    )
+
+    response = asyncio.run(mcp_bridge.handle_mcp(request))
+    payload = json.loads(response.body)
+    text = payload["result"]["content"][0]["text"]
+
+    assert "from analyst" in text
+    assert "timed out" in text
+    assert "Tell the user the task is still running" in text
+    assert "call a2a_wait_task again" in text
+    assert payload["result"]["structuredContent"]["timed_out"] is True
+    assert payload["result"]["isError"] is True
+
+
+def test_default_wait_timeout_is_15_seconds():
+    from clawcu.a2a.adapter import mcp_bridge
+
+    assert mcp_bridge.DEFAULT_WAIT_TIMEOUT_SECONDS == 15.0
 
 
 def test_mcp_tools_call_uses_exception_type_for_empty_error(monkeypatch):

@@ -22,7 +22,7 @@ CANCEL_TASK_TOOL_NAME = "a2a_cancel_task"
 LIST_TOOL_NAME = "a2a_list_peers"
 MCP_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_SEND_TIMEOUT_SECONDS = 86400.0
-DEFAULT_WAIT_TIMEOUT_SECONDS = 45.0
+DEFAULT_WAIT_TIMEOUT_SECONDS = 15.0
 DEFAULT_WAIT_POLL_INTERVAL_SECONDS = 2.0
 TOOL_PEER_CACHE_TTL_SECONDS = 30.0
 TOOL_PEER_FETCH_TIMEOUT_SECONDS = 2.0
@@ -75,13 +75,14 @@ def _wait_timeout(arguments: dict[str, Any]) -> float:
         default = float(raw_default)
     except (TypeError, ValueError):
         default = DEFAULT_WAIT_TIMEOUT_SECONDS
+    cap = max(1.0, default)
     if "timeout_seconds" not in arguments:
-        return max(1.0, default)
+        return cap
     try:
         requested = float(arguments["timeout_seconds"])
     except (TypeError, ValueError):
-        return max(1.0, default)
-    return max(1.0, requested)
+        return cap
+    return min(cap, max(1.0, requested))
 
 
 def _wait_poll_interval(arguments: dict[str, Any]) -> float:
@@ -154,9 +155,12 @@ def _task_tool_text(structured: dict[str, Any]) -> str:
     if isinstance(reply, str) and reply:
         return reply
     task_id = str(structured.get("task_id") or "")
+    target = str(structured.get("from") or "")
     task = structured.get("task")
     state = _task_state(task) if isinstance(task, dict) else ""
     text = f"Task {task_id}"
+    if target:
+        text += f" from {target}"
     if state:
         text += f" is {state}"
     if structured.get("timed_out"):
@@ -165,6 +169,10 @@ def _task_tool_text(structured: dict[str, Any]) -> str:
             text += f" (wait timed out after {timeout:g}s)"
         else:
             text += " (wait timed out)"
+        text += (
+            ". Tell the user the task is still running"
+            " and call a2a_wait_task again with the same to and task_id."
+        )
     return text
 
 
@@ -627,7 +635,7 @@ def _wait_tool_descriptor(peer_summary: str = "") -> dict[str, Any]:
     return {
         "name": WAIT_TASK_TOOL_NAME,
         "description": _description_with_peers(
-            "Wait briefly for an asynchronous A2A peer task to reach completed, failed, or canceled. Defaults to 45 seconds so the MCP client does not time out. When the task is completed and has a reply, this tool returns the reply directly in content. If it returns a working/timed-out status, call this tool again with the same task_id.",
+            "Wait for an asynchronous A2A peer task to reach completed, failed, or canceled. Defaults to 15 seconds to keep the user informed. When the task is completed and has a reply, this tool returns the reply directly. If it times out with working status, first tell the user the peer is still working on it, then call this tool again with the same to and task_id.",
             peer_summary,
         ),
         "inputSchema": {
@@ -636,7 +644,7 @@ def _wait_tool_descriptor(peer_summary: str = "") -> dict[str, Any]:
                 "to": {"type": "string", "description": "Target agent name in the A2A registry. Matching is case-insensitive; use the peer names shown in the tool description when available."},
                 "task_id": {"type": "string", "description": "Peer task id returned by a2a_call_peer_async."},
                 "registry_url": {"type": "string", "description": "Optional registry URL override."},
-                "timeout_seconds": {"type": "number", "description": "Maximum time to wait for completion. Defaults to 45 seconds."},
+                "timeout_seconds": {"type": "number", "description": "Maximum time to wait for completion. Defaults to 15 seconds."},
                 "poll_interval_seconds": {"type": "number", "description": "How often to poll task status. Defaults to 2 seconds."},
             },
             "required": ["to", "task_id"],
@@ -810,11 +818,12 @@ async def handle_mcp(request: Request) -> Response:
             except Exception as exc:
                 return _rpc_error(rpc_id, -32000, str(exc) or exc.__class__.__name__)
             text = _task_tool_text(structured)
+            is_error = bool(structured.get("timed_out"))
             return _rpc_result(
                 rpc_id,
                 {
                     "content": [{"type": "text", "text": text}],
-                    "isError": False,
+                    "isError": is_error,
                     "structuredContent": structured,
                 },
             )
