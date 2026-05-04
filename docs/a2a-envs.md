@@ -88,9 +88,10 @@ Scope legend: **CP** = control plane (`clawcu a2a` CLI, builder, registry). **HS
 
 Deployment defaults:
 
-- Redis runs as a shared container named `clawcu-a2a-redis`.
-- Each A2A instance gets a worker container named `clawcu-a2a-worker-<instance>`.
-- The default queue is `clawcu:a2a:<instance>`.
+- Redis runs as a shared container named `clawcu-a2a-redis` and is host-local on `127.0.0.1:6379`.
+- The Redis-backed registry runs as `clawcu-a2a-registry` and is host-local on `127.0.0.1:9100`.
+- Each A2A instance gets an adapter container named `clawcu-a2a-<instance>` and a worker container named `clawcu-a2a-worker-<instance>`.
+- The default task queue is `clawcu:a2a:<instance>`. Registry peer state uses `a2a:registry:peers` and `a2a:registry:peer:<name>` with TTL refreshes from adapters.
 
 ## MCP tool description
 

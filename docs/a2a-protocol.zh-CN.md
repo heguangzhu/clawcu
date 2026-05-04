@@ -11,7 +11,7 @@
 - `clawcu create openclaw|hermes --a2a ...` 启动一个**同伴容器**运行 A2A adapter。
 - Adapter 说标准 **Google A2A 协议**（JSON-RPC 2.0），暴露 `GET /.well-known/agent-card.json`（发现）、`POST /`（JSON-RPC 消息）、`/tasks/{task_id}` 下的任务端点和 `POST /mcp`（MCP 工具）。
 - 不加 `--a2a` 的普通实例一丝不变。A2A 严格 opt-in、纯加法。
-- `clawcu a2a registry serve` 启动聚合 registry，让实例之间可以互相发现。
+- `clawcu-a2a-registry` 会在正常 A2A lifecycle 中自动管理；`clawcu a2a registry serve` 是前台/debug server。
 - `clawcu a2a send --to <name> --message "..."` 是冒烟测试命令。
 
 * * *
@@ -264,13 +264,11 @@ Adapter 也在 `POST /mcp` 上通过 JSON-RPC 提供 MCP。
 * * *
 ## A2A registry
 
-Registry 聚合所有运行中受管实例的 AgentCard，通过 `GET /agents` 和 `GET /agents/{name}` 暴露。启动命令：
+Registry 聚合所有运行中受管 A2A 实例的 AgentCard，通过 `GET /agents` 和 `GET /agents/{name}` 暴露。ClawCU 现在会把它作为共享 Docker 容器 `clawcu-a2a-registry` 管理，并绑定到 `127.0.0.1:9100`。
 
-```bash
-clawcu a2a registry serve
-```
+每个通过 `--a2a` 创建的实例都会运行 adapter，周期性把自己的 card 发布到共享 Redis（`clawcu-a2a-redis`）。Registry 数据存放在 `a2a:registry:*` keys 下，并通过 TTL 判断存活：如果 adapter 停止发布，对应 peer card 会过期并从 `/agents` 消失。
 
-默认绑定 `127.0.0.1:9100`，前台运行（Ctrl+C 停止）。每个通过 `--a2a` 创建的受管实例发布自己的卡片；registry 负责收集它们，让实例之间可以互相发现。
+`clawcu a2a registry serve` 仍保留为前台/debug registry server；正常的 `create` / `start` / `restart` 流程会自动确保 Dockerized registry 运行。
 
 * * *
 ## 双实例完整演练
@@ -282,10 +280,8 @@ clawcu a2a registry serve
 clawcu create openclaw --name writer  --version 2026.4.12 --a2a
 clawcu create hermes   --name analyst --version 2026.4.13 --a2a
 
-# 2. 启动 A2A registry（前台运行）。
-clawcu a2a registry serve
-
-# 3. 另开一个终端：发消息。
+# 2. ClawCU 会自动确保 Redis 与 Dockerized registry 运行。
+# 两个实例运行后即可发消息。
 clawcu a2a send --to analyst --message "总结昨天的站会"
 ```
 

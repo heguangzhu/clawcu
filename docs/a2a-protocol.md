@@ -11,7 +11,7 @@
 - `clawcu create openclaw|hermes --a2a ...` launches a **companion container** running the A2A adapter alongside the service.
 - The adapter speaks the standard **Google A2A protocol** (JSON-RPC 2.0) and exposes `GET /.well-known/agent-card.json` (discovery), `POST /` (JSON-RPC messaging), task endpoints under `/tasks/{task_id}`, and `POST /mcp` (MCP tools).
 - Stock instances (no `--a2a`) are unchanged. A2A is strictly opt-in and additive.
-- `clawcu a2a registry serve` runs the aggregate registry so instances can discover each other.
+- `clawcu-a2a-registry` is managed automatically for normal A2A lifecycle; `clawcu a2a registry serve` is a foreground/debug server.
 - `clawcu a2a send --to <name> --message "..."` is the smoke test.
 
 * * *
@@ -264,13 +264,11 @@ When an instance is created with `--a2a`, ClawCU writes `mcp.servers.a2a = {"url
 * * *
 ## The A2A registry
 
-The registry aggregates AgentCards from all running managed instances and exposes them at `GET /agents` and `GET /agents/{name}`. Start it with:
+The registry aggregates AgentCards from all running managed A2A instances and exposes them at `GET /agents` and `GET /agents/{name}`. ClawCU now manages it as a shared Docker container named `clawcu-a2a-registry`, bound to `127.0.0.1:9100`.
 
-```bash
-clawcu a2a registry serve
-```
+Every managed instance with `--a2a` runs an adapter that periodically publishes its card to the shared Redis store (`clawcu-a2a-redis`). Registry entries live under `a2a:registry:*` keys with TTL-based liveness: if an adapter stops publishing, its peer card expires and disappears from `/agents`.
 
-It binds `127.0.0.1:9100` by default and runs in the foreground (Ctrl+C to stop). Every managed instance with `--a2a` publishes its card; the registry collects them so peers can find each other.
+`clawcu a2a registry serve` remains available as a foreground/debug registry server, but normal `create`/`start`/`restart` flows ensure the Dockerized registry automatically.
 
 * * *
 ## Two-instance walkthrough
@@ -282,10 +280,8 @@ The canonical smoke test: two A2A instances talking via the registry.
 clawcu create openclaw --name writer  --version 2026.4.12 --a2a
 clawcu create hermes   --name analyst --version 2026.4.13 --a2a
 
-# 2. Start the A2A registry (foreground).
-clawcu a2a registry serve
-
-# 3. From another terminal: send a message.
+# 2. ClawCU automatically ensures Redis + the Dockerized registry.
+# Send a message once both instances are running.
 clawcu a2a send --to analyst --message "summarize yesterday"
 ```
 
