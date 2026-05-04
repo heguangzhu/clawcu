@@ -59,6 +59,38 @@ class AgentCard:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AgentCard":
+        interfaces = data.get("supported_interfaces")
+        if interfaces is None:
+            interfaces = data.get("supportedInterfaces")
+        if interfaces is not None:
+            name = data.get("name")
+            interfaces = interfaces or []
+            endpoint = ""
+            if interfaces and isinstance(interfaces[0], dict):
+                endpoint = interfaces[0].get("url") or ""
+            raw_skills = data.get("skills") or []
+            skills: list[str] = []
+            for item in raw_skills:
+                if isinstance(item, dict):
+                    tags = item.get("tags") or []
+                    skills.extend(tag for tag in tags if isinstance(tag, str) and tag)
+                    skill_name = item.get("name")
+                    if isinstance(skill_name, str) and skill_name:
+                        skills.append(skill_name)
+                elif isinstance(item, str) and item:
+                    skills.append(item)
+            if not (isinstance(name, str) and name):
+                raise ValueError("AgentCard.name must be a non-empty string")
+            if not (isinstance(endpoint, str) and endpoint):
+                raise ValueError("AgentCard.endpoint must be a non-empty string")
+            return cls(
+                name=name,
+                role=data.get("description") or "A2A agent",
+                skills=list(dict.fromkeys(skills)) or ["chat"],
+                endpoint=endpoint,
+                protocol=["a2a/v0.1"],
+            )
+
         # Review-1 §2: forward-compatibility — accept unknown fields and
         # quietly drop them. A newer peer that adds ``pub_key`` or
         # ``capabilities`` must not make an older client raise ValueError.
@@ -196,7 +228,8 @@ def plugin_endpoint_for(
     service: Any = None,
     host: str = "127.0.0.1",
 ) -> str:
-    return f"http://{host}:{display_port_for_record(record, service=service)}/a2a/send"
+    ports = plugin_port_candidates(record, service=service)
+    return f"http://{host}:{ports[-1] if ports else DEFAULT_BRIDGE_PORT}"
 
 
 def card_from_record(

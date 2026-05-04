@@ -10,6 +10,26 @@
 * * *
 ## 亮点
 
+### Dashboard（Docker 常驻容器）
+
+- **`clawcu dashboard` 现在以 Docker 容器运行**
+  - 首次运行时自动构建 `clawcu-dashboard:<version>` 镜像。
+  - 容器以 `--restart unless-stopped` 常驻后台。
+  - 挂载 `~/.clawcu`、`~/.openclaw`、`~/.hermes` 和 `/var/run/docker.sock`。
+  - 默认发布在 `127.0.0.1:8765`（仅本地可访问）。
+  - 新增 flag：`--stop`、`--restart`、`--status`、`--rebuild`。
+  - Dashboard 交互操作（`open_cli`、`open_config`、`open_tui`）在容器内优雅降级，提示用户在宿主机执行对应命令。
+  - `/health` 健康检查端点，供 Docker HEALTHCHECK 和启动轮询使用。
+
+### Provider 命令（跨服务认证/模型管理）
+
+- **`clawcu provider collect/list/show/apply/remove`**
+  - 从 OpenClaw 和 Hermes 收集 provider 认证 bundle，转换为统一规范形式。
+  - 将一个 provider 应用到另一个实例，无需重新输入密钥。
+  - `list` 显示 `IN_USE` 列，指示哪些实例引用了该 provider。
+  - OAuth 检测：对使用 OAuth 的 provider 显示 `oauth` 状态。
+  - 跨服务 apply：OAuth token 和 API key 可在 OpenClaw 和 Hermes 之间迁移。
+
 ### CLI 重新设计（v0.4.x 基础）
 
 - **`list` 默认不再显示版本页脚**
@@ -37,6 +57,10 @@
 - **`remove` 自动停止运行中的实例**
   - `clawcu remove <name> --delete-data` 现在会在删除前自动停止运行中的容器（10秒优雅期）。
   - 之前这会导致 Docker 报错；现在一条命令即可完成。
+
+- **`remove` 对孤儿数据目录自动提示**
+  - 当对记录已消失但数据目录仍在的实例执行 `clawcu remove <name>` 时，CLI 会一步提示并删除孤儿数据。
+  - 无需重新加 `--removed` 执行；正确的操作路径会自动提供。
 
 - **`logs --follow` Ctrl+C 后 ANSI 重置**
   - 在 `clawcu logs <name> --follow` 期间按 Ctrl+C 会发送 ANSI 重置序列，防止终端保留 Docker 的颜色代码。

@@ -1855,6 +1855,33 @@ def test_getenv_command_table_groups_output(monkeypatch) -> None:
     assert "sk-test" not in result.stdout
 
 
+def test_getenv_command_table_groups_a2a_output(monkeypatch) -> None:
+    service = FakeService()
+
+    def getenv_with_a2a(name: str) -> dict:
+        service._record("get_instance_env", name=name)
+        return {
+            "instance": name,
+            "path": f"/tmp/{name}.env",
+            "values": {
+                "A2A_ASYNC_ENABLED": "true",
+                "A2A_QUEUE_NAME": "clawcu:a2a:writer",
+                "OPENAI_API_KEY": "sk-test",
+            },
+            "status": "running",
+        }
+
+    service.get_instance_env = getenv_with_a2a  # type: ignore[assignment]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["getenv", "writer", "--table"])
+
+    assert result.exit_code == 0
+    assert "A2A_ASYNC_ENABLED" in result.stdout
+    assert "A2A_QUEUE_NAME" in result.stdout
+    assert result.stdout.index("A2A_ASYNC_ENABLED") < result.stdout.index("OPENAI_API_KEY")
+
+
 def test_unsetenv_command_removes_instance_environment(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
@@ -2587,6 +2614,38 @@ def test_create_command_surfaces_duplicate_name_error(monkeypatch) -> None:
     assert "Instance 'writer' already exists." in result.stdout
 
 
+def test_create_command_surfaces_actionable_redis_error(monkeypatch) -> None:
+    service = FakeService()
+
+    def fail_create_openclaw(**kwargs):
+        service._record("create_openclaw", **kwargs)
+        raise RuntimeError(
+            "Failed to start shared A2A Redis companion 'clawcu-a2a-redis'. "
+            "Async A2A tasks require Redis; check Docker availability and that port 6379 is free."
+        )
+
+    service.create_openclaw = fail_create_openclaw  # type: ignore[assignment]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "create",
+            "openclaw",
+            "--name",
+            "writer",
+            "--version",
+            "2026.4.1",
+            "--a2a",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "clawcu-a2a-redis" in result.stdout
+    assert "Hint:" in result.stdout
+    assert "docker logs clawcu-a2a-redis" in result.stdout
+
+
 def test_retry_command_is_removed(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
@@ -2910,6 +2969,78 @@ def test_inspect_command_renders_human_view_by_default(monkeypatch) -> None:
     assert service.calls[-1] == ("inspect_instance", (), {"name": "writer"})
 
 
+def test_inspect_command_renders_a2a_async_details(monkeypatch) -> None:
+    service = FakeService()
+    original_inspect = service.inspect_instance
+
+    def inspect_with_a2a(name: str) -> dict:
+        payload = original_inspect(name)
+        payload["a2a"] = {
+            "enabled": True,
+            "port": 3001,
+            "registry_url": "http://host.docker.internal:9100",
+            "hop_budget": None,
+            "hop_budget_default": 8,
+            "mcp_url": "http://127.0.0.1:3001/mcp",
+            "async_enabled": True,
+            "default_mode": "async",
+            "redis_url": "redis://host.docker.internal:6379/0",
+            "queue_name": "clawcu:a2a:writer",
+            "redis_status": "running",
+            "worker_status": "running",
+            "async_warning": "",
+        }
+        return payload
+
+    service.inspect_instance = inspect_with_a2a  # type: ignore[assignment]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+    monkeypatch.setattr("clawcu.cli.console", _make_wide_console())
+
+    result = runner.invoke(app, ["inspect", "writer"])
+
+    assert result.exit_code == 0
+    assert "A2A" in result.stdout
+    assert "Async" in result.stdout
+    assert "enabled" in result.stdout
+    assert "Redis URL" in result.stdout
+    assert "clawcu:a2a:writer" in result.stdout
+    assert "Worker status" in result.stdout
+
+
+def test_inspect_command_renders_a2a_async_warning(monkeypatch) -> None:
+    service = FakeService()
+    original_inspect = service.inspect_instance
+
+    def inspect_with_a2a_warning(name: str) -> dict:
+        payload = original_inspect(name)
+        payload["a2a"] = {
+            "enabled": True,
+            "port": 3001,
+            "registry_url": "http://host.docker.internal:9100",
+            "hop_budget": None,
+            "hop_budget_default": 8,
+            "mcp_url": "http://127.0.0.1:3001/mcp",
+            "async_enabled": True,
+            "default_mode": "async",
+            "redis_url": "redis://host.docker.internal:6379/0",
+            "queue_name": "clawcu:a2a:writer",
+            "redis_status": "missing",
+            "worker_status": "missing",
+            "async_warning": "Redis companion is missing; worker companion is missing",
+        }
+        return payload
+
+    service.inspect_instance = inspect_with_a2a_warning  # type: ignore[assignment]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+    monkeypatch.setattr("clawcu.cli.console", _make_wide_console())
+
+    result = runner.invoke(app, ["inspect", "writer"])
+
+    assert result.exit_code == 0
+    assert "Warning" in result.stdout
+    assert "Redis companion is missing" in result.stdout
+
+
 def test_inspect_command_json_mode_preserves_raw_payload(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
@@ -3220,6 +3351,30 @@ def test_restart_command_no_flag_forces_plain_docker_restart(monkeypatch) -> Non
         (),
         {"name": "writer", "recreate_if_config_changed": False},
     )
+
+
+def test_restart_command_surfaces_actionable_redis_error(monkeypatch) -> None:
+    service = FakeService()
+
+    def fail_restart(name: str, *, recreate_if_config_changed: bool = True):
+        service._record(
+            "restart_instance",
+            name=name,
+            recreate_if_config_changed=recreate_if_config_changed,
+        )
+        raise RuntimeError(
+            "Failed to start shared A2A Redis companion 'clawcu-a2a-redis'. "
+            "Async A2A tasks require Redis; check Docker availability and that port 6379 is free."
+        )
+
+    service.restart_instance = fail_restart  # type: ignore[assignment]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["restart", "writer"])
+
+    assert result.exit_code != 0
+    assert "clawcu-a2a-redis" in result.stdout
+    assert "docker logs clawcu-a2a-redis" in result.stdout
 
 
 def test_upgrade_command_accepts_version_option(monkeypatch) -> None:

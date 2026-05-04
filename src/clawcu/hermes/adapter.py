@@ -11,7 +11,7 @@ from pathlib import Path
 import yaml
 
 from clawcu import __version__ as clawcu_version
-from clawcu.a2a.sidecar_plugin import resolve_advertise_host
+from clawcu.a2a._util import resolve_advertise_host
 from clawcu.core.adapters import ServiceAdapter
 from clawcu.core.models import AccessInfo, ContainerRunSpec, InstanceRecord, InstanceSpec
 from clawcu.core.validation import (
@@ -118,6 +118,9 @@ class HermesAdapter(ServiceAdapter):
     a2a_skills = ("chat", "analysis")
     a2a_role = "Hermes local analyst"
     a2a_plugin_port_offsets = (0,)
+    a2a_internal_port = 9119  # companion adapter binds the dashboard internal port
+    gateway_ready_path = "/health"
+    a2a_gateway_auth_env_keys = ("API_SERVER_KEY", "HERMES_TOKEN")
 
     def __init__(self, manager: HermesManager):
         self.manager = manager
@@ -262,6 +265,11 @@ class HermesAdapter(ServiceAdapter):
                 },
             }
             config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+        if getattr(record, "a2a_enabled", False):
+            config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            mcp_servers = config.setdefault("mcp", {}).setdefault("servers", {})
+            mcp_servers["a2a"] = {"url": f"http://127.0.0.1:{self.a2a_internal_port}/mcp"}
+            config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
         env_path = self.env_path(service, record)
         env_path.parent.mkdir(parents=True, exist_ok=True)
         env_values = service._load_env_file(env_path)

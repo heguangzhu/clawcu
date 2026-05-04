@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Provider bundle provenance via `.clawcu-instance.json` metadata.
 - Active provider as a first-class field.
 
+## [0.4.1] - 2026-04-29
+
 ### Added
 - **Dashboard Docker container** — `clawcu dashboard` now runs as a persistent Docker container instead of a local Python process:
   - Auto-builds `clawcu-dashboard:<version>` image on first run.
@@ -21,8 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - New flags: `--stop`, `--restart`, `--status`, `--rebuild`.
   - Dashboard actions (`open_cli`, `open_config`, `open_tui`) gracefully degrade inside the container with host-side command hints.
   - Health endpoint (`/health`) for Docker HEALTHCHECK and startup polling.
-
-## [0.4.1] - 2026-04-29
+- **Provider commands** — `clawcu provider collect/list/show/apply/remove` for cross-service auth/model bundle management.
+- `remove` auto-prompts to delete orphaned datadir when the instance record is already gone.
 
 ### Changed
 - **CLI redesign v1** — simplify surface for v0.4:

@@ -124,6 +124,10 @@ _HINT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(r"has no rollback snapshot"),
         "Run `clawcu rollback <name> --list` to see available rollback targets.",
     ),
+    (
+        re.compile(r"A2A Redis companion"),
+        "Check Docker status and `docker logs clawcu-a2a-redis` if the Redis companion container exists.",
+    ),
 )
 
 
@@ -1271,17 +1275,15 @@ _APPLY_PERSIST_OPTION = typer.Option(
 _A2A_OPTION = typer.Option(
     "--a2a",
     help=(
-        "Bake the A2A sidecar into the instance image so it speaks the A2A v0 "
-        "protocol (AgentCard + /a2a/send) on a neighbor port. The base image "
-        "is wrapped with the clawcu.a2a.sidecar_plugin assets for the service; the "
-        "result is tagged clawcu/{service}-a2a:{base}-plugin{clawcu-version}."
+        "Launch an A2A companion container alongside the service that speaks "
+        "the standard A2A protocol (AgentCard + JSON-RPC message/send)."
     ),
 )
 _A2A_HOP_BUDGET_OPTION = typer.Option(
     "--a2a-hop-budget",
     min=1,
     help=(
-        "Maximum number of A2A hops the sidecar will forward a single outbound "
+        "Maximum number of A2A hops the adapter will forward a single outbound "
         "call through before returning 508 Loop Detected. Persisted to the "
         "instance env file as A2A_HOP_BUDGET; defaults to 8 when unset. Requires "
         "--a2a."
@@ -1290,7 +1292,7 @@ _A2A_HOP_BUDGET_OPTION = typer.Option(
 _A2A_ADVERTISE_HOST_OPTION = typer.Option(
     "--a2a-advertise-host",
     help=(
-        "Hostname peers will use to reach this sidecar. Default: "
+        "Hostname peers will use to reach this A2A adapter. Default: "
         "host.docker.internal on macOS/Windows (Docker Desktop), 127.0.0.1 on "
         "Linux. Override when peers live on a different host or a named "
         "docker network. Requires --a2a."
@@ -1300,7 +1302,7 @@ _A2A_TRISTATE_OPTION = typer.Option(
     "--a2a/--no-a2a",
     help=(
         "Toggle the A2A flavor when recreating. Omit to preserve the instance's "
-        "current flavor; pass --a2a to switch to the baked a2a image, or "
+        "current flavor; pass --a2a to add the companion adapter, or "
         "--no-a2a to drop back to the stock image. Flipping the flag re-runs "
         "artifact preparation."
     ),
@@ -2241,6 +2243,17 @@ def _print_inspect_human(payload: dict, *, reveal: bool, show_history: bool) -> 
         a2a_table.add_row(
             "Registry URL", str(a2a.get("registry_url") or "-")
         )
+        a2a_table.add_row(
+            "Async", "enabled" if a2a.get("async_enabled") else "disabled"
+        )
+        a2a_table.add_row("Default mode", str(a2a.get("default_mode") or "-"))
+        a2a_table.add_row("Redis URL", str(a2a.get("redis_url") or "-"))
+        a2a_table.add_row("Queue", str(a2a.get("queue_name") or "-"))
+        a2a_table.add_row("Redis status", str(a2a.get("redis_status") or "-"))
+        a2a_table.add_row("Worker status", str(a2a.get("worker_status") or "-"))
+        async_warning = a2a.get("async_warning")
+        if async_warning:
+            a2a_table.add_row("Warning", f"[yellow]{async_warning}[/yellow]")
         budget = a2a.get("hop_budget")
         default_budget = a2a.get("hop_budget_default", 8)
         if budget is None:
@@ -4035,7 +4048,25 @@ def remove_instance(
                     service.stop_instance(name, timeout=10)
             except Exception:
                 pass
-            service.remove_instance(name, delete_data=delete_data)
+            try:
+                service.remove_instance(name, delete_data=delete_data)
+            except (FileNotFoundError, ValueError) as exc:
+                # The instance record is gone.  Check whether an orphaned
+                # datadir still exists and offer one-shot deletion.
+                if hasattr(service, "_find_removed_instance_root"):
+                    orphan_root = service._find_removed_instance_root(name)
+                    if orphan_root is not None:
+                        summary = (
+                            f"Instance '{name}' has already been removed, but its data directory "
+                            f"is still present. Permanently delete it?"
+                        )
+                        _confirm_destructive(summary, yes)
+                        service.remove_removed_instance(name)
+                        console.print(
+                            f"[green]Removed orphaned instance data:[/green] {name}"
+                        )
+                        return
+                raise exc
         else:
             service.remove_removed_instance(name)
     except Exception as exc:
