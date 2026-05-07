@@ -630,6 +630,7 @@ class FakeService:
         fresh: bool = False,
         timeout: int | None = None,
         version: str | None = None,
+        a2a: bool | None = None,
         prepare_artifact: bool = True,
     ) -> InstanceRecord:
         self._record(
@@ -638,6 +639,7 @@ class FakeService:
             fresh=fresh,
             timeout=timeout,
             version=version,
+            a2a=a2a,
             prepare_artifact=prepare_artifact,
         )
         if self.reporter:
@@ -1809,7 +1811,7 @@ def test_setenv_command_can_recreate_instance_immediately(monkeypatch) -> None:
             "assignments": ["OPENAI_API_KEY=sk-test"],
         },
     )
-    assert service.calls[1] == ("recreate_instance", (), {"name": "writer", "fresh": False, "timeout": None, "version": None, "prepare_artifact": True})
+    assert service.calls[1] == ("recreate_instance", (), {"name": "writer", "fresh": False, "timeout": None, "version": None, "a2a": None, "prepare_artifact": True})
 
 
 def test_getenv_command_lists_instance_environment(monkeypatch) -> None:
@@ -1853,6 +1855,33 @@ def test_getenv_command_table_groups_output(monkeypatch) -> None:
     assert "sk-test" not in result.stdout
 
 
+def test_getenv_command_table_groups_a2a_output(monkeypatch) -> None:
+    service = FakeService()
+
+    def getenv_with_a2a(name: str) -> dict:
+        service._record("get_instance_env", name=name)
+        return {
+            "instance": name,
+            "path": f"/tmp/{name}.env",
+            "values": {
+                "A2A_ASYNC_ENABLED": "true",
+                "A2A_QUEUE_NAME": "clawcu:a2a:writer",
+                "OPENAI_API_KEY": "sk-test",
+            },
+            "status": "running",
+        }
+
+    service.get_instance_env = getenv_with_a2a  # type: ignore[assignment]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["getenv", "writer", "--table"])
+
+    assert result.exit_code == 0
+    assert "A2A_ASYNC_ENABLED" in result.stdout
+    assert "A2A_QUEUE_NAME" in result.stdout
+    assert result.stdout.index("A2A_ASYNC_ENABLED") < result.stdout.index("OPENAI_API_KEY")
+
+
 def test_unsetenv_command_removes_instance_environment(monkeypatch) -> None:
     service = FakeService()
     monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
@@ -1883,7 +1912,7 @@ def test_unsetenv_command_can_recreate_instance_immediately(monkeypatch) -> None
         (),
         {"name": "writer", "keys": ["OPENAI_API_KEY"]},
     )
-    assert service.calls[1] == ("recreate_instance", (), {"name": "writer", "fresh": False, "timeout": None, "version": None, "prepare_artifact": True})
+    assert service.calls[1] == ("recreate_instance", (), {"name": "writer", "fresh": False, "timeout": None, "version": None, "a2a": None, "prepare_artifact": True})
 
 
 def test_setenv_command_from_file_loads_assignments(monkeypatch, tmp_path) -> None:
@@ -2325,6 +2354,9 @@ def test_create_command_uses_defaults(monkeypatch) -> None:
             "port": None,
             "cpu": "1",
             "memory": "2g",
+            "a2a": False,
+            "a2a_hop_budget": None,
+            "a2a_advertise_host": None,
         },
     )
     assert service.calls[-1] == (
@@ -2364,6 +2396,9 @@ def test_create_hermes_command_uses_defaults(monkeypatch) -> None:
             "port": None,
             "cpu": "1",
             "memory": "2g",
+            "a2a": False,
+            "a2a_hop_budget": None,
+            "a2a_advertise_host": None,
         },
     )
 
@@ -2398,8 +2433,160 @@ def test_create_command_accepts_image_override(monkeypatch) -> None:
             "port": None,
             "cpu": "1",
             "memory": "2g",
+            "a2a": False,
+            "a2a_hop_budget": None,
+            "a2a_advertise_host": None,
         },
     )
+
+
+def test_create_openclaw_passes_a2a_hop_budget(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "create",
+            "openclaw",
+            "--name",
+            "writer",
+            "--version",
+            "2026.4.1",
+            "--a2a",
+            "--a2a-hop-budget",
+            "4",
+        ],
+    )
+
+    assert result.exit_code == 0
+    create_call = next(c for c in service.calls if c[0] == "create_openclaw")
+    assert create_call[2]["a2a"] is True
+    assert create_call[2]["a2a_hop_budget"] == 4
+
+
+def test_create_hermes_passes_a2a_hop_budget(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "create",
+            "hermes",
+            "--name",
+            "scribe",
+            "--version",
+            "v0.9.0",
+            "--a2a",
+            "--a2a-hop-budget",
+            "16",
+        ],
+    )
+
+    assert result.exit_code == 0
+    create_call = next(c for c in service.calls if c[0] == "create_hermes")
+    assert create_call[2]["a2a"] is True
+    assert create_call[2]["a2a_hop_budget"] == 16
+
+
+def test_create_rejects_a2a_hop_budget_without_a2a(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "create",
+            "openclaw",
+            "--name",
+            "writer",
+            "--version",
+            "2026.4.1",
+            "--a2a-hop-budget",
+            "4",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--a2a-hop-budget requires --a2a" in result.stdout
+    # Service was never asked to create when validation rejects up front.
+    assert not any(call[0] == "create_openclaw" for call in service.calls)
+
+
+def test_create_rejects_zero_a2a_hop_budget(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "create",
+            "openclaw",
+            "--name",
+            "writer",
+            "--version",
+            "2026.4.1",
+            "--a2a",
+            "--a2a-hop-budget",
+            "0",
+        ],
+    )
+
+    # Typer's min=1 validation kicks in before our own validator runs.
+    assert result.exit_code != 0
+    assert not any(call[0] == "create_openclaw" for call in service.calls)
+
+
+def test_create_warns_on_large_a2a_hop_budget_but_still_creates(monkeypatch) -> None:
+    """a2a-design-5.md §P2-I: past the soft ceiling of 16, the CLI warns but
+    does not fail — the hop budget still scales, it just stops being a
+    loop-protection knob."""
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "create",
+            "openclaw",
+            "--name",
+            "writer",
+            "--version",
+            "2026.4.1",
+            "--a2a",
+            "--a2a-hop-budget",
+            "32",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "exceeds the soft ceiling of 16" in result.stdout
+    create_call = next(c for c in service.calls if c[0] == "create_openclaw")
+    assert create_call[2]["a2a_hop_budget"] == 32
+
+
+def test_create_does_not_warn_for_a2a_hop_budget_at_ceiling(monkeypatch) -> None:
+    service = FakeService()
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "create",
+            "openclaw",
+            "--name",
+            "writer",
+            "--version",
+            "2026.4.1",
+            "--a2a",
+            "--a2a-hop-budget",
+            "16",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "exceeds the soft ceiling" not in result.stdout
 
 
 def test_create_command_surfaces_duplicate_name_error(monkeypatch) -> None:
@@ -2425,6 +2612,38 @@ def test_create_command_surfaces_duplicate_name_error(monkeypatch) -> None:
 
     assert result.exit_code == 1
     assert "Instance 'writer' already exists." in result.stdout
+
+
+def test_create_command_surfaces_actionable_redis_error(monkeypatch) -> None:
+    service = FakeService()
+
+    def fail_create_openclaw(**kwargs):
+        service._record("create_openclaw", **kwargs)
+        raise RuntimeError(
+            "Failed to start shared A2A Redis companion 'clawcu-a2a-redis'. "
+            "Async A2A tasks require Redis; check Docker availability and that port 6379 is free."
+        )
+
+    service.create_openclaw = fail_create_openclaw  # type: ignore[assignment]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(
+        app,
+        [
+            "create",
+            "openclaw",
+            "--name",
+            "writer",
+            "--version",
+            "2026.4.1",
+            "--a2a",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "clawcu-a2a-redis" in result.stdout
+    assert "Hint:" in result.stdout
+    assert "docker logs clawcu-a2a-redis" in result.stdout
 
 
 def test_retry_command_is_removed(monkeypatch) -> None:
@@ -2460,7 +2679,7 @@ def test_recreate_command_forwards_timeout_and_skips_retry(monkeypatch) -> None:
     method_names = [call[0] for call in service.calls]
     assert "retry_instance" not in method_names
     recreate_call = next(call for call in service.calls if call[0] == "recreate_instance")
-    assert recreate_call[2] == {"name": "writer", "fresh": False, "timeout": 30, "version": None, "prepare_artifact": True}
+    assert recreate_call[2] == {"name": "writer", "fresh": False, "timeout": 30, "version": None, "a2a": None, "prepare_artifact": True}
 
 
 def test_recreate_command_can_recover_removed_instance_with_version(monkeypatch) -> None:
@@ -2474,7 +2693,7 @@ def test_recreate_command_can_recover_removed_instance_with_version(monkeypatch)
     assert result.exit_code == 0
     assert "Recreated instance:" in result.stdout
     assert service.calls == [
-        ("recreate_instance", (), {"name": "writer-old", "fresh": False, "timeout": None, "version": "2026.4.8", "prepare_artifact": True}),
+        ("recreate_instance", (), {"name": "writer-old", "fresh": False, "timeout": None, "version": "2026.4.8", "a2a": None, "prepare_artifact": True}),
         ("dashboard_url", (), {"name": "writer-old"}),
     ]
 
@@ -2497,7 +2716,7 @@ def test_recreate_command_fresh_with_yes_wipes_datadir(monkeypatch) -> None:
 
     assert result.exit_code == 0
     recreate_call = next(call for call in service.calls if call[0] == "recreate_instance")
-    assert recreate_call[2] == {"name": "writer", "fresh": True, "timeout": None, "version": None, "prepare_artifact": True}
+    assert recreate_call[2] == {"name": "writer", "fresh": True, "timeout": None, "version": None, "a2a": None, "prepare_artifact": True}
 
 
 def test_recreate_command_fresh_validates_instance_exists_before_confirm(monkeypatch) -> None:
@@ -2748,6 +2967,78 @@ def test_inspect_command_renders_human_view_by_default(monkeypatch) -> None:
     # Should NOT dump the full JSON by default.
     assert '"container"' not in result.stdout
     assert service.calls[-1] == ("inspect_instance", (), {"name": "writer"})
+
+
+def test_inspect_command_renders_a2a_async_details(monkeypatch) -> None:
+    service = FakeService()
+    original_inspect = service.inspect_instance
+
+    def inspect_with_a2a(name: str) -> dict:
+        payload = original_inspect(name)
+        payload["a2a"] = {
+            "enabled": True,
+            "port": 3001,
+            "registry_url": "http://host.docker.internal:9100",
+            "hop_budget": None,
+            "hop_budget_default": 8,
+            "mcp_url": "http://127.0.0.1:3001/mcp",
+            "async_enabled": True,
+            "default_mode": "async",
+            "redis_url": "redis://host.docker.internal:6379/0",
+            "queue_name": "clawcu:a2a:writer",
+            "redis_status": "running",
+            "worker_status": "running",
+            "async_warning": "",
+        }
+        return payload
+
+    service.inspect_instance = inspect_with_a2a  # type: ignore[assignment]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+    monkeypatch.setattr("clawcu.cli.console", _make_wide_console())
+
+    result = runner.invoke(app, ["inspect", "writer"])
+
+    assert result.exit_code == 0
+    assert "A2A" in result.stdout
+    assert "Async" in result.stdout
+    assert "enabled" in result.stdout
+    assert "Redis URL" in result.stdout
+    assert "clawcu:a2a:writer" in result.stdout
+    assert "Worker status" in result.stdout
+
+
+def test_inspect_command_renders_a2a_async_warning(monkeypatch) -> None:
+    service = FakeService()
+    original_inspect = service.inspect_instance
+
+    def inspect_with_a2a_warning(name: str) -> dict:
+        payload = original_inspect(name)
+        payload["a2a"] = {
+            "enabled": True,
+            "port": 3001,
+            "registry_url": "http://host.docker.internal:9100",
+            "hop_budget": None,
+            "hop_budget_default": 8,
+            "mcp_url": "http://127.0.0.1:3001/mcp",
+            "async_enabled": True,
+            "default_mode": "async",
+            "redis_url": "redis://host.docker.internal:6379/0",
+            "queue_name": "clawcu:a2a:writer",
+            "redis_status": "missing",
+            "worker_status": "missing",
+            "async_warning": "Redis companion is missing; worker companion is missing",
+        }
+        return payload
+
+    service.inspect_instance = inspect_with_a2a_warning  # type: ignore[assignment]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+    monkeypatch.setattr("clawcu.cli.console", _make_wide_console())
+
+    result = runner.invoke(app, ["inspect", "writer"])
+
+    assert result.exit_code == 0
+    assert "Warning" in result.stdout
+    assert "Redis companion is missing" in result.stdout
 
 
 def test_inspect_command_json_mode_preserves_raw_payload(monkeypatch) -> None:
@@ -3060,6 +3351,30 @@ def test_restart_command_no_flag_forces_plain_docker_restart(monkeypatch) -> Non
         (),
         {"name": "writer", "recreate_if_config_changed": False},
     )
+
+
+def test_restart_command_surfaces_actionable_redis_error(monkeypatch) -> None:
+    service = FakeService()
+
+    def fail_restart(name: str, *, recreate_if_config_changed: bool = True):
+        service._record(
+            "restart_instance",
+            name=name,
+            recreate_if_config_changed=recreate_if_config_changed,
+        )
+        raise RuntimeError(
+            "Failed to start shared A2A Redis companion 'clawcu-a2a-redis'. "
+            "Async A2A tasks require Redis; check Docker availability and that port 6379 is free."
+        )
+
+    service.restart_instance = fail_restart  # type: ignore[assignment]
+    monkeypatch.setattr("clawcu.cli.get_service", lambda: service)
+
+    result = runner.invoke(app, ["restart", "writer"])
+
+    assert result.exit_code != 0
+    assert "clawcu-a2a-redis" in result.stdout
+    assert "docker logs clawcu-a2a-redis" in result.stdout
 
 
 def test_upgrade_command_accepts_version_option(monkeypatch) -> None:

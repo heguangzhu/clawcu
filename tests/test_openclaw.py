@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from clawcu.core.docker import resolve_a2a_bind_interface
 from clawcu.core.models import ContainerRunSpec
 from clawcu.docker import DockerManager
 from clawcu.models import InstanceRecord
@@ -161,7 +162,13 @@ def test_run_container_binds_host_port_to_internal_gateway_port() -> None:
     assert "PORT=3000" not in command
 
 
-def test_run_container_supports_additional_port_bindings() -> None:
+def test_run_container_supports_additional_port_bindings(monkeypatch) -> None:
+    # Pin the platform to Linux so we get the bare "9129:9119" publish
+    # form regardless of the test host. Darwin defaults to 127.0.0.1
+    # prefix via resolve_a2a_bind_interface; that behavior is exercised
+    # in test_run_container_binds_a2a_port_* below.
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.delenv("CLAWCU_A2A_BIND_INTERFACE", raising=False)
     runner = RecordingRunner()
     manager = DockerManager(runner=runner)
     record = InstanceRecord(
@@ -196,6 +203,111 @@ def test_run_container_supports_additional_port_bindings() -> None:
     assert "8652:8642" in command
     assert "9129:9119" in command
     assert options["timeout_seconds"] == DockerManager.RUN_TIMEOUT_SECONDS
+
+
+def test_resolve_a2a_bind_interface_env_override_wins(monkeypatch) -> None:
+    monkeypatch.setenv("CLAWCU_A2A_BIND_INTERFACE", "10.0.0.5")
+    monkeypatch.setattr("sys.platform", "darwin")
+    assert resolve_a2a_bind_interface() == "10.0.0.5"
+
+
+def test_resolve_a2a_bind_interface_env_whitespace_stripped(monkeypatch) -> None:
+    monkeypatch.setenv("CLAWCU_A2A_BIND_INTERFACE", "  127.0.0.1  ")
+    assert resolve_a2a_bind_interface() == "127.0.0.1"
+
+
+def test_resolve_a2a_bind_interface_empty_env_ignored(monkeypatch) -> None:
+    monkeypatch.setenv("CLAWCU_A2A_BIND_INTERFACE", "   ")
+    monkeypatch.setattr("sys.platform", "linux")
+    assert resolve_a2a_bind_interface() == ""
+
+
+def test_resolve_a2a_bind_interface_darwin_defaults_to_loopback(monkeypatch) -> None:
+    monkeypatch.delenv("CLAWCU_A2A_BIND_INTERFACE", raising=False)
+    monkeypatch.setattr("sys.platform", "darwin")
+    assert resolve_a2a_bind_interface() == "127.0.0.1"
+
+
+def test_resolve_a2a_bind_interface_linux_defaults_to_all(monkeypatch) -> None:
+    monkeypatch.delenv("CLAWCU_A2A_BIND_INTERFACE", raising=False)
+    monkeypatch.setattr("sys.platform", "linux")
+    assert resolve_a2a_bind_interface() == ""
+
+
+def test_run_container_binds_a2a_port_to_loopback_on_darwin(monkeypatch) -> None:
+    monkeypatch.delenv("CLAWCU_A2A_BIND_INTERFACE", raising=False)
+    monkeypatch.setattr("sys.platform", "darwin")
+    runner = RecordingRunner()
+    manager = DockerManager(runner=runner)
+    record = InstanceRecord(
+        service="hermes",
+        name="javis",
+        version="v2026.4.13",
+        upstream_ref="v2026.4.13",
+        image_tag="clawcu/hermes-agent:v2026.4.13",
+        container_name="clawcu-hermes-javis",
+        datadir="/tmp/javis",
+        port=8652,
+        dashboard_port=9129,
+        cpu="1",
+        memory="2g",
+        auth_mode="native",
+        status="creating",
+        created_at="2026-04-11T00:00:00+00:00",
+        updated_at="2026-04-11T00:00:00+00:00",
+        history=[],
+    )
+
+    manager.run_container(
+        record,
+        ContainerRunSpec(
+            internal_port=8642,
+            mount_target="/opt/data",
+            additional_ports=[(9129, 9119)],
+        ),
+    )
+
+    command, _, _ = runner.calls[0]
+    # Gateway port stays reachable from LAN — only the A2A sidecar is pinned.
+    assert "8652:8642" in command
+    assert "127.0.0.1:9129:9119" in command
+    assert "9129:9119" not in command  # no bare form
+
+
+def test_run_container_honors_explicit_bind_override(monkeypatch) -> None:
+    monkeypatch.setenv("CLAWCU_A2A_BIND_INTERFACE", "192.168.50.10")
+    runner = RecordingRunner()
+    manager = DockerManager(runner=runner)
+    record = InstanceRecord(
+        service="hermes",
+        name="javis",
+        version="v2026.4.13",
+        upstream_ref="v2026.4.13",
+        image_tag="clawcu/hermes-agent:v2026.4.13",
+        container_name="clawcu-hermes-javis",
+        datadir="/tmp/javis",
+        port=8652,
+        dashboard_port=9129,
+        cpu="1",
+        memory="2g",
+        auth_mode="native",
+        status="creating",
+        created_at="2026-04-11T00:00:00+00:00",
+        updated_at="2026-04-11T00:00:00+00:00",
+        history=[],
+    )
+
+    manager.run_container(
+        record,
+        ContainerRunSpec(
+            internal_port=8642,
+            mount_target="/opt/data",
+            additional_ports=[(9129, 9119)],
+        ),
+    )
+
+    command, _, _ = runner.calls[0]
+    assert "192.168.50.10:9129:9119" in command
 
 
 def test_run_container_supports_additional_mount_bindings() -> None:

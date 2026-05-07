@@ -5,7 +5,7 @@
 
 发布范围：当前版本
 
-当前 `ClawCU` 命令界面参考。覆盖 OpenClaw 与 Hermes 共享生命周期命令、provider 管理、Dashboard 常驻容器、孤儿实例恢复，以及运行时默认值。
+当前 `ClawCU` 命令界面参考。覆盖 OpenClaw 与 Hermes 共享生命周期命令、provider 管理、Dashboard 常驻容器、孤儿实例恢复、A2A companion adapter，以及运行时默认值。
 
 ## 1. 初始化与镜像准备
 
@@ -33,6 +33,7 @@ clawcu setup [--completion]
 clawcu create openclaw --name <name> --version <version>
                        [--datadir <path>] [--port <port>]
                        [--cpu 1] [--memory 2g]
+                       [--a2a]
 ```
 
 创建并启动 OpenClaw 实例。
@@ -40,6 +41,7 @@ clawcu create openclaw --name <name> --version <version>
 - `datadir` 默认 `~/.clawcu/<name>`
 - 默认端口 `18799`，冲突时以 `+10` 步长探测
 - 写入 `.clawcu-instance.json` 元数据 sidecar，仅凭 datadir 即可恢复
+- `--a2a` —— 启动 companion A2A adapter 容器（见 §11）。发布额外本地端口，暴露 `GET /.well-known/agent-card.json`、JSON-RPC `message/send` 和 `POST /mcp`。原生行为不变。
 
 ### `clawcu create hermes`
 
@@ -47,6 +49,7 @@ clawcu create openclaw --name <name> --version <version>
 clawcu create hermes --name <name> --version <ref>
                      [--datadir <path>] [--port <port>]
                      [--cpu 1] [--memory 2g]
+                     [--a2a]
 ```
 
 创建并启动 Hermes 实例。
@@ -55,6 +58,7 @@ clawcu create hermes --name <name> --version <ref>
 - API 端口默认 `8652`，仪表盘端口起点 `9129`
 - 两者均以 `+10` 步长探测
 - 同样写入 `.clawcu-instance.json` sidecar
+- `--a2a` —— 启动 companion A2A adapter 容器（见 §11）。adapter 共享服务容器网络，暴露 AgentCard、JSON-RPC 消息和 `POST /mcp`。
 
 ## 3. 共享生命周期命令
 
@@ -414,7 +418,55 @@ clawcu provider apply <provider> <instance>
 - 孤儿恢复：
   - `list --removed` → `recreate <orphan>`（端口 / 版本自动从 `.clawcu-instance.json` 还原）
 
-## 11. Hermes Persona
+## 11. Agent-to-Agent 消息（`v0.4.2`）
+
+`v0.4.2` 引入 companion A2A adapter 表面。所有 A2A 行为通过创建时的 `--a2a` 开启；不加则已有实例一切不变。
+
+### 创建时 opt-in
+
+给 `clawcu create openclaw` 或 `clawcu create hermes` 传 `--a2a`，ClawCU 会在服务容器旁边启动 companion A2A adapter 容器。adapter 镜像共享为 `clawcu/a2a-adapter:<clawcu_version>`。
+
+启用 A2A 的实例在本地 adapter 端口上暴露：
+
+- `GET /.well-known/agent-card.json` —— 标准 Google A2A AgentCard
+- `POST /` —— JSON-RPC 2.0 A2A `message/send`
+- `POST /mcp` —— MCP JSON-RPC 工具表面，暴露 `a2a_call_peer`
+
+启用 A2A 时，ClawCU 还会把 `mcp.servers.a2a` 写入服务配置，让本地 agent 能通过 `a2a_call_peer` MCP 工具调用对端。
+
+运维说明：
+
+- adapter 会把入站 A2A 消息转发到同容器网络里的服务网关 `/v1/chat/completions`。
+- registry 通过 `GET /agents` 和 `GET /agents/<name>` 聚合卡片。
+- `clawcu inspect <instance>` 会显示 A2A 端口、registry URL、hop budget 和 MCP URL。
+
+### `clawcu a2a card`
+
+```
+clawcu a2a card [--name <instance>] [--host 127.0.0.1]
+```
+
+打印某个受管实例的 AgentCard JSON（从记录推导）。不传 `--name` 则以 JSON 数组吐出所有受管实例的卡片。
+
+### `clawcu a2a registry serve`
+
+```
+clawcu a2a registry serve [--port 9100] [--host 127.0.0.1]
+                         [--provider probe|redis]
+                         [--redis-url redis://host.docker.internal:6379/0]
+```
+
+运行前台/debug registry server：通过 HTTP 提供 `GET /agents`（数组）与 `GET /agents/<name>`（单张卡片）。正常 A2A lifecycle 会自动管理 Dockerized `clawcu-a2a-registry`；`--provider redis` 读取 Redis-backed peer snapshots，`--provider probe` 保留旧的实时探测模式。
+
+### `clawcu a2a send`
+
+```
+clawcu a2a send --to <target> --message <text>
+                [--registry http://127.0.0.1:9100]
+                [--from clawcu-cli] [--timeout 60]
+```
+
+在 registry 里查 `TARGET`，向其 endpoint 发送 A2A JSON-RPC `message/send` 请求。打印回复 JSON。`--timeout` 是等待 LLM 回复的时长。
 
 ### `clawcu hermes identity set`
 

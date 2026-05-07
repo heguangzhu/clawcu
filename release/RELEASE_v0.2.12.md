@@ -48,7 +48,7 @@ So the UX becomes:
 * * *
 ## Why the legacy-record fix matters
 
-One rough edge showed up during real command validation: older instance records could still contain legacy fields that newer code no longer modeled directly. Those fields were harmless historically, but the result was worse than it should have been: `clawcu list` could fail before it even rendered the table.
+One rough edge showed up during real command validation: older instance records could still contain fields such as `a2a_enabled`. Those fields were harmless historically, but newer code no longer modeled them directly. The result was worse than it should have been: `clawcu list` could fail before it even rendered the table.
 
 `v0.2.12` changes the deserialization rule from "every key must still exist in the dataclass" to "known fields are loaded, unknown historical fields are ignored."
 

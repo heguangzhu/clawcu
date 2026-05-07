@@ -31,6 +31,7 @@
 - **一套 CLI，两个运行时** — OpenClaw 和 Hermes 共用同一套生命周期命令
 - **每次升级前自动快照** — datadir 与环境变量同步捕获；`rollback` 从真实备份恢复
 - **先克隆再实验** — 复制一份实例，在副本上升级，主实例原地不动
+- **Agent-to-agent 消息（`v0.4.2`）** — 创建时加 `--a2a`，启动 companion A2A 容器：adapter、async worker、共享 Redis 与 Redis-backed 本地 registry。普通实例不受影响。
 - **Available versions 支持缓存刷新** — `clawcu list --versions` 显示可升级版本，默认走按天缓存；需要立即看最新 tag 时加 `--no-cache` 强制刷新
 
 ```text
@@ -121,6 +122,15 @@ clawcu dashboard
 
 ![Dashboard](docs/images/cn.png)
 
+用 A2A 让实例之间对话（opt-in，`v0.4.2`）：
+
+```bash
+clawcu create openclaw --name writer  --version 2026.4.12 --a2a
+clawcu create hermes   --name analyst --version 2026.4.13 --a2a
+# ClawCU 会自动管理 Redis 与本地 A2A registry 容器。
+clawcu a2a send --to analyst --message "summarize yesterday"
+```
+
 查看当前有哪些版本可升级（默认按天缓存；加 `--no-cache` 强制重新拉取）：
 
 ```bash
@@ -128,7 +138,7 @@ clawcu list --versions
 clawcu list --versions --no-cache
 ```
 
-完整命令参考（`list` / `inspect` / `exec` / `upgrade` / `provider` …）见 [USAGE_latest.zh-CN.md](release/USAGE_latest.zh-CN.md)。
+A2A adapter 深度指南（架构 / 协议 / 运维 / 排障）：[docs/a2a-protocol.zh-CN.md](docs/a2a-protocol.zh-CN.md)。完整命令参考（`list` / `inspect` / `exec` / `upgrade` / `provider` / `a2a` …）见 [USAGE_latest.zh-CN.md](release/USAGE_latest.zh-CN.md)。
 
 ## 安全升级流程
 

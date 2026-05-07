@@ -31,6 +31,7 @@
 - **One CLI, two runtimes** — OpenClaw and Hermes through the same lifecycle commands
 - **Snapshots before every upgrade** — datadir and env both captured; `rollback` restores from real backups
 - **Clone-first experiments** — copy an instance, upgrade the copy, leave the original running
+- **Agent-to-agent messaging (`v0.4.2`)** — opt-in `--a2a` runs companion A2A containers: an adapter, async worker, shared Redis, and the Redis-backed local registry. Stock instances are unaffected.
 - **Available versions with cache-aware refresh** — `clawcu list --versions` shows upgrade candidates from the configured registries, served from a day-cache by default. Add `--no-cache` to force a fresh registry read when you want the latest tags now.
 
 ```text
@@ -121,6 +122,15 @@ clawcu dashboard
 
 ![Dashboard](docs/images/en.png)
 
+Make instances talk to each other with A2A (opt-in, `v0.4.2`):
+
+```bash
+clawcu create openclaw --name writer  --version 2026.4.12 --a2a
+clawcu create hermes   --name analyst --version 2026.4.13 --a2a
+# ClawCU automatically manages Redis + the local A2A registry containers.
+clawcu a2a send --to analyst --message "summarize yesterday"
+```
+
 See what versions are available for upgrade (cached per day; add `--no-cache` to force a fresh fetch):
 
 ```bash
@@ -128,7 +138,7 @@ clawcu list --versions
 clawcu list --versions --no-cache
 ```
 
-For the full command reference (`list` / `inspect` / `exec` / `upgrade` / `provider` …), see [USAGE_latest.md](release/USAGE_latest.md).
+Deep-dive on the A2A adapter (architecture, protocol, operations, troubleshooting): [docs/a2a-protocol.md](docs/a2a-protocol.md). For the full command reference (`list` / `inspect` / `exec` / `upgrade` / `provider` / `a2a` …), see [USAGE_latest.md](release/USAGE_latest.md).
 
 ## Safe Upgrade Workflow
 
