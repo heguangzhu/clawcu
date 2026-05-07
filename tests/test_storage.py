@@ -45,7 +45,7 @@ def test_store_load_record_ignores_unknown_legacy_fields(
     store = StateStore(get_paths())
     record = make_record(tmp_path / "writer")
     payload = record.to_dict()
-    payload["a2a_enabled"] = True
+    payload["future_feature_enabled"] = True
     store.instance_path("writer").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",

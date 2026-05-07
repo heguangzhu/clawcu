@@ -5,7 +5,7 @@
 
 Release Scope: current
 
-Command reference for the current `ClawCU` command surface. Covers shared OpenClaw / Hermes lifecycle commands, provider management, the persistent Dashboard container, orphan-instance recovery, A2A companion adapters, and operational defaults.
+Command reference for the current `ClawCU` command surface. Covers shared OpenClaw / Hermes lifecycle commands, provider management, the persistent Dashboard container, orphan-instance recovery, and operational defaults.
 
 ## 1. Setup and Artifact Preparation
 
@@ -33,7 +33,6 @@ Check Docker CLI access, Docker daemon reachability, ClawCU home, and runtime di
 clawcu create openclaw --name <name> --version <version>
                        [--datadir <path>] [--port <port>]
                        [--cpu 1] [--memory 2g]
-                       [--a2a]
 ```
 
 Create and start an OpenClaw instance.
@@ -41,7 +40,6 @@ Create and start an OpenClaw instance.
 - `datadir` defaults to `~/.clawcu/<name>`
 - managed host port defaults to `18799`; probes by `+10` on conflict
 - writes `.clawcu-instance.json` into the datadir so the instance is recoverable from its datadir alone
-- `--a2a` — start a companion A2A adapter container (see §11). Publishes an extra local port for `GET /.well-known/agent-card.json`, JSON-RPC `message/send`, and `POST /mcp`. Stock behaviour unchanged.
 
 ### `clawcu create hermes`
 
@@ -49,7 +47,6 @@ Create and start an OpenClaw instance.
 clawcu create hermes --name <name> --version <ref>
                      [--datadir <path>] [--port <port>]
                      [--cpu 1] [--memory 2g]
-                     [--a2a]
 ```
 
 Create and start a Hermes instance.
@@ -58,7 +55,6 @@ Create and start a Hermes instance.
 - managed API port defaults to `8652`; managed dashboard port starts from `9129`
 - both probe by `+10` on conflict
 - writes the same `.clawcu-instance.json` sidecar
-- `--a2a` — start a companion A2A adapter container (see §11). The adapter shares the service container's network and exposes AgentCard, JSON-RPC messaging, and `POST /mcp`.
 
 ## 3. Shared Lifecycle Commands
 
@@ -418,55 +414,7 @@ Apply a collected asset to the selected instance. Writeback is service-native.
 - Orphan recovery:
   - `list --removed` → `recreate <orphan>` (port / version auto-restored from `.clawcu-instance.json`)
 
-## 11. Agent-to-Agent Messaging (`v0.4.2`)
-
-`v0.4.2` introduces the companion A2A adapter surface. All A2A behaviour is opt-in via `--a2a` at create time; existing instances are unaffected.
-
-### Opt-in at create time
-
-Pass `--a2a` to `clawcu create openclaw` or `clawcu create hermes` to run a companion A2A adapter container alongside the service container. The adapter image is shared as `clawcu/a2a-adapter:<clawcu_version>`.
-
-A running A2A-enabled instance exposes, on a local adapter port:
-
-- `GET /.well-known/agent-card.json` — standard Google A2A AgentCard
-- `POST /` — JSON-RPC 2.0 A2A `message/send`
-- `POST /mcp` — MCP JSON-RPC tool surface exposing `a2a_call_peer`
-
-When A2A is enabled, ClawCU also writes an `mcp.servers.a2a` entry into the service config so the local agent can call peers through the `a2a_call_peer` MCP tool.
-
-Operational notes:
-
-- The adapter forwards inbound A2A messages to the co-located service gateway's `/v1/chat/completions`.
-- The registry aggregates cards through `GET /agents` and `GET /agents/<name>`.
-- `clawcu inspect <instance>` shows the A2A port, registry URL, hop budget, and MCP URL.
-
-### `clawcu a2a card`
-
-```
-clawcu a2a card [--name <instance>] [--host 127.0.0.1]
-```
-
-Print the AgentCard JSON for a local clawcu instance (derived from its record). Omit `--name` to dump cards for every managed instance as a JSON array.
-
-### `clawcu a2a registry serve`
-
-```
-clawcu a2a registry serve [--port 9100] [--host 127.0.0.1]
-                         [--provider probe|redis]
-                         [--redis-url redis://host.docker.internal:6379/0]
-```
-
-Run a foreground/debug registry server: serves `GET /agents` (array) and `GET /agents/<name>` (single card) over HTTP. Normal A2A lifecycle manages the Dockerized `clawcu-a2a-registry` automatically; use `--provider redis` to read Redis-backed peer snapshots, or `--provider probe` for legacy live probing.
-
-### `clawcu a2a send`
-
-```
-clawcu a2a send --to <target> --message <text>
-                [--registry http://127.0.0.1:9100]
-                [--from clawcu-cli] [--timeout 60]
-```
-
-Look up `TARGET` in the registry and send an A2A JSON-RPC `message/send` request to its endpoint. Prints the reply JSON. `--timeout` is the LLM reply wait window.
+## 11. Hermes Persona
 
 ### `clawcu hermes identity set`
 

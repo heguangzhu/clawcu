@@ -21,7 +21,6 @@ from rich.table import Table
 from typer.main import get_command
 
 from clawcu import __version__
-from clawcu.a2a.cli import a2a_app
 from clawcu.dashboard.server import _dashboard_is_healthy
 from clawcu.core.registry import is_semver_release_tag
 from clawcu.service import ClawCUService
@@ -84,7 +83,6 @@ openclaw_app = typer.Typer(
 app.add_typer(create_app, name="create", rich_help_panel="Lifecycle")
 app.add_typer(provider_app, name="provider", rich_help_panel="Providers")
 app.add_typer(openclaw_app, name="openclaw", rich_help_panel="Service-Specific")
-app.add_typer(a2a_app, name="a2a", rich_help_panel="A2A")
 
 snapshots_app = typer.Typer(
     help="List and clean instance upgrade/rollback snapshots.",
@@ -123,10 +121,6 @@ _HINT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
         re.compile(r"has no rollback snapshot"),
         "Run `clawcu rollback <name> --list` to see available rollback targets.",
-    ),
-    (
-        re.compile(r"A2A Redis companion"),
-        "Check Docker status and `docker logs clawcu-a2a-redis` if the Redis companion container exists.",
     ),
 )
 
@@ -1176,9 +1170,6 @@ def _do_create(
     port: int | None,
     cpu: str,
     memory: str,
-    a2a: bool = False,
-    a2a_hop_budget: int | None = None,
-    a2a_advertise_host: str | None = None,
     apply_provider: str | None = None,
     apply_agent: str = "main",
     apply_persist: bool = False,
@@ -1187,33 +1178,17 @@ def _do_create(
         _exit_with_error(
             f"Unknown service '{service_name}'. Expected one of: {', '.join(_KNOWN_SERVICES)}."
         )
-    if a2a_hop_budget is not None and not a2a:
-        _exit_with_error(
-            "--a2a-hop-budget requires --a2a. Add --a2a or drop --a2a-hop-budget."
-        )
-    if a2a_advertise_host is not None and not a2a:
-        _exit_with_error(
-            "--a2a-advertise-host requires --a2a. Add --a2a or drop --a2a-advertise-host."
-        )
-    # a2a-design-5.md §P2-I: warn (not error) past the soft ceiling — above
-    # 16 hops the budget stops being a useful loop-protection knob.
-    if a2a_hop_budget is not None and a2a_hop_budget > 16:
-        console.print(
-            f"[yellow]Warning:[/yellow] --a2a-hop-budget={a2a_hop_budget} exceeds "
-            "the soft ceiling of 16 — hop budget is intended to cap runaway loops, "
-            "not to scale delegation depth."
-        )
     service = get_service()
     if hasattr(service, "set_reporter"):
         service.set_reporter(_print_progress)
     try:
         if service_name == "openclaw":
             record = service.create_openclaw(
-                name=name, version=version, image=image, datadir=datadir, port=port, cpu=cpu, memory=memory, a2a=a2a, a2a_hop_budget=a2a_hop_budget, a2a_advertise_host=a2a_advertise_host,
+                name=name, version=version, image=image, datadir=datadir, port=port, cpu=cpu, memory=memory,
             )
         else:
             record = service.create_hermes(
-                name=name, version=version, image=image, datadir=datadir, port=port, cpu=cpu, memory=memory, a2a=a2a, a2a_hop_budget=a2a_hop_budget, a2a_advertise_host=a2a_advertise_host,
+                name=name, version=version, image=image, datadir=datadir, port=port, cpu=cpu, memory=memory,
             )
     except Exception as exc:
         _exit_with_error(str(exc))
@@ -1272,43 +1247,6 @@ _APPLY_PERSIST_OPTION = typer.Option(
         "instance env file (default ON, matches `provider apply --persist`)."
     ),
 )
-_A2A_OPTION = typer.Option(
-    "--a2a",
-    help=(
-        "Launch an A2A companion container alongside the service that speaks "
-        "the standard A2A protocol (AgentCard + JSON-RPC message/send)."
-    ),
-)
-_A2A_HOP_BUDGET_OPTION = typer.Option(
-    "--a2a-hop-budget",
-    min=1,
-    help=(
-        "Maximum number of A2A hops the adapter will forward a single outbound "
-        "call through before returning 508 Loop Detected. Persisted to the "
-        "instance env file as A2A_HOP_BUDGET; defaults to 8 when unset. Requires "
-        "--a2a."
-    ),
-)
-_A2A_ADVERTISE_HOST_OPTION = typer.Option(
-    "--a2a-advertise-host",
-    help=(
-        "Hostname peers will use to reach this A2A adapter. Default: "
-        "host.docker.internal on macOS/Windows (Docker Desktop), 127.0.0.1 on "
-        "Linux. Override when peers live on a different host or a named "
-        "docker network. Requires --a2a."
-    ),
-)
-_A2A_TRISTATE_OPTION = typer.Option(
-    "--a2a/--no-a2a",
-    help=(
-        "Toggle the A2A flavor when recreating. Omit to preserve the instance's "
-        "current flavor; pass --a2a to add the companion adapter, or "
-        "--no-a2a to drop back to the stock image. Flipping the flag re-runs "
-        "artifact preparation."
-    ),
-)
-
-
 @create_app.callback(invoke_without_command=True)
 def create_callback(
     ctx: typer.Context,
@@ -1329,9 +1267,6 @@ def create_callback(
     port: Annotated[int | None, typer.Option("--port", help="Host port exposed for the instance.")] = None,
     cpu: Annotated[str, typer.Option("--cpu", help="Docker CPU limit.")] = "1",
     memory: Annotated[str, typer.Option("--memory", help="Docker memory limit.")] = "2g",
-    a2a: Annotated[bool, _A2A_OPTION] = False,
-    a2a_hop_budget: Annotated[int | None, _A2A_HOP_BUDGET_OPTION] = None,
-    a2a_advertise_host: Annotated[str | None, _A2A_ADVERTISE_HOST_OPTION] = None,
     apply_provider: Annotated[str | None, _APPLY_PROVIDER_OPTION] = None,
     apply_agent: Annotated[str, _APPLY_AGENT_OPTION] = "main",
     apply_persist: Annotated[bool, _APPLY_PERSIST_OPTION] = False,
@@ -1350,9 +1285,6 @@ def create_callback(
             port=port,
             cpu=cpu,
             memory=memory,
-            a2a=a2a,
-            a2a_hop_budget=a2a_hop_budget,
-            a2a_advertise_host=a2a_advertise_host,
             apply_provider=apply_provider,
             apply_agent=apply_agent,
             apply_persist=apply_persist,
@@ -1388,9 +1320,6 @@ def create_openclaw(
     ] = None,
     cpu: Annotated[str, typer.Option("--cpu", help="Docker CPU limit.")] = "1",
     memory: Annotated[str, typer.Option("--memory", help="Docker memory limit.")] = "2g",
-    a2a: Annotated[bool, _A2A_OPTION] = False,
-    a2a_hop_budget: Annotated[int | None, _A2A_HOP_BUDGET_OPTION] = None,
-    a2a_advertise_host: Annotated[str | None, _A2A_ADVERTISE_HOST_OPTION] = None,
     apply_provider: Annotated[str | None, _APPLY_PROVIDER_OPTION] = None,
     apply_agent: Annotated[str, _APPLY_AGENT_OPTION] = "main",
     apply_persist: Annotated[bool, _APPLY_PERSIST_OPTION] = False,
@@ -1404,9 +1333,6 @@ def create_openclaw(
         port=port,
         cpu=cpu,
         memory=memory,
-        a2a=a2a,
-        a2a_hop_budget=a2a_hop_budget,
-        a2a_advertise_host=a2a_advertise_host,
         apply_provider=apply_provider,
         apply_agent=apply_agent,
         apply_persist=apply_persist,
@@ -1434,9 +1360,6 @@ def create_hermes(
     ] = None,
     cpu: Annotated[str, typer.Option("--cpu", help="Docker CPU limit.")] = "1",
     memory: Annotated[str, typer.Option("--memory", help="Docker memory limit.")] = "2g",
-    a2a: Annotated[bool, _A2A_OPTION] = False,
-    a2a_hop_budget: Annotated[int | None, _A2A_HOP_BUDGET_OPTION] = None,
-    a2a_advertise_host: Annotated[str | None, _A2A_ADVERTISE_HOST_OPTION] = None,
     apply_provider: Annotated[str | None, _APPLY_PROVIDER_OPTION] = None,
     apply_agent: Annotated[str, _APPLY_AGENT_OPTION] = "main",
     apply_persist: Annotated[bool, _APPLY_PERSIST_OPTION] = False,
@@ -1450,9 +1373,6 @@ def create_hermes(
         port=port,
         cpu=cpu,
         memory=memory,
-        a2a=a2a,
-        a2a_hop_budget=a2a_hop_budget,
-        a2a_advertise_host=a2a_advertise_host,
         apply_provider=apply_provider,
         apply_agent=apply_agent,
         apply_persist=apply_persist,
@@ -2230,41 +2150,6 @@ def _print_inspect_human(payload: dict, *, reveal: bool, show_history: bool) -> 
             snap_table.add_row(key, str(value))
         console.print(snap_table)
 
-    # --- A2A (review-2 P1-F / iter 3) ---
-    a2a = payload.get("a2a")
-    if a2a and a2a.get("enabled"):
-        console.print()
-        console.print("[bold]A2A[/bold]")
-        a2a_table = Table(show_header=False, box=None, pad_edge=False)
-        a2a_table.add_column("key", style="cyan", no_wrap=True)
-        a2a_table.add_column("value", overflow="fold")
-        a2a_table.add_row("Enabled", "yes")
-        a2a_table.add_row("Port", str(a2a.get("port", "-")))
-        a2a_table.add_row(
-            "Registry URL", str(a2a.get("registry_url") or "-")
-        )
-        a2a_table.add_row(
-            "Async", "enabled" if a2a.get("async_enabled") else "disabled"
-        )
-        a2a_table.add_row("Default mode", str(a2a.get("default_mode") or "-"))
-        a2a_table.add_row("Redis URL", str(a2a.get("redis_url") or "-"))
-        a2a_table.add_row("Queue", str(a2a.get("queue_name") or "-"))
-        a2a_table.add_row("Redis status", str(a2a.get("redis_status") or "-"))
-        a2a_table.add_row("Worker status", str(a2a.get("worker_status") or "-"))
-        async_warning = a2a.get("async_warning")
-        if async_warning:
-            a2a_table.add_row("Warning", f"[yellow]{async_warning}[/yellow]")
-        budget = a2a.get("hop_budget")
-        default_budget = a2a.get("hop_budget_default", 8)
-        if budget is None:
-            a2a_table.add_row("Hop budget", f"{default_budget} (default)")
-        else:
-            a2a_table.add_row("Hop budget", str(budget))
-        mcp_url = a2a.get("mcp_url")
-        if mcp_url:
-            a2a_table.add_row("MCP server", f"{mcp_url} (auto)")
-        console.print(a2a_table)
-
     # --- Container (compact) ---
     container = payload.get("container")
     if container:
@@ -2599,8 +2484,6 @@ def set_instance_env(
 def _env_group_for_key(key: str) -> str:
     """Return a display group for an env key."""
     upper = key.upper()
-    if upper.startswith("A2A_"):
-        return "A2A"
     if any(marker in upper for marker in _SENSITIVE_ENV_MARKERS):
         return "Sensitive"
     return "General"
@@ -2654,7 +2537,7 @@ def get_instance_env(
             group = _env_group_for_key(key)
             groups.setdefault(group, []).append((key, displayed))
         first_group = True
-        for group_name in ("A2A", "Sensitive", "General"):
+        for group_name in ("Sensitive", "General"):
             rows = groups.get(group_name, [])
             if not rows:
                 continue
@@ -3149,21 +3032,20 @@ def _do_recreate(
     fresh: bool = False,
     timeout: int | None = None,
     version: str | None = None,
-    a2a: bool | None = None,
 ) -> None:
     """Unified recreate logic.
 
     Tries retry_instance first (cheap auto-port recovery path for
     create_failed records); if the service rejects it with a
     ValueError ("Only create_failed ..."), falls back to the regular
-    recreate_instance flow. When ``fresh``, ``timeout``, ``version``,
-    or ``a2a`` is provided, skip the retry shortcut and go straight to
-    recreate so the toggles take effect.
+    recreate_instance flow. When ``fresh``, ``timeout``, or ``version``
+    is provided, skip the retry shortcut and go straight to recreate so
+    the toggles take effect.
     """
-    if fresh or timeout is not None or version is not None or a2a is not None:
+    if fresh or timeout is not None or version is not None:
         try:
             record = service.recreate_instance(
-                name, fresh=fresh, timeout=timeout, version=version, a2a=a2a,
+                name, fresh=fresh, timeout=timeout, version=version,
             )
         except Exception as exc:
             _exit_with_error(str(exc))
@@ -3176,7 +3058,7 @@ def _do_recreate(
         record = service.retry_instance(name)
     except FileNotFoundError:
         try:
-            record = service.recreate_instance(name, version=version, a2a=a2a)
+            record = service.recreate_instance(name, version=version)
         except Exception as exc2:
             _exit_with_error(str(exc2))
         console.print(
@@ -3189,7 +3071,7 @@ def _do_recreate(
         if "create_failed" not in message:
             _exit_with_error(message)
         try:
-            record = service.recreate_instance(name, version=version, a2a=a2a)
+            record = service.recreate_instance(name, version=version)
         except Exception as exc2:
             _exit_with_error(str(exc2))
         console.print(
@@ -3234,7 +3116,6 @@ def recreate_instance(
             help="Version to use when recreating a removed instance whose datadir no longer has an instance record.",
         ),
     ] = None,
-    a2a: Annotated[bool | None, _A2A_TRISTATE_OPTION] = None,
     yes: Annotated[
         bool,
         typer.Option("--yes", "-y", help="Skip the confirmation prompt for --fresh."),
@@ -3261,7 +3142,7 @@ def recreate_instance(
             "use 'clawcu rollback --list' after the wipe to see what remains.",
             yes,
         )
-    _do_recreate(service, name, fresh=fresh, timeout=timeout, version=version, a2a=a2a)
+    _do_recreate(service, name, fresh=fresh, timeout=timeout, version=version)
 
 
 def _print_upgrade_plan(plan: dict) -> None:

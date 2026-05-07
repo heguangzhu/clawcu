@@ -11,7 +11,6 @@ from pathlib import Path
 import yaml
 
 from clawcu import __version__ as clawcu_version
-from clawcu.a2a._util import resolve_advertise_host
 from clawcu.core.adapters import ServiceAdapter
 from clawcu.core.models import AccessInfo, ContainerRunSpec, InstanceRecord, InstanceSpec
 from clawcu.core.validation import (
@@ -97,11 +96,6 @@ prompt *之上*, 不需要重写助手的基础规则 — 只写身份和语气.
 > - 给代码时始终用 fenced code block 包裹.
 > - 如果不确定, 先用一句话说明, 再回答问题.
 
-## A2A signature tip
-
-If you rely on A2A federation and want to verify the persona layer is
-active end-to-end, add a short mandatory signature line (e.g. `— Scribe`)
-and check inbound replies contain it.
 """
 
 
@@ -113,14 +107,7 @@ class HermesAdapter(ServiceAdapter):
     dashboard_default_port = 9129
     dashboard_internal_port = 9119
 
-    # Review-1 §3: A2A protocol defaults. Hermes sidecar binds
-    # display_port directly — only one offset to probe.
-    a2a_skills = ("chat", "analysis")
-    a2a_role = "Hermes local analyst"
-    a2a_plugin_port_offsets = (0,)
-    a2a_internal_port = 9119  # companion adapter binds the dashboard internal port
     gateway_ready_path = "/health"
-    a2a_gateway_auth_env_keys = ("API_SERVER_KEY", "HERMES_TOKEN")
 
     def __init__(self, manager: HermesManager):
         self.manager = manager
@@ -179,58 +166,6 @@ class HermesAdapter(ServiceAdapter):
             "API_SERVER_HOST": "0.0.0.0",
             "API_SERVER_KEY": env_values["API_SERVER_KEY"],
         }
-        # When the a2a plugin is baked in, the sidecar binds the dashboard
-        # internal port (9119) — which Hermes itself does not use. So the
-        # existing dashboard_port → 9119 mapping already exposes the A2A
-        # sidecar to the host; we just need to tell the sidecar what name
-        # and advertised endpoint to report.
-        extra_hosts: list[tuple[str, str]] = []
-        if record.a2a_enabled:
-            advertised_port = record.dashboard_port or self.dashboard_default_port
-            # Review-1 P0-B: Linux parity. Docker Desktop auto-resolves
-            # host.docker.internal; Linux doesn't unless we ask. Always
-            # safe to pass — a no-op when the DNS name already resolves.
-            extra_hosts.append(("host.docker.internal", "host-gateway"))
-            extra_env.update(
-                {
-                    "A2A_SELF_NAME": record.name,
-                    "A2A_BIND_PORT": str(self.dashboard_internal_port),
-                    # Review-9 P1-A3: see openclaw adapter. Resolver picks
-                    # host.docker.internal on Darwin/Windows so cross-
-                    # container peer calls land on the right host.
-                    "A2A_ADVERTISE_HOST": resolve_advertise_host(record),
-                    "A2A_ADVERTISE_PORT": str(advertised_port),
-                    # Hermes' API server exposes readiness at /health. The
-                    # sidecar is gateway-agnostic (review-7 P2-E): the
-                    # adapter declares the path so the same sidecar code
-                    # can wrap gateways that use /healthz instead.
-                    "A2A_GATEWAY_READY_PATH": "/health",
-                    # Review-10 P2-C: tee sidecar logs into the datadir
-                    # mount so they survive `clawcu recreate`. Host sees
-                    # them at <record.datadir>/logs/a2a-sidecar.log.
-                    "A2A_SIDECAR_LOG_DIR": "/opt/data/logs",
-                    # Review-14 P1-C: per-peer / per-thread conversation
-                    # history. Mirror of openclaw iter 13: when the peer
-                    # sends thread_id, the sidecar reads/appends
-                    # <dir>/<peer>/<thread_id>.jsonl so the agent sees
-                    # continuous context. Lives under the /opt/data mount
-                    # so threads survive `clawcu recreate`.
-                    "A2A_THREAD_DIR": "/opt/data/threads",
-                }
-            )
-            # Review-1 P0-B: auto-inject registry URL default; user env
-            # overrides (parity with OpenClaw adapter).
-            if not env_values.get("A2A_REGISTRY_URL"):
-                extra_env["A2A_REGISTRY_URL"] = "http://host.docker.internal:9100"
-            # a2a-design-4.md §P0-A: auto-wiring bootstrap. The sidecar
-            # merges `mcp.servers.a2a` into the Hermes config.yaml so the
-            # LLM sees `a2a_call_peer`. User env-file entries win.
-            if not env_values.get("A2A_ENABLED"):
-                extra_env["A2A_ENABLED"] = "true"
-            if not env_values.get("A2A_SERVICE_MCP_CONFIG_PATH"):
-                extra_env["A2A_SERVICE_MCP_CONFIG_PATH"] = "/opt/data/config.yaml"
-            if not env_values.get("A2A_SERVICE_MCP_CONFIG_FORMAT"):
-                extra_env["A2A_SERVICE_MCP_CONFIG_FORMAT"] = "yaml"
         return ContainerRunSpec(
             internal_port=self.internal_port,
             mount_target="/opt/data",
@@ -245,7 +180,6 @@ class HermesAdapter(ServiceAdapter):
             if record.dashboard_port is not None
             else [],
             additional_mounts=[(str(profile_home), "/root/.hermes")],
-            extra_hosts=extra_hosts,
         )
 
     def configure_before_run(self, service, record: InstanceRecord) -> None:
@@ -265,28 +199,12 @@ class HermesAdapter(ServiceAdapter):
                 },
             }
             config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
-        if getattr(record, "a2a_enabled", False):
-            config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-            mcp_servers = config.setdefault("mcp", {}).setdefault("servers", {})
-            mcp_servers["a2a"] = {"url": f"http://127.0.0.1:{self.a2a_internal_port}/mcp"}
-            config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
         env_path = self.env_path(service, record)
         env_path.parent.mkdir(parents=True, exist_ok=True)
         env_values = service._load_env_file(env_path)
         if not env_values.get("API_SERVER_KEY"):
             env_values["API_SERVER_KEY"] = secrets.token_hex(32)
         env_path.write_text(service._dump_env_file(env_values), encoding="utf-8")
-        # For a2a-enabled instances scaffold a SOUL.md placeholder on first
-        # configure so the A2A peer gets an identifiable persona from turn 1.
-        # We never overwrite an existing SOUL.md — that's the user's content.
-        if getattr(record, "a2a_enabled", False):
-            soul_path = datadir / HERMES_SOUL_FILENAME
-            if not soul_path.exists():
-                soul_path.write_text(_HERMES_SOUL_PLACEHOLDER, encoding="utf-8")
-                service.reporter(
-                    f"Wrote Hermes persona placeholder to {soul_path}. "
-                    "Edit this file to customize the agent's identity; Hermes reloads it on each turn."
-                )
         service._make_runtime_tree_writable(datadir)
 
     def wait_for_readiness(self, service, record: InstanceRecord) -> InstanceRecord:

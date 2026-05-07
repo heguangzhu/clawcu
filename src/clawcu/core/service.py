@@ -15,22 +15,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from clawcu import __version__ as clawcu_version
-from clawcu.a2a.adapter.compose import (
-    CompanionSpec,
-    build_adapter_image,
-    redis_companion_spec,
-    redis_companion_status,
-    registry_companion_spec,
-    registry_companion_status,
-    start_companion,
-    start_redis_companion,
-    start_registry_companion,
-    start_worker_companion,
-    stop_companion,
-    stop_worker_companion,
-    worker_companion_status,
-    worker_companion_spec,
-)
 from clawcu.core.adapters import ServiceAdapter
 from clawcu.core.docker import DockerManager
 from clawcu.core.models import AccessInfo, InstanceRecord, InstanceSpec
@@ -70,19 +54,6 @@ class ClawCUService:
     STARTUP_POLL_INTERVAL_SECONDS = 10.0
     STARTUP_PROGRESS_INTERVAL_SECONDS = 10.0
     STARTUP_TIMEOUT_SECONDS = 120.0
-    SHARED_A2A_REDIS_CONTAINER = "clawcu-a2a-redis"
-    SHARED_A2A_REGISTRY_CONTAINER = "clawcu-a2a-registry"
-    A2A_ASYNC_ENV_SPEC_ATTRS: dict[str, tuple[str, ...]] = {
-        "A2A_ASYNC_ENABLED": ("async_enabled",),
-        "A2A_DEFAULT_MODE": ("default_mode",),
-        "A2A_REDIS_URL": ("redis_url",),
-        "A2A_QUEUE_NAME": ("queue_name",),
-        "A2A_TASK_WORKERS": ("task_workers",),
-        "A2A_TASK_DEADLINE_S": ("task_deadline_seconds",),
-        "A2A_TASK_RETAIN_S": ("task_retain_seconds",),
-        "A2A_TASK_PROGRESS_INTERVAL_S": ("task_progress_interval_seconds",),
-        "A2A_TASK_EVENTS_IDLE_TIMEOUT_S": ("task_events_idle_timeout_seconds",),
-    }
     Reporter = Callable[[str], None]
 
     def __init__(
@@ -705,21 +676,9 @@ class ClawCUService:
         port: int | None = None,
         cpu: str,
         memory: str,
-        a2a: bool = False,
-        a2a_hop_budget: int | None = None,
-        a2a_advertise_host: str | None = None,
     ) -> InstanceRecord:
         adapter = self.adapter_for_service(service_name)
         auto_port = port is None
-        if a2a_hop_budget is not None:
-            if not a2a:
-                raise ValueError("a2a_hop_budget requires a2a=True.")
-            if not isinstance(a2a_hop_budget, int) or isinstance(a2a_hop_budget, bool) or a2a_hop_budget < 1:
-                raise ValueError("a2a_hop_budget must be a positive integer (>= 1).")
-        if a2a_advertise_host is not None:
-            if not a2a:
-                raise ValueError("a2a_advertise_host requires a2a=True.")
-            a2a_advertise_host = str(a2a_advertise_host).strip() or None
         self.reporter("Step 1/5: Validating options and resolving defaults. This should take a second or two.")
         spec = adapter.build_spec(
             self,
@@ -730,7 +689,6 @@ class ClawCUService:
             cpu=cpu,
             memory=memory,
         )
-        spec = replace(spec, a2a_enabled=bool(a2a), a2a_advertise_host=a2a_advertise_host)
         if self.store.instance_path(spec.name).exists():
             raise ValueError(f"Instance '{spec.name}' already exists.")
         container_name = container_name_for_service(spec.service, spec.name)
@@ -739,13 +697,12 @@ class ClawCUService:
                 f"Instance '{spec.name}' already exists. Docker container '{container_name}' is already present."
             )
 
-        a2a_note = " a2a=on" if spec.a2a_enabled else ""
         self.reporter(
-            f"Resolved instance settings: datadir={spec.datadir}, port={spec.port}, cpu={spec.cpu}, memory={spec.memory}, auth={spec.auth_mode}.{a2a_note}"
+            f"Resolved instance settings: datadir={spec.datadir}, port={spec.port}, cpu={spec.cpu}, memory={spec.memory}, auth={spec.auth_mode}."
         )
         explicit_image = self._normalize_requested_image(image)
         self.store.append_log(
-            f"create instance service={spec.service} name={spec.name} version={spec.version} datadir={spec.datadir} a2a={spec.a2a_enabled}"
+            f"create instance service={spec.service} name={spec.name} version={spec.version} datadir={spec.datadir}"
             + (f" image={explicit_image}" if explicit_image else "")
         )
         if explicit_image is not None:
@@ -756,8 +713,6 @@ class ClawCUService:
             )
         else:
             prepared_image = adapter.prepare_artifact(spec.version)
-        if spec.a2a_enabled:
-            prepared_image = self._ensure_adapter_image(prepared_image)
         spec = replace(spec, image_tag_override=prepared_image)
         datadir_path = Path(spec.datadir)
         self.reporter("Step 4/5: Preparing the local data directory and runtime metadata. This usually takes a few seconds.")
@@ -773,15 +728,11 @@ class ClawCUService:
                 "service": spec.service,
             }
         ]
-        env_overrides: dict[str, str] = {}
-        if a2a and a2a_hop_budget is not None:
-            env_overrides["A2A_HOP_BUDGET"] = str(a2a_hop_budget)
         self.reporter("Step 5/5: Starting the Docker container and checking health. This usually takes a few seconds.")
         live_record = self._start_new_instance(
             spec,
             history=history,
             auto_port=auto_port,
-            env_overrides=env_overrides or None,
         )
         self.reporter(self._lifecycle_summary("created", live_record))
         return live_record
@@ -796,9 +747,6 @@ class ClawCUService:
         port: int | None = None,
         cpu: str,
         memory: str,
-        a2a: bool = False,
-        a2a_hop_budget: int | None = None,
-        a2a_advertise_host: str | None = None,
     ) -> InstanceRecord:
         return self.create_service(
             "openclaw",
@@ -809,9 +757,6 @@ class ClawCUService:
             port=port,
             cpu=cpu,
             memory=memory,
-            a2a=a2a,
-            a2a_hop_budget=a2a_hop_budget,
-            a2a_advertise_host=a2a_advertise_host,
         )
 
     def create_hermes(
@@ -824,9 +769,6 @@ class ClawCUService:
         port: int | None = None,
         cpu: str,
         memory: str,
-        a2a: bool = False,
-        a2a_hop_budget: int | None = None,
-        a2a_advertise_host: str | None = None,
     ) -> InstanceRecord:
         return self.create_service(
             "hermes",
@@ -837,153 +779,7 @@ class ClawCUService:
             port=port,
             cpu=cpu,
             memory=memory,
-            a2a=a2a,
-            a2a_hop_budget=a2a_hop_budget,
-            a2a_advertise_host=a2a_advertise_host,
         )
-
-    def _ensure_adapter_image(self, base_image: str) -> str:
-        """Build the companion A2A adapter image (once per clawcu version)."""
-        build_adapter_image(self.docker, clawcu_version, reporter=self.reporter)
-        return base_image
-
-    def _apply_a2a_async_env_to_spec(
-        self,
-        spec: Any,
-        env_values: dict[str, str],
-    ) -> None:
-        from clawcu.a2a.adapter import tasks as a2a_tasks
-
-        source = {
-            "A2A_AGENT_NAME": getattr(spec, "name", "agent"),
-            **env_values,
-        }
-        cfg = a2a_tasks.config_from_env(source)
-        spec.async_enabled = cfg.enabled
-        spec.default_mode = cfg.default_mode
-        spec.redis_url = cfg.redis_url
-        spec.queue_name = cfg.queue_name
-        spec.task_workers = cfg.workers
-        spec.task_deadline_seconds = cfg.deadline_s
-        spec.task_retain_seconds = cfg.retain_s
-        spec.task_progress_interval_seconds = cfg.progress_interval_s
-        spec.task_events_idle_timeout_seconds = cfg.events_idle_timeout_s
-
-    def _build_a2a_companion_spec(self, record: InstanceRecord) -> CompanionSpec:
-        adapter = self.adapter_for_record(record)
-        from clawcu.a2a._util import resolve_advertise_host
-        from clawcu.a2a.card import plugin_endpoint_for
-        from clawcu.a2a.adapter.compose import adapter_image_tag
-
-        gateway_port = adapter.internal_port
-        a2a_internal_port = adapter.a2a_internal_port
-        advertise_host = resolve_advertise_host(record)
-        agent_url = plugin_endpoint_for(record, service=self, host=advertise_host)
-
-        # Read the gateway auth token from the env file.
-        gateway_token = ""
-        env_path = adapter.env_path(self, record)
-        registry_url = "http://host.docker.internal:9100"
-        gateway_timeout_seconds = 86400
-        env_values: dict[str, str] = {}
-        if env_path.exists():
-            env_values = self._load_env_file(env_path)
-            for key in adapter.a2a_gateway_auth_env_keys:
-                value = env_values.get(key, "").strip()
-                if value:
-                    gateway_token = value
-                    break
-            registry_url = env_values.get("A2A_REGISTRY_URL", "").strip() or registry_url
-            timeout_value = env_values.get("A2A_GATEWAY_TIMEOUT", "").strip()
-            if timeout_value:
-                try:
-                    gateway_timeout_seconds = max(1, int(float(timeout_value)))
-                except ValueError:
-                    gateway_timeout_seconds = 86400
-        if not gateway_token:
-            try:
-                gateway_token = adapter.token(self, record.name)
-            except Exception:
-                gateway_token = ""
-
-        spec = CompanionSpec(
-            name=record.name,
-            instance_name=record.name,
-            adapter_image=adapter_image_tag(clawcu_version),
-            gateway_url=f"http://127.0.0.1:{gateway_port}",
-            gateway_auth_token=gateway_token,
-            gateway_ready_path=adapter.gateway_ready_path,
-            gateway_timeout_seconds=gateway_timeout_seconds,
-            agent_url=agent_url,
-            agent_role=adapter.a2a_role,
-            agent_skills=",".join(adapter.a2a_skills),
-            adapter_port=a2a_internal_port,
-            registry_url=registry_url,
-            extra_hosts=[("host.docker.internal", "host-gateway")],
-        )
-        self._apply_a2a_async_env_to_spec(spec, env_values)
-        return spec
-
-    def _ensure_a2a_redis_companion(self, record: InstanceRecord) -> None:
-        redis_spec = redis_companion_spec(record.name)
-        if self.docker.container_status(self.SHARED_A2A_REDIS_CONTAINER) == "running":
-            inspection = self.docker.inspect_container(self.SHARED_A2A_REDIS_CONTAINER) or {}
-            ports = (inspection.get("NetworkSettings") or {}).get("Ports") or {}
-            bindings = ports.get(f"{redis_spec.redis_port}/tcp") or []
-            has_host_binding = any(
-                str(binding.get("HostPort") or "") == str(redis_spec.redis_port)
-                for binding in bindings
-                if isinstance(binding, dict)
-            )
-            if has_host_binding:
-                return
-        try:
-            start_redis_companion(
-                self.docker,
-                redis_spec,
-                record.container_name,
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                "Failed to start shared A2A Redis companion "
-                f"'{self.SHARED_A2A_REDIS_CONTAINER}'. Async A2A tasks require "
-                "Redis; check Docker availability and that port 6379 is free."
-            ) from exc
-
-    def _ensure_a2a_registry_companion(self, adapter_image: str) -> None:
-        if self.docker.container_status(self.SHARED_A2A_REGISTRY_CONTAINER) == "running":
-            return
-        try:
-            start_registry_companion(self.docker, registry_companion_spec(adapter_image))
-        except Exception as exc:
-            raise RuntimeError(
-                "Failed to start shared A2A registry companion "
-                f"'{self.SHARED_A2A_REGISTRY_CONTAINER}'. Check Docker availability "
-                "and that port 9100 is free."
-            ) from exc
-
-    def _start_a2a_companion(self, record: InstanceRecord) -> None:
-        """Start the A2A companion stack for an A2A-enabled instance."""
-        spec = self._build_a2a_companion_spec(record)
-        self._ensure_a2a_redis_companion(record)
-        self._ensure_a2a_registry_companion(spec.adapter_image)
-        start_companion(self.docker, spec, record.container_name)
-        worker_spec = worker_companion_spec(spec)
-        try:
-            start_worker_companion(self.docker, worker_spec, record.container_name)
-        except Exception as exc:
-            raise RuntimeError(
-                f"Failed to start A2A worker companion for instance '{record.name}'. "
-                "Async A2A tasks will remain queued until the worker is running; "
-                f"check Docker logs for clawcu-a2a-worker-{record.name}."
-            ) from exc
-
-    def _stop_a2a_companions(self, record: InstanceRecord) -> None:
-        # Redis is a shared A2A companion (`clawcu-a2a-redis`) and may be
-        # serving other instances, so single-instance stop/remove/restart only
-        # tears down the per-instance worker and HTTP adapter companions.
-        stop_worker_companion(self.docker, record.name)
-        stop_companion(self.docker, record.name)
 
     def list_instances(self, *, running_only: bool = False) -> list[InstanceRecord]:
         records = self.store.list_records()
@@ -1155,84 +951,6 @@ class ClawCUService:
                 "token": access.token,
             },
             "container": inspection,
-            "a2a": self._a2a_inspect_section(record),
-        }
-
-    def _a2a_inspect_section(self, record: InstanceRecord) -> dict[str, Any] | None:
-        """Review-2 P1-F (iter 3): surface A2A wiring on inspect.
-
-        When A2A is enabled, read the instance env file for the user-
-        visible A2A knobs (hop budget, registry URL) and compute the
-        bridge port + MCP URL. Operators can see the whole A2A config
-        without ``clawcu getenv | grep``. Returns ``None`` for stock
-        instances so the renderer can skip the whole section.
-        """
-        if not getattr(record, "a2a_enabled", False):
-            return None
-        from clawcu.a2a.card import plugin_port_candidates
-
-        env: dict[str, str] = {}
-        try:
-            env_path = self.adapter_for_record(record).env_path(self, record)
-            if env_path.exists():
-                env = self._load_env_file(env_path)
-        except Exception:
-            # Env file read is best-effort; a missing/unreadable file
-            # shouldn't break `inspect`. The adapter layer already
-            # guarantees env_path exists for A2A instances.
-            env = {}
-
-        ports = plugin_port_candidates(record, service=self)
-        bridge_port = ports[-1] if ports else record.port
-        hop_budget_raw = env.get("A2A_HOP_BUDGET", "").strip()
-        try:
-            hop_budget: int | None = int(hop_budget_raw) if hop_budget_raw else None
-        except ValueError:
-            hop_budget = None
-
-        registry_url = (
-            env.get("A2A_REGISTRY_URL", "").strip()
-            or "http://host.docker.internal:9100"
-        )
-        from clawcu.a2a.adapter import tasks as a2a_tasks
-
-        async_cfg = a2a_tasks.config_from_env(
-            {
-                "A2A_AGENT_NAME": record.name,
-                **env,
-            }
-        )
-        redis_status = redis_companion_status(self.docker, record.name)
-        registry_status = registry_companion_status(self.docker)
-        worker_status = worker_companion_status(self.docker, record.name)
-        async_warnings: list[str] = []
-        if async_cfg.enabled and redis_status != "running":
-            async_warnings.append(
-                f"Redis companion is {redis_status}; async tasks need clawcu-a2a-redis running"
-            )
-        if async_cfg.enabled and registry_status != "running":
-            async_warnings.append(
-                f"registry companion is {registry_status}; peer discovery may fail"
-            )
-        if async_cfg.enabled and worker_status != "running":
-            async_warnings.append(
-                f"worker companion is {worker_status}; async tasks will stay queued"
-            )
-        return {
-            "enabled": True,
-            "port": bridge_port,
-            "registry_url": registry_url,
-            "hop_budget": hop_budget,
-            "hop_budget_default": 8,
-            "mcp_url": f"http://127.0.0.1:{bridge_port}/mcp",
-            "async_enabled": async_cfg.enabled,
-            "default_mode": async_cfg.default_mode,
-            "redis_url": async_cfg.redis_url,
-            "queue_name": async_cfg.queue_name,
-            "redis_status": redis_status,
-            "registry_status": registry_status,
-            "worker_status": worker_status,
-            "async_warning": "; ".join(async_warnings),
         }
 
     def dashboard_url(self, name: str) -> str:
@@ -1533,8 +1251,6 @@ class ClawCUService:
         )
         try:
             self.docker.start_container(record.container_name)
-            if record.a2a_enabled:
-                self._start_a2a_companion(record)
         except Exception as exc:
             failed = updated_record(
                 record,
@@ -1571,8 +1287,6 @@ class ClawCUService:
 
     def stop_instance(self, name: str, *, timeout: int | None = None) -> InstanceRecord:
         record = self.store.load_record(name)
-        if record.a2a_enabled:
-            self._stop_a2a_companions(record)
         self.docker.stop_container(record.container_name, timeout=timeout)
         suffix = f" timeout={timeout}" if timeout is not None else ""
         self.store.append_log(f"stop instance name={record.name}{suffix}")
@@ -1598,11 +1312,7 @@ class ClawCUService:
                     f"Detected env drift for instance '{record.name}'; promoting restart to recreate so the new env file takes effect."
                 )
                 return self.recreate_instance(name, prepare_artifact=False)
-        if record.a2a_enabled:
-            self._stop_a2a_companions(record)
         self.docker.restart_container(record.container_name)
-        if record.a2a_enabled:
-            self._start_a2a_companion(record)
         self.store.append_log(f"restart instance name={record.name}")
         return self._persist_live_status(record)
 
@@ -1625,8 +1335,6 @@ class ClawCUService:
             "Docker will pull it on container start if it is missing locally."
         )
         self.reporter("Step 3/4: Cleaning up any leftover Docker container from the failed attempt.")
-        if record.a2a_enabled:
-            self._stop_a2a_companions(record)
         self.docker.remove_container(record.container_name, missing_ok=True)
         self.reporter("Step 4/4: Recreating the Docker container. This usually takes a few seconds.")
 
@@ -1641,7 +1349,6 @@ class ClawCUService:
             auth_mode=effective_auth_mode,
             dashboard_port=record.dashboard_port,
             image_tag_override=prepared_image,
-            a2a_enabled=record.a2a_enabled,
         )
         history = copy.deepcopy(record.history)
         history.append(
@@ -1650,7 +1357,6 @@ class ClawCUService:
                 "timestamp": utc_now_iso(),
                 "version": record.version,
                 "from_status": record.status,
-                "a2a_enabled": record.a2a_enabled,
             }
         )
         live_record = self._start_new_instance(spec, history=history, auto_port=True)
@@ -1665,7 +1371,6 @@ class ClawCUService:
         fresh: bool = False,
         timeout: int | None = None,
         version: str | None = None,
-        a2a: bool | None = None,
     ) -> InstanceRecord:
         try:
             record = self.store.load_record(name)
@@ -1676,38 +1381,23 @@ class ClawCUService:
                 fresh=fresh,
                 timeout=timeout,
                 version=version,
-                a2a=a2a,
             )
         if version is not None:
             raise ValueError(
                 f"Instance '{name}' already exists. Use `clawcu upgrade {name} --version {version}` to change versions."
             )
         effective_auth_mode = self._effective_auth_mode(record)
-        # If the caller didn't explicitly toggle a2a, preserve the record's
-        # flavor. A change in flavor always re-runs artifact preparation,
-        # so the ``prepare_artifact=False`` shortcut only applies when the
-        # flavor hasn't moved.
-        effective_a2a = record.a2a_enabled if a2a is None else bool(a2a)
-        if effective_a2a != record.a2a_enabled:
-            prepare_artifact = True
-        a2a_note = " a2a=on" if effective_a2a else " a2a=off"
         self.reporter(
-            f"Recreating instance '{record.name}' (service={record.service}, version {record.version}, port {record.port}, auth={effective_auth_mode}){a2a_note}."
+            f"Recreating instance '{record.name}' (service={record.service}, version {record.version}, port {record.port}, auth={effective_auth_mode})."
         )
         self.store.append_log(
-            f"recreate instance name={record.name} version={record.version} fresh={fresh} timeout={timeout} a2a={effective_a2a}"
+            f"recreate instance name={record.name} version={record.version} fresh={fresh} timeout={timeout}"
         )
-        if effective_a2a != record.a2a_enabled:
-            adapter = self.adapter_for_record(record)
-            prepared_image = adapter.prepare_artifact(record.version)
-            if effective_a2a:
-                self._ensure_adapter_image(prepared_image)
-        else:
-            prepared_image = record.image_tag
-            self.reporter(
-                f"Reusing the saved runtime image {prepared_image} for recreate. "
-                "Docker will pull it on container start if it is missing locally."
-            )
+        prepared_image = record.image_tag
+        self.reporter(
+            f"Reusing the saved runtime image {prepared_image} for recreate. "
+            "Docker will pull it on container start if it is missing locally."
+        )
         if timeout is not None:
             try:
                 self.docker.stop_container(record.container_name, timeout=timeout)
@@ -1715,8 +1405,6 @@ class ClawCUService:
                 self.reporter(
                     f"Graceful stop failed during recreate (proceeding to force-remove): {exc}"
                 )
-        if record.a2a_enabled:
-            self._stop_a2a_companions(record)
         self.docker.remove_container(record.container_name, missing_ok=True)
         if fresh:
             self._wipe_datadir(record)
@@ -1732,9 +1420,6 @@ class ClawCUService:
             auth_mode=effective_auth_mode,
             dashboard_port=record.dashboard_port,
             image_tag_override=prepared_image,
-            a2a_enabled=effective_a2a,
-            a2a_advertise_host=record.a2a_advertise_host,
-            a2a_adapter_port=record.a2a_adapter_port,
         )
         history = copy.deepcopy(record.history)
         history.append(
@@ -1745,7 +1430,6 @@ class ClawCUService:
                 "from_status": record.status,
                 "clawcu_version": clawcu_version,
                 "auth_mode": effective_auth_mode,
-                "a2a_enabled": effective_a2a,
             }
         )
         live_record = self._start_new_instance(spec, history=history, auto_port=False)
@@ -1760,19 +1444,15 @@ class ClawCUService:
         fresh: bool,
         timeout: int | None,
         version: str | None,
-        a2a: bool | None = None,
     ) -> InstanceRecord:
         spec = self._build_removed_instance_spec(name, version=version)
-        effective_a2a = bool(a2a) if a2a is not None else getattr(spec, "a2a_enabled", False)
-        spec = replace(spec, a2a_enabled=effective_a2a)
         adapter = self.adapter_for_service(spec.service)
-        a2a_note = " a2a=on" if effective_a2a else ""
         self.reporter(
             f"Recovering removed instance '{spec.name}' from {spec.datadir} "
-            f"(service={spec.service}, version {spec.version}, port {spec.port}, auth={spec.auth_mode}).{a2a_note}"
+            f"(service={spec.service}, version {spec.version}, port {spec.port}, auth={spec.auth_mode})."
         )
         self.store.append_log(
-            f"recreate removed instance name={spec.name} version={spec.version} fresh={fresh} timeout={timeout} a2a={effective_a2a}"
+            f"recreate removed instance name={spec.name} version={spec.version} fresh={fresh} timeout={timeout}"
         )
         if spec.image_tag_override:
             prepared_image = spec.image_tag_override
@@ -1782,12 +1462,8 @@ class ClawCUService:
             )
         elif prepare_artifact:
             prepared_image = adapter.prepare_artifact(spec.version)
-            if effective_a2a:
-                self._ensure_adapter_image(prepared_image)
         else:
             prepared_image = spec.image_tag_override or image_tag_for_service(spec.service, spec.version)
-            if effective_a2a:
-                self._ensure_adapter_image(prepared_image)
             self.reporter(
                 f"Reusing the existing image tag {prepared_image} without re-running artifact preparation."
             )
@@ -2315,13 +1991,9 @@ class ClawCUService:
                 f"Step 4/4: Recreating the container on {adapter.display_name} {target_version} "
                 "with the existing data directory."
             )
-            if previous.a2a_enabled:
-                self._stop_a2a_companions(previous)
             self.docker.remove_container(previous.container_name, missing_ok=True)
             adapter.configure_before_run(self, upgraded)
             self._run_container(upgraded)
-            if upgraded.a2a_enabled:
-                self._start_a2a_companion(upgraded)
             upgraded = adapter.wait_for_readiness(self, self._persist_live_status(upgraded))
         except Exception as exc:
             rollback_error = None
@@ -2336,11 +2008,9 @@ class ClawCUService:
                         snapshot_dir,
                         Path(previous.datadir),
                         env_path=env_path,
-                    )
+                )
                 adapter.configure_before_run(self, previous)
                 self._run_container(previous)
-                if previous.a2a_enabled:
-                    self._start_a2a_companion(previous)
                 previous = adapter.wait_for_readiness(self, self._persist_live_status(previous))
             except Exception as nested_exc:
                 rollback_error = nested_exc
@@ -2472,8 +2142,6 @@ class ClawCUService:
         )
         adapter.configure_before_run(self, rolled)
         self._run_container(rolled)
-        if rolled.a2a_enabled:
-            self._start_a2a_companion(rolled)
         rolled = adapter.wait_for_readiness(self, self._persist_live_status(rolled))
         self.store.save_record(rolled)
         self._write_instance_metadata(rolled)
@@ -2623,8 +2291,6 @@ class ClawCUService:
         record = self.store.load_record(name)
         adapter = self.adapter_for_record(record)
         try:
-            if record.a2a_enabled:
-                self._stop_a2a_companions(record)
             self.docker.remove_container(record.container_name, missing_ok=True)
         except Exception as exc:
             message = (
@@ -2721,8 +2387,6 @@ class ClawCUService:
                 if env_overrides:
                     self._apply_env_overrides(adapter, record, env_overrides)
                 self._run_container(record)
-                if record.a2a_enabled:
-                    self._start_a2a_companion(record)
             except Exception as exc:
                 failure = updated_record(
                     record,

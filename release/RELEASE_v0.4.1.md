@@ -46,9 +46,6 @@ Release Date: April 29, 2026
 - **Removed `hermes identity set`**
   - Use `docker cp` or `clawcu exec <name>` to edit Hermes persona files directly.
 
-- **Removed `a2a up` and `a2a bridge serve`**
-  - A2A is strictly opt-in at create time (`--a2a`). Long-lived services should be deployed via docker-compose or systemd, not the CLI.
-
 ### Scenario Optimizations
 
 - **`tui` checks instance status before launch**
@@ -67,7 +64,7 @@ Release Date: April 29, 2026
   - Pressing Ctrl+C during `clawcu logs <name> --follow` sends an ANSI reset sequence so the terminal does not keep Docker's colour codes.
 
 - **`getenv --table` grouped output**
-  - `clawcu getenv <name> --table` renders env vars in a rich table grouped by A2A / Sensitive / General.
+  - `clawcu getenv <name> --table` renders env vars in a rich table grouped by Sensitive / General.
   - Sensitive values are masked by default; pass `--reveal` to show them.
 
 - **`setenv --reload` hot-reload**
@@ -85,22 +82,13 @@ Release Date: April 29, 2026
 - **`config` help with service-specific examples**
   - `clawcu config --help` now shows OpenClaw and Hermes usage examples, including `--non-interactive` passthrough.
 
-### A2A Evolution (since v0.3.0)
-
-- OpenClaw sidecar ported from Node.js to Python (stdlib only) for parity with Hermes.
-- Shared `_common/` package extracted — inbound limits, outbound HTTP, MCP dispatcher, peer cache, protocol helpers, and readiness probes are now unified across both sidecars.
-- Security hardening: scheme allow-list (`http`/`https` only), redirect blocking, 4 MiB response body caps, socket-level request timeouts, Content-Length validation, and oversized-body rejection.
-- True streaming + async task store/worker (layer 3).
-- A2A_REGISTRY_TOKEN bearer gate on registry reads.
-- `--lookup-timeout` flag on `clawcu a2a send`.
-
 * * *
 ## Compatibility
 
 `v0.4.1` is a drop-in upgrade from `v0.3.0`.
 
 - Existing managed instances keep running with the same image tag, ports, and env.
-- The removed commands (`pull`, `hermes identity set`, `a2a up`, `a2a bridge serve`) were hidden or undocumented in `v0.3.0` usage.
+- The removed commands (`pull`, `hermes identity set`) were hidden or undocumented in `v0.3.0` usage.
 - `clawcu token` / `clawcu approve` root aliases still work with a deprecation warning.
 - New flags (`--table`, `--reload`, `--versions`) are strictly opt-in.
 
@@ -133,4 +121,4 @@ clawcu snapshots clean --keep-last 5
 * * *
 ## Closing Note
 
-`v0.4.x` is the first release to treat the CLI as a **lifecycle tool**, not a runtime. Long-lived services (registry, bridges) are removed from the CLI surface; the CLI focuses on create, start, stop, upgrade, rollback, remove, env, logs, and snapshots. A2A remains opt-in at create time and works exactly as before.
+`v0.4.x` is the first release to treat the CLI as a **lifecycle tool**, not a runtime. The CLI focuses on create, start, stop, upgrade, rollback, remove, env, logs, and snapshots.

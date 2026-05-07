@@ -148,39 +148,6 @@ def test_create_hermes_saves_record_and_writes_native_home(temp_clawcu_home, tmp
     assert stat.S_IMODE(env_path.stat().st_mode) == 0o666
 
 
-def test_hermes_a2a_companion_uses_api_server_key_for_gateway_auth(
-    temp_clawcu_home, tmp_path, monkeypatch
-) -> None:
-    service, _, _, _ = make_service(temp_clawcu_home)
-    service._is_port_available = lambda port: port == 9129  # type: ignore[method-assign]
-    hermes_adapter = service.adapters["hermes"]
-    hermes_adapter._dashboard_ready = lambda _record: True  # type: ignore[method-assign]
-    datadir = tmp_path / "hermes-home"
-    datadir.mkdir()
-    (datadir / ".env").write_text("API_SERVER_KEY=server-secret\n", encoding="utf-8")
-    captured = []
-
-    def fake_start_companion(docker, spec, main_container):
-        captured.append((spec, main_container))
-
-    monkeypatch.setattr("clawcu.core.service.start_companion", fake_start_companion)
-
-    service.create_hermes(
-        name="scribe",
-        version="2026.4.8",
-        datadir=str(datadir),
-        port=8642,
-        cpu="1",
-        memory="2g",
-        a2a=True,
-    )
-
-    spec, main_container = captured[0]
-    assert main_container == "clawcu-hermes-scribe"
-    assert spec.gateway_auth_token == "server-secret"
-    assert spec.gateway_timeout_seconds == 86400
-
-
 def test_create_hermes_defaults_datadir_and_port(temp_clawcu_home) -> None:
     service, _, _, _ = make_service(temp_clawcu_home)
     service._is_port_available = lambda port: port in {8652, 9129}  # type: ignore[method-assign]

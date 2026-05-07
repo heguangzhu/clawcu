@@ -26,18 +26,6 @@ class InstanceSpec:
     auth_mode: str
     dashboard_port: int | None = None
     image_tag_override: str | None = None
-    # When True the instance is deployed with an A2A companion container
-    # alongside the service container.
-    a2a_enabled: bool = False
-    # Hostname a peer (running in another container on the same host) will
-    # use to reach this sidecar. None = let the adapter auto-detect based on
-    # the host runtime (Docker Desktop → host.docker.internal, plain Linux
-    # → 127.0.0.1). Persisted so `clawcu recreate` stays stable across
-    # host environment changes. Review-9 P1-A3.
-    a2a_advertise_host: str | None = None
-    # Host port mapped to the A2A adapter container. Set during create when
-    # a2a_enabled is True and the companion-container model is used.
-    a2a_adapter_port: int | None = None
 
 
 @dataclass(kw_only=True)
@@ -59,8 +47,6 @@ class InstanceRecord(InstanceSpec):
         payload = dict(data)
         payload.setdefault("auth_mode", "token")
         payload.setdefault("dashboard_port", None)
-        payload.setdefault("a2a_enabled", False)
-        payload.setdefault("a2a_advertise_host", None)
         return cls(**_project_onto_fields(cls, payload))
 
 
@@ -102,8 +88,4 @@ class ContainerRunSpec:
     command: list[str] | None = None
     additional_ports: list[tuple[int, int]] = field(default_factory=list)
     additional_mounts: list[tuple[str, str]] = field(default_factory=list)
-    # Iter 2 P0-B: `(name, ip)` pairs passed to docker as `--add-host=name:ip`.
-    # Used by A2A adapters to inject `host.docker.internal:host-gateway` so
-    # `/a2a/outbound` can reach the clawcu registry on Linux where the
-    # special DNS name otherwise doesn't resolve.
     extra_hosts: list[tuple[str, str]] = field(default_factory=list)
