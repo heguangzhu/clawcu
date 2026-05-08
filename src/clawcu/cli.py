@@ -2706,7 +2706,7 @@ def approve_pairing(
 
 
 # Deprecation aliases for commands moved to `clawcu openclaw` in v0.4.
-# These will be removed in v0.5.
+# These will be removed in a future cleanup release.
 @app.command("token", hidden=True, rich_help_panel=_PANEL_ACCESS)
 def _token_alias(
     name: Annotated[str, typer.Argument(help="Managed instance name.")],

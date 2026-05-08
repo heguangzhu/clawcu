@@ -1,9 +1,9 @@
-# ClawCU v0.4.1
+# ClawCU v0.5.1
 
 🌐 Language:
-[English](RELEASE_v0.4.1.md) | [中文](RELEASE_v0.4.1.zh-CN.md)
+[English](RELEASE_latest.md) | [中文](RELEASE_latest.zh-CN.md)
 
-Release Date: 2026-04-29
+Release Date: 2026-05-08
 
 ## Highlights
 
@@ -12,6 +12,7 @@ Release Date: 2026-04-29
 - `clawcu list --versions` shows available upgrade candidates explicitly, with a cache-aware `--no-cache` refresh path.
 - Removed-instance recovery is part of the documented lifecycle through `list --removed`, `recreate`, and `remove --removed`.
 - Lifecycle operations continue to snapshot datadirs and env files before risky changes such as `upgrade` and `rollback`.
+- A2A functionality has been split out of `main` and now lives on the dedicated `a2a` branch.
 
 ## Notes
 

@@ -1,9 +1,9 @@
-# ClawCU v0.4.1
+# ClawCU v0.5.1
 
 🌐 语言：
-[English](RELEASE_v0.4.1.md) | [中文](RELEASE_v0.4.1.zh-CN.md)
+[English](RELEASE_latest.md) | [中文](RELEASE_latest.zh-CN.md)
 
-发布日期：2026-04-29
+发布日期：2026-05-08
 
 ## 亮点
 
@@ -12,6 +12,7 @@
 - `clawcu list --versions` 显式显示可升级候选版本，并支持 `--no-cache` 强制刷新。
 - 被删除实例的恢复流程进入主线：`list --removed`、`recreate`、`remove --removed`。
 - `upgrade`、`rollback` 等高风险生命周期操作仍会先快照 datadir 和 env 文件。
+- A2A 功能已从 `main` 拆出，保留在独立的 `a2a` 分支。
 
 ## 说明
 

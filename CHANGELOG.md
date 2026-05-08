@@ -7,13 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
-- Agent-to-agent functionality has been split out of `main` and lives on the dedicated `a2a` branch. The `main` branch focuses on the OpenClaw / Hermes lifecycle manager surface.
-
 ### Planned
 - `--output {table|json|yaml}` global protocol — unify JSON schema across list/inspect.
 - Provider bundle provenance via `.clawcu-instance.json` metadata.
 - Active provider as a first-class field.
+
+## [0.5.1] - 2026-05-08
+
+### Changed
+- Agent-to-agent functionality has been split out of `main` and lives on the dedicated `a2a` branch. The `main` branch focuses on the OpenClaw / Hermes lifecycle manager surface.
 
 ## [0.4.1] - 2026-04-29
 
@@ -111,7 +113,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 - OpenClaw lifecycle management: pull, create, list, inspect, start/stop, upgrade, rollback, clone, snapshots.
 
-[Unreleased]: https://github.com/heguangzhu/clawcu/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/heguangzhu/clawcu/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/heguangzhu/clawcu/compare/v0.4.1...v0.5.1
 [0.4.1]: https://github.com/heguangzhu/clawcu/compare/v0.2.12...v0.4.1
 [0.3.x]: https://github.com/heguangzhu/clawcu/tree/a2a
 [0.2.12]: https://github.com/heguangzhu/clawcu/compare/v0.2.11...v0.2.12

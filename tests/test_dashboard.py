@@ -67,7 +67,7 @@ def test_dashboard_status_shows_container_info(monkeypatch) -> None:
         "_dashboard_container_info",
         lambda: {
             "State": {"Status": "running", "StartedAt": "2024-01-01T00:00:00Z"},
-            "Config": {"Image": "clawcu-dashboard:0.4.1"},
+            "Config": {"Image": "clawcu-dashboard:0.5.1"},
         },
     )
     monkeypatch.setattr(cli_module, "_dashboard_is_healthy", lambda _: True)
@@ -76,7 +76,7 @@ def test_dashboard_status_shows_container_info(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert "running" in result.output
-    assert "clawcu-dashboard:0.4.1" in result.output
+    assert "clawcu-dashboard:0.5.1" in result.output
     assert "healthy" in result.output
 
 
